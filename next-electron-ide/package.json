@@ -1,0 +1,55 @@
+{
+  "name": "next-electron-ide",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A minimal desktop IDE built with Next.js (renderer) + Electron (shell) and Monaco Editor.",
+  "main": "electron-dist/main.js",
+  "scripts": {
+    "dev:next": "next dev -p 3210",
+    "dev:electron": "wait-on http://localhost:3210 && tsc -p electron/tsconfig.json && electron .",
+    "dev": "cross-env NODE_ENV=development concurrently -k \"npm:dev:next\" \"npm:dev:electron\"",
+    "build:next": "next build",
+    "build:electron": "tsc -p electron/tsconfig.json",
+    "build": "npm run build:next && npm run build:electron",
+    "dist": "npm run build && electron-builder",
+    "lint": "next lint"
+  },
+  "dependencies": {
+    "@monaco-editor/react": "^4.6.0",
+    "next": "^14.2.35",
+    "react": "18.3.1",
+    "react-dom": "18.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.9",
+    "@types/react": "^18.3.3",
+    "@types/react-dom": "^18.3.0",
+    "concurrently": "^8.2.2",
+    "cross-env": "^7.0.3",
+    "electron": "^31.2.1",
+    "electron-builder": "^24.13.3",
+    "typescript": "^5.5.3",
+    "wait-on": "^7.2.0"
+  },
+  "build": {
+    "appId": "com.example.nextelectronide",
+    "productName": "NEXide",
+    "files": [
+      "electron-dist/**/*",
+      "renderer-out/**/*",
+      "package.json"
+    ],
+    "directories": {
+      "output": "release"
+    },
+    "mac": {
+      "target": "dmg"
+    },
+    "win": {
+      "target": "nsis"
+    },
+    "linux": {
+      "target": "AppImage"
+    }
+  }
+}

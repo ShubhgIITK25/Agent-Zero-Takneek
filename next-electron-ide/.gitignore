@@ -1,0 +1,7 @@
+node_modules/
+.next/
+renderer-out/
+electron-dist/
+release/
+*.log
+.DS_Store
