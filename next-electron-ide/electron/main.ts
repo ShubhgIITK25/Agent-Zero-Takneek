@@ -2,6 +2,8 @@ import { app, BrowserWindow, ipcMain, dialog, Menu, shell } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs/promises';
 import { Dirent } from 'fs';
+import * as pty from 'node-pty';
+import type { IPty } from 'node-pty';
 
 const isDev = process.env.NODE_ENV === 'development';
 
@@ -81,6 +83,12 @@ function buildMenu() {
         { role: 'zoomOut' },
         { type: 'separator' },
         { role: 'togglefullscreen' },
+        { type: 'separator' },
+        {
+          label: 'Toggle Terminal',
+          accelerator: 'CmdOrCtrl+`',
+          click: () => mainWindow?.webContents.send('terminal:toggle'),
+        },
       ],
     },
   ];
@@ -152,6 +160,69 @@ ipcMain.handle('shell:showItemInFolder', (_evt, targetPath: string) => {
   shell.showItemInFolder(targetPath);
 });
 
+// ---------- IPC: integrated terminal (node-pty) ----------
+
+const terminals = new Map<string, IPty>();
+
+function defaultShell(): string {
+  if (process.platform === 'win32') {
+    return process.env.COMSPEC || 'powershell.exe';
+  }
+  return process.env.SHELL || '/bin/bash';
+}
+
+ipcMain.handle('terminal:create', (_evt, id: string, cwd?: string): boolean => {
+  if (terminals.has(id)) return true;
+
+  const shellPath = defaultShell();
+  const ptyProcess = pty.spawn(shellPath, [], {
+    name: 'xterm-256color',
+    cols: 80,
+    rows: 24,
+    cwd: cwd || openFolderPath || process.env.HOME || process.env.USERPROFILE || process.cwd(),
+    env: process.env as { [key: string]: string },
+  });
+
+  terminals.set(id, ptyProcess);
+
+  ptyProcess.onData((data) => {
+    mainWindow?.webContents.send('terminal:data', id, data);
+  });
+
+  ptyProcess.onExit(({ exitCode }) => {
+    mainWindow?.webContents.send('terminal:exit', id, exitCode);
+    terminals.delete(id);
+  });
+
+  return true;
+});
+
+ipcMain.handle('terminal:write', (_evt, id: string, data: string) => {
+  terminals.get(id)?.write(data);
+});
+
+ipcMain.handle('terminal:resize', (_evt, id: string, cols: number, rows: number) => {
+  const cleanCols = Math.max(1, Math.floor(cols) || 80);
+  const cleanRows = Math.max(1, Math.floor(rows) || 24);
+  terminals.get(id)?.resize(cleanCols, cleanRows);
+});
+
+ipcMain.handle('terminal:kill', (_evt, id: string) => {
+  terminals.get(id)?.kill();
+  terminals.delete(id);
+});
+
+function killAllTerminals() {
+  for (const [id, term] of terminals) {
+    try {
+      term.kill();
+    } catch {
+      // already gone
+    }
+    terminals.delete(id);
+  }
+}
+
 app.whenReady().then(() => {
   buildMenu();
   createWindow();
@@ -162,5 +233,10 @@ app.whenReady().then(() => {
 });
 
 app.on('window-all-closed', () => {
+  killAllTerminals();
   if (process.platform !== 'darwin') app.quit();
+});
+
+app.on('before-quit', () => {
+  killAllTerminals();
 });

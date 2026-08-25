@@ -22,7 +22,8 @@ next-electron-ide/
 │   │   ├── FileTree.tsx     # recursive, lazily-expanded folder tree
 │   │   ├── Tabs.tsx         # open-file tab bar with dirty (•) indicator
 │   │   ├── EditorPane.tsx   # Monaco editor, Ctrl/Cmd+S save binding
-│   │   └── StatusBar.tsx
+│   │   ├── StatusBar.tsx    # also hosts the terminal toggle
+│   │   └── TerminalPanel.tsx # xterm.js, wired to a real shell via node-pty over IPC
 │   └── lib/
 │       ├── electron-api.ts  # shared TS types + `window.electronAPI` global typing
 │       └── language.ts      # file extension → Monaco language id
@@ -52,7 +53,18 @@ npm run dev
 This runs Next.js dev server and Electron concurrently (`concurrently` +
 `wait-on`), with hot reload on the renderer side. Use **File → Open
 Folder…** (or `Cmd/Ctrl+O`) to pick a project directory; click files in the
-sidebar to open them in tabs; `Cmd/Ctrl+S` to save.
+sidebar to open them in tabs; `Cmd/Ctrl+S` to save; **View → Toggle
+Terminal** (or `Cmd/Ctrl+\``, or the Terminal button in the status bar) for
+a real shell (PowerShell/cmd on Windows, `$SHELL` elsewhere) spawned via
+`node-pty` in the main process and rendered with `xterm.js`.
+
+`node-pty` is a native module, so after `npm install` it needs to be built
+against Electron's ABI rather than your system Node's — the `postinstall`
+script (`electron-builder install-app-deps`) does this automatically. If
+the terminal doesn't open, check the Electron devtools console: a missing
+native build toolchain (Python + a C++ compiler; on Windows, the
+"Desktop development with C++" workload) is the usual cause — see
+node-pty's README for platform prerequisites.
 
 ## Production build
 
@@ -67,8 +79,6 @@ This is a scaffold, sized to actually run rather than to be exhaustive.
 Natural next additions, each fairly self-contained given the IPC pattern
 already in place:
 
-- **Integrated terminal** — `xterm.js` in the renderer + `node-pty` spawned
-  from the main process, streamed over IPC.
 - **Multi-root workspaces / recent folders** — persist via `electron-store`.
 - **Search across files** — a `fs:grep` IPC handler (ripgrep binary) + a
   results panel component.

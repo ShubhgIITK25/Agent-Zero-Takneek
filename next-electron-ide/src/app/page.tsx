@@ -10,6 +10,8 @@ import type { FileNode } from '../lib/electron-api';
 // Monaco touches `self`/`window` at module load time, so it must never be
 // evaluated during SSR/static export — load it only on the client.
 const EditorPane = dynamic(() => import('../components/EditorPane'), { ssr: false });
+// xterm.js has the same constraint (touches `window`/`navigator` at import time).
+const TerminalPanel = dynamic(() => import('../components/TerminalPanel'), { ssr: false });
 
 export default function Home() {
   const [rootPath, setRootPath] = useState<string | null>(null);
@@ -19,15 +21,22 @@ export default function Home() {
   const contents = useRef<Map<string, string>>(new Map());
   const savedContents = useRef<Map<string, string>>(new Map());
   const [electronReady, setElectronReady] = useState(false);
+  const [terminalOpen, setTerminalOpen] = useState(false);
 
   useEffect(() => {
     setElectronReady(typeof window !== 'undefined' && !!window.electronAPI);
-    const off = window.electronAPI?.onFolderOpened(async (folderPath) => {
+    const offFolder = window.electronAPI?.onFolderOpened(async (folderPath) => {
       setRootPath(folderPath);
       const entries = await window.electronAPI!.readDir(folderPath);
       setRootEntries(entries);
     });
-    return off;
+    const offTerminal = window.electronAPI?.onTerminalToggle(() => {
+      setTerminalOpen((open) => !open);
+    });
+    return () => {
+      offFolder?.();
+      offTerminal?.();
+    };
   }, []);
 
   const openFolder = useCallback(async () => {
@@ -86,6 +95,10 @@ export default function Home() {
     setOpenFiles((prev) => prev.map((f) => (f.path === activePath ? { ...f, dirty: false } : f)));
   }, [activePath]);
 
+  const toggleTerminal = useCallback(() => {
+    setTerminalOpen((open) => !open);
+  }, []);
+
   const activeFile = openFiles.find((f) => f.path === activePath) || null;
 
   return (
@@ -118,7 +131,15 @@ export default function Home() {
             </div>
           )}
         </div>
-        <StatusBar filePath={activePath} dirty={activeFile?.dirty ?? false} />
+        {electronReady && terminalOpen && (
+          <TerminalPanel id="main-terminal" cwd={rootPath} onClose={() => setTerminalOpen(false)} />
+        )}
+        <StatusBar
+          filePath={activePath}
+          dirty={activeFile?.dirty ?? false}
+          terminalOpen={terminalOpen}
+          onToggleTerminal={electronReady ? toggleTerminal : undefined}
+        />
       </main>
     </div>
   );
