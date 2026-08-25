@@ -7,9 +7,20 @@ type StatusBarProps = {
   dirty: boolean;
   terminalOpen?: boolean;
   onToggleTerminal?: () => void;
+  chatOpen?: boolean;
+  onToggleChat?: () => void;
+  onOpenSettings?: () => void;
 };
 
-export default function StatusBar({ filePath, dirty, terminalOpen, onToggleTerminal }: StatusBarProps) {
+export default function StatusBar({
+  filePath,
+  dirty,
+  terminalOpen,
+  onToggleTerminal,
+  chatOpen,
+  onToggleChat,
+  onOpenSettings,
+}: StatusBarProps) {
   return (
     <div className="status-bar">
       <span className="status-item">{filePath ? filePath : 'No file selected'}</span>
@@ -20,11 +31,31 @@ export default function StatusBar({ filePath, dirty, terminalOpen, onToggleTermi
         {onToggleTerminal && (
           <button
             type="button"
-            className={`status-terminal-toggle${terminalOpen ? ' active' : ''}`}
+            className={`status-toggle-btn${terminalOpen ? ' active' : ''}`}
             onClick={onToggleTerminal}
             title="Toggle Terminal (Ctrl+`)"
           >
             {terminalOpen ? '▾' : '▸'} Terminal
+          </button>
+        )}
+        {onToggleChat && (
+          <button
+            type="button"
+            className={`status-toggle-btn${chatOpen ? ' active' : ''}`}
+            onClick={onToggleChat}
+            title="Toggle AI Chat (Ctrl+L)"
+          >
+            {chatOpen ? '▾' : '▸'} AI Chat
+          </button>
+        )}
+        {onOpenSettings && (
+          <button
+            type="button"
+            className="status-toggle-btn"
+            onClick={onOpenSettings}
+            title="Agent Settings (Ctrl+,)"
+          >
+            ⚙ Settings
           </button>
         )}
       </div>

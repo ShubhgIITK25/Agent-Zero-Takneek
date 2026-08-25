@@ -6,6 +6,10 @@ export type FileNode = {
   isDirectory: boolean;
 };
 
+export type AgentSettings = {
+  envVars: Record<string, string>;
+};
+
 const api = {
   openFolder: (): Promise<string | null> => ipcRenderer.invoke('dialog:openFolder'),
   onFolderOpened: (cb: (folderPath: string) => void) => {
@@ -31,6 +35,8 @@ const api = {
   terminalResize: (id: string, cols: number, rows: number): Promise<void> =>
     ipcRenderer.invoke('terminal:resize', id, cols, rows),
   terminalKill: (id: string): Promise<void> => ipcRenderer.invoke('terminal:kill', id),
+  terminalChangeDir: (id: string, dirPath: string): Promise<void> =>
+    ipcRenderer.invoke('terminal:changeDir', id, dirPath),
   onTerminalData: (cb: (id: string, data: string) => void) => {
     const listener = (_evt: unknown, id: string, data: string) => cb(id, data);
     ipcRenderer.on('terminal:data', listener);
@@ -45,6 +51,25 @@ const api = {
     const listener = () => cb();
     ipcRenderer.on('terminal:toggle', listener);
     return () => ipcRenderer.removeListener('terminal:toggle', listener);
+  },
+
+  // ---- agent settings (API keys / env vars) ----
+  settingsGet: (): Promise<AgentSettings> => ipcRenderer.invoke('settings:get'),
+  settingsSet: (settings: AgentSettings): Promise<boolean> => ipcRenderer.invoke('settings:set', settings),
+  onChatToggle: (cb: () => void) => {
+    const listener = () => cb();
+    ipcRenderer.on('chat:toggle', listener);
+    return () => ipcRenderer.removeListener('chat:toggle', listener);
+  },
+  onSettingsToggle: (cb: () => void) => {
+    const listener = () => cb();
+    ipcRenderer.on('settings:toggle', listener);
+    return () => ipcRenderer.removeListener('settings:toggle', listener);
+  },
+  onFilesRefresh: (cb: () => void) => {
+    const listener = () => cb();
+    ipcRenderer.on('files:refresh', listener);
+    return () => ipcRenderer.removeListener('files:refresh', listener);
   },
 };
 

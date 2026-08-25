@@ -75,7 +75,15 @@ function buildMenu() {
     {
       label: 'View',
       submenu: [
-        { role: 'reload' },
+        {
+          label: 'Refresh Files',
+          accelerator: 'CmdOrCtrl+R',
+          // Deliberately NOT { role: 'reload' } — that reloads the whole
+          // renderer (losing the open folder, tabs, chat session, terminal).
+          // This just tells the renderer to re-read the file tree and any
+          // open files from disk in place.
+          click: () => mainWindow?.webContents.send('files:refresh'),
+        },
         { role: 'toggleDevTools' },
         { type: 'separator' },
         { role: 'resetZoom' },
@@ -88,6 +96,22 @@ function buildMenu() {
           label: 'Toggle Terminal',
           accelerator: 'CmdOrCtrl+`',
           click: () => mainWindow?.webContents.send('terminal:toggle'),
+        },
+      ],
+    },
+    {
+      label: 'Agent',
+      submenu: [
+        {
+          label: 'Toggle AI Chat',
+          accelerator: 'CmdOrCtrl+L',
+          click: () => mainWindow?.webContents.send('chat:toggle'),
+        },
+        { type: 'separator' },
+        {
+          label: 'Agent Settings…',
+          accelerator: 'CmdOrCtrl+,',
+          click: () => mainWindow?.webContents.send('settings:toggle'),
         },
       ],
     },
@@ -162,7 +186,12 @@ ipcMain.handle('shell:showItemInFolder', (_evt, targetPath: string) => {
 
 // ---------- IPC: integrated terminal (node-pty) ----------
 
-const terminals = new Map<string, IPty>();
+type TerminalEntry = {
+  proc: IPty;
+  shellPath: string;
+};
+
+const terminals = new Map<string, TerminalEntry>();
 
 function defaultShell(): string {
   if (process.platform === 'win32') {
@@ -183,7 +212,10 @@ ipcMain.handle('terminal:create', (_evt, id: string, cwd?: string): boolean => {
     env: process.env as { [key: string]: string },
   });
 
-  terminals.set(id, ptyProcess);
+  terminals.set(id, { proc: ptyProcess, shellPath });
+  console.log(`[terminal:create] id=${id} shell=${shellPath} cwd=${
+    cwd || openFolderPath || process.env.HOME || process.env.USERPROFILE || process.cwd()
+  }`);
 
   ptyProcess.onData((data) => {
     mainWindow?.webContents.send('terminal:data', id, data);
@@ -198,24 +230,89 @@ ipcMain.handle('terminal:create', (_evt, id: string, cwd?: string): boolean => {
 });
 
 ipcMain.handle('terminal:write', (_evt, id: string, data: string) => {
-  terminals.get(id)?.write(data);
+  terminals.get(id)?.proc.write(data);
 });
 
 ipcMain.handle('terminal:resize', (_evt, id: string, cols: number, rows: number) => {
   const cleanCols = Math.max(1, Math.floor(cols) || 80);
   const cleanRows = Math.max(1, Math.floor(rows) || 24);
-  terminals.get(id)?.resize(cleanCols, cleanRows);
+  terminals.get(id)?.proc.resize(cleanCols, cleanRows);
 });
 
 ipcMain.handle('terminal:kill', (_evt, id: string) => {
-  terminals.get(id)?.kill();
+  terminals.get(id)?.proc.kill();
   terminals.delete(id);
+});
+
+// There is no OS-level way to change another process's working directory
+// from the outside, so when a folder is opened while a terminal is already
+// running, we "type" a cd command into its shell instead — the same thing a
+// person would do by hand. No-ops if that terminal id isn't currently
+// running (e.g. the terminal panel is closed).
+ipcMain.handle('terminal:changeDir', (_evt, id: string, dirPath: string) => {
+  const term = terminals.get(id);
+  if (!term || !dirPath) {
+    console.log(
+      `[terminal:changeDir] id=${id} dirPath=${dirPath} -> skipped (` +
+        `${!term ? 'no running terminal with this id' : 'no dirPath'})`
+    );
+    return;
+  }
+
+  const shellName = path.basename(term.shellPath).toLowerCase();
+  const quoted = `"${dirPath}"`;
+  let command: string;
+  if (shellName.startsWith('cmd')) {
+    // plain `cd` on cmd.exe won't follow a drive-letter change
+    command = `cd /d ${quoted}`;
+  } else if (shellName.startsWith('powershell') || shellName.startsWith('pwsh')) {
+    command = `Set-Location ${quoted}`;
+  } else {
+    command = `cd ${quoted}`;
+  }
+  console.log(`[terminal:changeDir] id=${id} shell=${shellName} -> ${command}`);
+  term.proc.write(`${command}\r`);
+});
+
+// ---------- IPC: agent settings (API keys / env vars) ----------
+//
+// Frontend-only for now: this just persists whatever the Settings panel
+// collects to a JSON file in Electron's per-user app data directory (NOT
+// inside the project repo, so it's never accidentally committed). The real
+// multi-agent implementation (src/lib/agent.ts) is expected to read these
+// values — see the comment at the top of that file for the intended wiring.
+
+type AgentSettings = {
+  envVars: Record<string, string>;
+};
+
+const DEFAULT_AGENT_SETTINGS: AgentSettings = { envVars: {} };
+
+function settingsFilePath(): string {
+  return path.join(app.getPath('userData'), 'agent-settings.json');
+}
+
+ipcMain.handle('settings:get', async (): Promise<AgentSettings> => {
+  try {
+    const raw = await fs.readFile(settingsFilePath(), 'utf-8');
+    const parsed = JSON.parse(raw);
+    return { envVars: {}, ...parsed };
+  } catch {
+    return DEFAULT_AGENT_SETTINGS;
+  }
+});
+
+ipcMain.handle('settings:set', async (_evt, settings: AgentSettings): Promise<boolean> => {
+  const target = settingsFilePath();
+  await fs.mkdir(path.dirname(target), { recursive: true });
+  await fs.writeFile(target, JSON.stringify(settings, null, 2), 'utf-8');
+  return true;
 });
 
 function killAllTerminals() {
   for (const [id, term] of terminals) {
     try {
-      term.kill();
+      term.proc.kill();
     } catch {
       // already gone
     }

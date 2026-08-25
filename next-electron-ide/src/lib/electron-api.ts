@@ -4,6 +4,10 @@ export type FileNode = {
   isDirectory: boolean;
 };
 
+export type AgentSettings = {
+  envVars: Record<string, string>;
+};
+
 export interface ElectronAPI {
   openFolder: () => Promise<string | null>;
   onFolderOpened: (cb: (folderPath: string) => void) => () => void;
@@ -21,9 +25,17 @@ export interface ElectronAPI {
   terminalWrite: (id: string, data: string) => Promise<void>;
   terminalResize: (id: string, cols: number, rows: number) => Promise<void>;
   terminalKill: (id: string) => Promise<void>;
+  terminalChangeDir: (id: string, dirPath: string) => Promise<void>;
   onTerminalData: (cb: (id: string, data: string) => void) => () => void;
   onTerminalExit: (cb: (id: string, exitCode: number) => void) => () => void;
   onTerminalToggle: (cb: () => void) => () => void;
+
+  // ---- agent settings (API keys / env vars) ----
+  settingsGet: () => Promise<AgentSettings>;
+  settingsSet: (settings: AgentSettings) => Promise<boolean>;
+  onChatToggle: (cb: () => void) => () => void;
+  onSettingsToggle: (cb: () => void) => () => void;
+  onFilesRefresh: (cb: () => void) => () => void;
 }
 
 declare global {
