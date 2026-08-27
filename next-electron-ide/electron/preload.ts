@@ -10,6 +10,44 @@ export type AgentSettings = {
   envVars: Record<string, string>;
 };
 
+export type RetrievalMatch = {
+  file: string;
+  symbol: string;
+  kind: string;
+  line_start: number;
+  line_end: number;
+  snippet: string;
+  why_relevant: string;
+  score: number;
+};
+
+export type RetrievalQueryResult = {
+  results: RetrievalMatch[];
+  candidates_considered?: number;
+  vector_search?: boolean;
+  reranked?: boolean;
+  error?: string;
+};
+
+export type RetrievalFileResult = {
+  path: string;
+  line_start: number;
+  line_end: number;
+  content: string;
+  error?: string;
+};
+
+export type RetrievalStatus = {
+  state: 'idle' | 'indexing' | 'ready' | 'error' | 'unavailable';
+  codebaseId?: string;
+  message?: string;
+  files_indexed?: number;
+  chunks_indexed?: number;
+  files_updated?: number;
+  chunks_updated?: number;
+  vector_search?: boolean;
+};
+
 const api = {
   openFolder: (): Promise<string | null> => ipcRenderer.invoke('dialog:openFolder'),
   onFolderOpened: (cb: (folderPath: string) => void) => {
@@ -70,6 +108,22 @@ const api = {
     const listener = () => cb();
     ipcRenderer.on('files:refresh', listener);
     return () => ipcRenderer.removeListener('files:refresh', listener);
+  },
+
+  // ---- code retrieval ----
+  // Backed by the separate Python retrieval service (retrieval-service/) —
+  // see electron/main.ts's retrieval:* handlers for how codebase_id
+  // resolution and isolation actually work. The renderer never needs to
+  // know or pass a codebase_id itself; main.ts already knows which folder
+  // is open.
+  retrievalQuery: (query: string, k?: number): Promise<RetrievalQueryResult> =>
+    ipcRenderer.invoke('retrieval:query', query, k),
+  retrievalOpenFile: (path: string, lineStart?: number, lineEnd?: number): Promise<RetrievalFileResult> =>
+    ipcRenderer.invoke('retrieval:openFile', path, lineStart, lineEnd),
+  onRetrievalStatus: (cb: (status: RetrievalStatus) => void) => {
+    const listener = (_evt: unknown, status: RetrievalStatus) => cb(status);
+    ipcRenderer.on('retrieval:status', listener);
+    return () => ipcRenderer.removeListener('retrieval:status', listener);
   },
 };
 

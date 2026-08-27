@@ -58,6 +58,17 @@
     },
     "asarUnpack": [
       "node_modules/node-pty/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "retrieval-service",
+        "to": "retrieval-service",
+        "filter": [
+          "**/*",
+          "!**/__pycache__/**",
+          "!**/.venv/**"
+        ]
+      }
     ]
   }
 }

@@ -7,7 +7,7 @@ import Tabs, { OpenFile } from '../components/Tabs';
 import StatusBar from '../components/StatusBar';
 import ChatPanel from '../components/ChatPanel';
 import SettingsPanel from '../components/SettingsPanel';
-import type { FileNode } from '../lib/electron-api';
+import type { FileNode, RetrievalStatus } from '../lib/electron-api';
 
 // Monaco touches `self`/`window` at module load time, so it must never be
 // evaluated during SSR/static export — load it only on the client.
@@ -29,6 +29,7 @@ export default function Home() {
   const [chatOpen, setChatOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [refreshToken, setRefreshToken] = useState(0);
+  const [retrievalStatus, setRetrievalStatus] = useState<RetrievalStatus | null>(null);
 
   useEffect(() => {
     setElectronReady(typeof window !== 'undefined' && !!window.electronAPI);
@@ -51,12 +52,16 @@ export default function Home() {
     const offFilesRefresh = window.electronAPI?.onFilesRefresh(() => {
       refreshWorkspaceRef.current();
     });
+    const offRetrievalStatus = window.electronAPI?.onRetrievalStatus((status) => {
+      setRetrievalStatus(status);
+    });
     return () => {
       offFolder?.();
       offTerminal?.();
       offChat?.();
       offSettings?.();
       offFilesRefresh?.();
+      offRetrievalStatus?.();
     };
   }, []);
 
@@ -228,6 +233,7 @@ export default function Home() {
           chatOpen={chatOpen}
           onToggleChat={electronReady ? toggleChat : undefined}
           onOpenSettings={electronReady ? () => setSettingsOpen(true) : undefined}
+          retrievalStatus={retrievalStatus}
         />
       </main>
       {electronReady && chatOpen && (

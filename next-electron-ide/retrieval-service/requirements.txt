@@ -1,0 +1,48 @@
+# Retrieval service — Python dependencies
+#
+# Every one of these is chosen to keep the dependency (and disk/RAM) footprint
+# small, since this has to run comfortably alongside the IDE itself on the
+# same 16GB RAM / 8GB VRAM budget the PS caps local models at:
+#
+#   tree-sitter + official per-language grammar packages
+#       Real AST parsing per language, no LLM cost, runs locally.
+#       Deliberately the official tree-sitter-org grammar wheels
+#       (tree-sitter-python, tree-sitter-javascript, ...) rather than a
+#       bundled "language pack" meta-package — those change API shape
+#       between majors without warning; the official packages have one
+#       stable contract (`Language(mod.language())`) that's been true
+#       across tree-sitter 0.23+.
+#
+#   fastembed
+#       ONNX-runtime-backed local embedding + reranking, deliberately
+#       chosen over sentence-transformers to avoid pulling in torch (a
+#       multi-GB dependency that buys nothing here). Default models are
+#       ~30-130M params — small, disclosed, and trivially within the
+#       PS's <=80B-params constraint for every model in the pipeline.
+#
+#   sqlite-vec
+#       A SQLite extension that adds vector search as a virtual table.
+#       Chosen over a standalone vector DB (LanceDB, Chroma, ...) so the
+#       whole per-project index — vectors, keyword (FTS5/BM25) index,
+#       and the symbol/call graph — lives in ONE sqlite file with ONE
+#       dependency, and isolation between projects is just "which file
+#       are we opening" rather than "which server/collection are we
+#       trusting not to leak."
+#
+#   pathspec
+#       Pure-Python .gitignore matching (no native build), so indexing
+#       walks the project the same way git does.
+#
+# Install with:  pip install -r requirements.txt
+tree-sitter>=0.23
+tree-sitter-python>=0.23
+tree-sitter-javascript>=0.23
+tree-sitter-typescript>=0.23
+tree-sitter-go>=0.23
+tree-sitter-rust>=0.23
+tree-sitter-java>=0.23
+tree-sitter-c>=0.23
+tree-sitter-cpp>=0.23
+fastembed>=0.3
+sqlite-vec>=0.1
+pathspec>=0.12

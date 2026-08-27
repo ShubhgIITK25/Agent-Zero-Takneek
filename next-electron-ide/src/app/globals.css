@@ -272,6 +272,40 @@ button:hover {
   background: rgba(255, 255, 255, 0.15);
 }
 
+.status-retrieval {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.status-retrieval::before {
+  content: '';
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.6);
+}
+
+.status-retrieval-indexing::before {
+  background: #f0c645;
+  animation: status-retrieval-pulse 1.2s ease-in-out infinite;
+}
+
+.status-retrieval-ready::before {
+  background: #6fcf7f;
+}
+
+.status-retrieval-error::before,
+.status-retrieval-unavailable::before {
+  background: #e5686e;
+}
+
+@keyframes status-retrieval-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+
 /* ---------- Terminal panel ---------- */
 
 .terminal-panel {
