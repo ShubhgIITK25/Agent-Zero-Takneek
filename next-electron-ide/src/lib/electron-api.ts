@@ -8,6 +8,44 @@ export type AgentSettings = {
   envVars: Record<string, string>;
 };
 
+export type RetrievalMatch = {
+  file: string;
+  symbol: string;
+  kind: string;
+  line_start: number;
+  line_end: number;
+  snippet: string;
+  why_relevant: string;
+  score: number;
+};
+
+export type RetrievalQueryResult = {
+  results: RetrievalMatch[];
+  candidates_considered?: number;
+  vector_search?: boolean;
+  reranked?: boolean;
+  error?: string;
+};
+
+export type RetrievalFileResult = {
+  path: string;
+  line_start: number;
+  line_end: number;
+  content: string;
+  error?: string;
+};
+
+export type RetrievalStatus = {
+  state: 'idle' | 'indexing' | 'ready' | 'error' | 'unavailable';
+  codebaseId?: string;
+  message?: string;
+  files_indexed?: number;
+  chunks_indexed?: number;
+  files_updated?: number;
+  chunks_updated?: number;
+  vector_search?: boolean;
+};
+
 export interface ElectronAPI {
   openFolder: () => Promise<string | null>;
   onFolderOpened: (cb: (folderPath: string) => void) => () => void;
@@ -36,6 +74,11 @@ export interface ElectronAPI {
   onChatToggle: (cb: () => void) => () => void;
   onSettingsToggle: (cb: () => void) => () => void;
   onFilesRefresh: (cb: () => void) => () => void;
+
+  // ---- code retrieval ----
+  retrievalQuery: (query: string, k?: number) => Promise<RetrievalQueryResult>;
+  retrievalOpenFile: (path: string, lineStart?: number, lineEnd?: number) => Promise<RetrievalFileResult>;
+  onRetrievalStatus: (cb: (status: RetrievalStatus) => void) => () => void;
 }
 
 declare global {

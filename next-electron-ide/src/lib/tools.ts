@@ -8,6 +8,16 @@
  * before it runs — see the PS's "any side-effect action needs human
  * approval" requirement. Add new tools here; nothing else needs to change
  * except the LLM actually deciding to call them (src/lib/llm.ts).
+ *
+ * retrieve_context / open_file are a deliberate two-tier pair (see
+ * retrieval-service/retrieval.py for the pipeline behind retrieve_context):
+ * retrieve_context is the cheap default — a handful of relevant snippets,
+ * not whole files — and open_file is the deliberate, separate step for
+ * when a snippet genuinely isn't enough. Dumping full files into every
+ * small model's context by default is the fastest way to blow the PS's
+ * cost ceiling (cost is weighted 2x harder than time in the scoring
+ * formula), so the system prompt (agent.ts) steers the model to reach for
+ * retrieve_context first and open_file only on a deliberate follow-up.
  */
 
 import type { LLMToolSchema } from './llm';
@@ -41,6 +51,65 @@ function requireStringArg(args: Record<string, unknown>, name: string): string {
 }
 
 export const TOOLS: ToolDefinition[] = [
+  {
+    schema: {
+      name: 'retrieve_context',
+      description:
+        'Search the currently open codebase for code relevant to a natural-language or symbol query. ' +
+        'Returns a handful of the most relevant function/class snippets (not whole files), each with a ' +
+        'file path, line range, and why it was surfaced. This is the default, cheap way to find code — ' +
+        'prefer it over read_file/list_dir when you do not already know the exact file you need.',
+      parameters: {
+        type: 'object',
+        properties: {
+          query: { type: 'string', description: 'What you are looking for, e.g. "the function that validates a session token"' },
+          k: { type: 'number', description: 'Max number of snippets to return (default 8)' },
+        },
+        required: ['query'],
+      },
+    },
+    sideEffecting: false,
+    execute: async (args) => {
+      const query = requireStringArg(args, 'query');
+      const k = typeof args.k === 'number' ? args.k : undefined;
+      const result = await requireElectronAPI().retrievalQuery(query, k);
+      if (result.error) return `Retrieval unavailable: ${result.error}`;
+      if (result.results.length === 0) return 'No relevant code found for that query.';
+      return result.results
+        .map(
+          (r) =>
+            `${r.file}:${r.line_start}-${r.line_end} (${r.kind} ${r.symbol}) — ${r.why_relevant}\n${r.snippet}`
+        )
+        .join('\n\n---\n\n');
+    },
+  },
+  {
+    schema: {
+      name: 'open_file',
+      description:
+        'Open the full contents of a file from the currently open codebase, by the project-relative path ' +
+        'returned from retrieve_context. Use this only as a deliberate follow-up when a retrieve_context ' +
+        'snippet is not enough — it costs more tokens than a snippet, so do not use it as your first move.',
+      parameters: {
+        type: 'object',
+        properties: {
+          path: { type: 'string', description: 'Project-relative file path, e.g. "src/auth.py"' },
+          line_start: { type: 'number', description: 'Optional: first line to include (1-indexed)' },
+          line_end: { type: 'number', description: 'Optional: last line to include' },
+        },
+        required: ['path'],
+      },
+    },
+    sideEffecting: false,
+    execute: async (args) => {
+      const path = requireStringArg(args, 'path');
+      const lineStart = typeof args.line_start === 'number' ? args.line_start : undefined;
+      const lineEnd = typeof args.line_end === 'number' ? args.line_end : undefined;
+      const result = await requireElectronAPI().retrievalOpenFile(path, lineStart, lineEnd);
+      if (result.error) return `Could not open ${path}: ${result.error}`;
+      return `${result.path}:${result.line_start}-${result.line_end}\n${result.content}`;
+    },
+  },
   {
     schema: {
       name: 'read_file',

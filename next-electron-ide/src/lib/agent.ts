@@ -17,13 +17,20 @@
  *   - `/bytheway`: a genuinely isolated call — fresh system+user messages
  *     only, no access to the running session's history or tools — that
  *     does NOT touch or get appended to the main conversation
+ *   - Codebase-aware RETRIEVAL: retrieve_context/open_file (tools.ts) hit
+ *     the separate retrieval-service/ process — real tree-sitter AST
+ *     chunking, BM25 + vector recall, 1-hop call-graph expansion, and
+ *     reranking, isolated per project via codebase_id (see
+ *     retrieval-service/server.py). The system prompt below steers the
+ *     model to reach for retrieve_context first, since it returns a few
+ *     relevant snippets instead of whole files — read_file/list_dir still
+ *     exist for when the model already knows the exact absolute path it
+ *     wants (e.g. a file it just wrote itself).
  *
  * What is explicitly NOT implemented — designed on purpose to stay out of
  * scope here, not overlooked:
  *   - Model/provider ROUTING (always calls whatever llm.ts is wired to)
  *   - Context COMPACTION (history just grows; nothing trims/summarizes it)
- *   - Codebase-aware RETRIEVAL (only sees files the model explicitly asks
- *     to read_file/list_dir, or the one "include current file" checkbox)
  *   - Multi-agent decomposition (this is one loop, one model, one role)
  *   - Session persistence across app restarts (AgentSession lives in memory
  *     only — closing the chat panel loses it)
@@ -60,11 +67,16 @@ export type AgentCallbacks = {
 
 function buildSystemPrompt(): string {
   return (
-    'You are a coding agent embedded in a desktop IDE. You have tools to read ' +
-    'and write files, list directories, delete paths, and run shell commands ' +
-    'in the integrated terminal. Prefer reading files before editing them. ' +
-    'Explain what you are about to do before calling a tool that writes, ' +
-    'deletes, or runs a command — those require the user to approve them.'
+    'You are a coding agent embedded in a desktop IDE. You have tools to search ' +
+    'and read the open codebase, write and delete files, list directories, and ' +
+    'run shell commands in the integrated terminal.\n\n' +
+    'To find relevant code, call retrieve_context first — it searches the whole ' +
+    'project and returns a handful of relevant snippets, not entire files. Only ' +
+    'call open_file (or read_file for a path you already know) as a deliberate ' +
+    'follow-up when a snippet genuinely is not enough — dumping whole files into ' +
+    'context by default wastes tokens you do not have to spare.\n\n' +
+    'Explain what you are about to do before calling a tool that writes, deletes, ' +
+    'or runs a command — those require the user to approve them.'
   );
 }
 
