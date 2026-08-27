@@ -19,6 +19,8 @@ const TERMINAL_ID = 'main-terminal';
 
 export default function Home() {
   const [rootPath, setRootPath] = useState<string | null>(null);
+  const [selectedDirectoryPath, setSelectedDirectoryPath] = useState<string | null>(null);
+  const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [rootEntries, setRootEntries] = useState<FileNode[]>([]);
   const [openFiles, setOpenFiles] = useState<OpenFile[]>([]);
   const [activePath, setActivePath] = useState<string | null>(null);
@@ -35,6 +37,8 @@ export default function Home() {
     setElectronReady(typeof window !== 'undefined' && !!window.electronAPI);
     const offFolder = window.electronAPI?.onFolderOpened(async (folderPath) => {
       setRootPath(folderPath);
+      setSelectedDirectoryPath(folderPath);
+      setSelectedPath(folderPath);
       const entries = await window.electronAPI!.readDir(folderPath);
       setRootEntries(entries);
       console.log('[page] onFolderOpened ->', folderPath, '-> terminalChangeDir');
@@ -70,6 +74,8 @@ export default function Home() {
     const folderPath = await window.electronAPI.openFolder();
     if (!folderPath) return;
     setRootPath(folderPath);
+    setSelectedDirectoryPath(folderPath);
+    setSelectedPath(folderPath);
     const entries = await window.electronAPI.readDir(folderPath);
     setRootEntries(entries);
     console.log('[page] openFolder ->', folderPath, '-> terminalChangeDir');
@@ -162,6 +168,63 @@ export default function Home() {
     refreshWorkspaceRef.current = refreshWorkspace;
   }, [refreshWorkspace]);
 
+  const createWorkspaceEntry = useCallback(
+    async (kind: 'file' | 'folder', name: string) => {
+      if (!rootPath || !window.electronAPI) return;
+      if (name === '.' || name === '..' || /[\\/]/.test(name)) {
+        window.alert('Use a direct child name without path separators.');
+        return;
+      }
+
+      const parentPath = selectedDirectoryPath || rootPath;
+      const separator = parentPath.includes('\\') ? '\\' : '/';
+      const entryPath = `${parentPath.replace(/[\\/]$/, '')}${separator}${name}`;
+      try {
+        if (kind === 'file') {
+          await window.electronAPI.createFile(entryPath);
+          await refreshWorkspace();
+          await openFile(entryPath);
+        } else {
+          await window.electronAPI.createFolder(entryPath);
+          await refreshWorkspace();
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : `Could not create ${kind}.`;
+        console.error(`[explorer] Could not create ${entryPath}:`, error);
+        window.alert(message);
+      }
+    },
+    [openFile, refreshWorkspace, rootPath, selectedDirectoryPath]
+  );
+
+  const selectDirectory = useCallback((path: string) => {
+    setSelectedDirectoryPath(path);
+    setSelectedPath(path);
+    setActivePath(null);
+  }, []);
+
+  const deleteWorkspacePath = useCallback(
+    async (targetPath: string) => {
+      if (!rootPath || targetPath === rootPath || !window.electronAPI) return;
+      const name = targetPath.split(/[\\/]/).pop() || targetPath;
+      if (!window.confirm(`Delete "${name}"?`)) return;
+      try {
+        await window.electronAPI.deletePath(targetPath);
+        if (openFiles.some((file) => file.path === targetPath)) closeFile(targetPath);
+        if (selectedDirectoryPath === targetPath || selectedDirectoryPath?.startsWith(`${targetPath}\\`) || selectedDirectoryPath?.startsWith(`${targetPath}/`)) {
+          setSelectedDirectoryPath(rootPath);
+        }
+        setSelectedPath(null);
+        await refreshWorkspace();
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Could not delete the selected item.';
+        console.error(`[explorer] Could not delete ${targetPath}:`, error);
+        window.alert(message);
+      }
+    },
+    [closeFile, openFiles, refreshWorkspace, rootPath, selectedDirectoryPath]
+  );
+
   const toggleTerminal = useCallback(() => {
     setTerminalOpen((open) => !open);
   }, []);
@@ -197,10 +260,17 @@ export default function Home() {
           rootPath={rootPath}
           rootEntries={rootEntries}
           activePath={activePath}
+          selectedPath={selectedPath}
+          selectedDirectoryPath={selectedDirectoryPath}
           refreshToken={refreshToken}
           onOpenFile={openFile}
+          onSelectDirectory={selectDirectory}
+          onSelectPath={setSelectedPath}
           onOpenFolder={openFolder}
           onRefresh={() => refreshWorkspace()}
+          onCreateFile={(name) => createWorkspaceEntry('file', name)}
+          onCreateFolder={(name) => createWorkspaceEntry('folder', name)}
+          onDeletePath={deleteWorkspacePath}
         />
       </aside>
       <main className="main-panel">

@@ -79,6 +79,49 @@ button:hover {
   color: var(--text-dim);
 }
 
+.file-tree-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.file-tree-create-input {
+  width: calc(100% - 16px);
+  margin: 4px 8px 6px;
+  padding: 4px 6px;
+  background: var(--bg-app);
+  border: 1px solid var(--accent);
+  border-radius: 2px;
+  color: var(--text-main);
+  outline: none;
+  font: inherit;
+}
+
+.file-tree-create-form {
+  margin: 0;
+}
+
+.file-tree-action-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-dim);
+  font-size: 14px;
+  line-height: 1;
+  padding: 2px 4px;
+  cursor: pointer;
+  border-radius: 3px;
+}
+
+.file-tree-action-btn:hover {
+  color: var(--text-main);
+  background: var(--bg-hover);
+}
+
+.file-tree-action-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
 .file-tree-refresh-btn {
   background: transparent;
   border: none;
@@ -133,6 +176,20 @@ button:hover {
 
 .tree-row.active {
   background: #37373d;
+}
+
+.tree-row.selected-directory,
+.file-tree-root.selected-directory {
+  outline: 1px solid rgba(59, 130, 246, 0.55);
+  outline-offset: -1px;
+}
+
+.tree-row.selected-item {
+  background: #37373d;
+}
+
+.file-tree-root.selected-directory {
+  background: var(--bg-hover);
 }
 
 .chevron {
@@ -302,8 +359,15 @@ button:hover {
 }
 
 @keyframes status-retrieval-pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.35; }
+
+  0%,
+  100% {
+    opacity: 1;
+  }
+
+  50% {
+    opacity: 0.35;
+  }
 }
 
 /* ---------- Terminal panel ---------- */
