@@ -1,9 +1,9 @@
-'use client';
+"use client";
 
-import { useEffect, useRef } from 'react';
-import { Terminal } from '@xterm/xterm';
-import { FitAddon } from '@xterm/addon-fit';
-import '@xterm/xterm/css/xterm.css';
+import { useEffect, useRef } from "react";
+import { Terminal } from "@xterm/xterm";
+import { FitAddon } from "@xterm/addon-fit";
+import "@xterm/xterm/css/xterm.css";
 
 type TerminalPanelProps = {
   id: string;
@@ -11,7 +11,11 @@ type TerminalPanelProps = {
   onClose: () => void;
 };
 
-export default function TerminalPanel({ id, cwd, onClose }: TerminalPanelProps) {
+export default function TerminalPanel({
+  id,
+  cwd,
+  onClose,
+}: TerminalPanelProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
@@ -24,9 +28,9 @@ export default function TerminalPanel({ id, cwd, onClose }: TerminalPanelProps) 
       fontFamily: "'JetBrains Mono', 'Fira Code', Menlo, Consolas, monospace",
       fontSize: 13,
       theme: {
-        background: '#181818',
-        foreground: '#d4d4d4',
-        cursor: '#d4d4d4',
+        background: "#181818",
+        foreground: "#d4d4d4",
+        cursor: "#d4d4d4",
       },
       cursorBlink: true,
     });
@@ -47,7 +51,8 @@ export default function TerminalPanel({ id, cwd, onClose }: TerminalPanelProps) 
     // size. Guard both, and only wire up the pty once the first fit succeeds.
     const safeFit = (): boolean => {
       const el = containerRef.current;
-      if (disposed || !el || el.clientWidth === 0 || el.clientHeight === 0) return false;
+      if (disposed || !el || el.clientWidth === 0 || el.clientHeight === 0)
+        return false;
       try {
         fitAddon.fit();
         return true;
@@ -85,7 +90,28 @@ export default function TerminalPanel({ id, cwd, onClose }: TerminalPanelProps) 
 
     const offExit = window.electronAPI.onTerminalExit((incomingId) => {
       if (incomingId === id) {
-        term.write('\r\n\x1b[2m[process exited]\x1b[0m\r\n');
+        term.write("\r\n\x1b[2m[process exited]\x1b[0m\r\n");
+      }
+    });
+
+    const activeCommandIds = new Set<string>();
+    const offOrchestrator = window.electronAPI.onOrchestratorEvent?.((msg: any) => {
+
+      if (msg.type === 'log') {
+        term.write(`\r\n\x1b[36m[Agent]\x1b[0m ${msg.message}\r\n`);
+      }      
+      
+      if (msg.type === 'tool_call' && msg.name === 'run_command') {
+        activeCommandIds.add(msg.callId);
+      }
+      
+      if (msg.type === 'tool_result' && activeCommandIds.has(msg.callId)) {
+        activeCommandIds.delete(msg.callId);
+        
+        if (typeof msg.result === 'string') {
+          const formattedOutput = msg.result.replace(/\n/g, '\r\n');          
+          term.write(`${formattedOutput}\r\n`);
+        }
       }
     });
 
@@ -111,6 +137,7 @@ export default function TerminalPanel({ id, cwd, onClose }: TerminalPanelProps) 
       dataDisposable.dispose();
       offData();
       offExit();
+      offOrchestrator?.();
       term.dispose();
       if (started) window.electronAPI?.terminalKill(id);
     };
@@ -121,7 +148,11 @@ export default function TerminalPanel({ id, cwd, onClose }: TerminalPanelProps) 
     <div className="terminal-panel">
       <div className="terminal-panel-header">
         <span>TERMINAL</span>
-        <button className="terminal-close-btn" onClick={onClose} title="Close terminal">
+        <button
+          className="terminal-close-btn"
+          onClick={onClose}
+          title="Close terminal"
+        >
           ×
         </button>
       </div>
