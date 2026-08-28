@@ -1,0 +1,291 @@
+/**
+ * ============================================================================
+ *  TOOLS — what an agent can actually do, and what needs permission first
+ * ============================================================================
+ * These run inside the orchestrator process, which has full Node access. Two
+ * design points worth defending:
+ *
+ * 1. COMMANDS ARE CAPTURED, NOT TYPED INTO THE USER'S TERMINAL.
+ *    The IDE's xterm panel is an interactive shell for the human. An agent
+ *    needs the *output* of a command as feedback ("did the tests pass?"), and
+ *    a pty gives you interleaved, escape-code-laden text with no exit status.
+ *    So `run_command` uses execFile and returns {stdout, stderr, exitCode},
+ *    and separately mirrors the command into the visible terminal so the user
+ *    sees what happened. Feedback for the agent, visibility for the human.
+ *
+ * 2. WRITES ARE PROPOSED, NOT PERFORMED.
+ *    `propose_edit` does not touch the disk. It returns a diff to the
+ *    orchestrator, which raises an approval_request and blocks. Only after a
+ *    decision comes back does the orchestrator write the accepted hunks. This
+ *    is what makes the approval gate real rather than advisory — there is no
+ *    code path in this file that writes a file the user has not seen.
+ *
+ * `sideEffecting` marks the tools that must never run unapproved.
+ */
+
+import { execFile } from 'child_process';
+import * as fs from 'fs/promises';
+import * as path from 'path';
+import { ToolSchema } from './providers';
+import { buildFileDiff } from './diff';
+import { FileDiff } from './protocol';
+
+export type ToolContext = {
+  rootPath: string;
+  retrievalUrl: string | null;
+  /** Mirrors a command into the IDE's visible terminal panel. */
+  echoToTerminal: (command: string) => void;
+  /** Set by the orchestrator when a proposal needs approving. */
+  proposeDiff: (diffs: FileDiff[], summary: string) => Promise<{ approved: boolean; written: string[] }>;
+};
+
+export type ToolResult = { content: string; contextItems?: { path: string; lines?: string; tokens: number }[] };
+
+export type Tool = {
+  schema: ToolSchema;
+  sideEffecting: boolean;
+  run: (args: Record<string, unknown>, ctx: ToolContext) => Promise<ToolResult>;
+};
+
+function str(args: Record<string, unknown>, key: string, required = true): string {
+  const v = args[key];
+  if (typeof v !== 'string' || !v) {
+    if (required) throw new Error(`"${key}" must be a non-empty string`);
+    return '';
+  }
+  return v;
+}
+
+/** Every path an agent supplies is confined to the open project. */
+function resolveInRoot(rootPath: string, p: string): string {
+  const resolved = path.resolve(rootPath, p);
+  const rel = path.relative(rootPath, resolved);
+  if (rel.startsWith('..') || path.isAbsolute(rel)) {
+    throw new Error(`path "${p}" is outside the open project folder — refused`);
+  }
+  return resolved;
+}
+
+function execCapture(
+  command: string,
+  cwd: string,
+  timeoutMs = 120_000
+): Promise<{ stdout: string; stderr: string; code: number }> {
+  return new Promise((resolve) => {
+    const shell = process.platform === 'win32' ? 'powershell.exe' : '/bin/sh';
+    const shellArgs = process.platform === 'win32' ? ['-NoProfile', '-Command', command] : ['-c', command];
+    execFile(shell, shellArgs, { cwd, timeout: timeoutMs, maxBuffer: 4 * 1024 * 1024 }, (err, stdout, stderr) => {
+      resolve({
+        stdout: String(stdout ?? ''),
+        stderr: String(stderr ?? ''),
+        code: err && typeof (err as any).code === 'number' ? (err as any).code : err ? 1 : 0,
+      });
+    });
+  });
+}
+
+/** Trim tool output so one noisy command cannot blow the context window. */
+function clamp(text: string, max = 6000): string {
+  if (text.length <= max) return text;
+  const head = text.slice(0, max * 0.6);
+  const tail = text.slice(-max * 0.35);
+  return `${head}\n... [${text.length - max} characters elided] ...\n${tail}`;
+}
+
+export const TOOLS: Tool[] = [
+  {
+    schema: {
+      name: 'retrieve_context',
+      description:
+        'Search the open codebase for code relevant to a natural-language or symbol query. Returns the most ' +
+        'relevant function/class snippets with file paths and line ranges. This is the cheap default — use it ' +
+        'before reading whole files.',
+      parameters: {
+        type: 'object',
+        properties: {
+          query: { type: 'string', description: 'What you are looking for' },
+          k: { type: 'number', description: 'Max snippets (default 8)' },
+        },
+        required: ['query'],
+      },
+    },
+    sideEffecting: false,
+    run: async (args, ctx) => {
+      const query = str(args, 'query');
+      if (!ctx.retrievalUrl) return { content: 'Retrieval service unavailable. Use list_dir / read_file instead.' };
+      const res = await fetch(`${ctx.retrievalUrl}/query`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query, k: typeof args.k === 'number' ? args.k : 8, root_path: ctx.rootPath }),
+      });
+      if (!res.ok) return { content: `Retrieval failed (${res.status}).` };
+      const data: any = await res.json();
+      if (data.error) return { content: `Retrieval unavailable: ${data.error}` };
+      const results: any[] = data.results ?? [];
+      if (!results.length) return { content: 'No relevant code found.' };
+      return {
+        content: results
+          .map((r) => `${r.file}:${r.line_start}-${r.line_end} (${r.kind} ${r.symbol}) — ${r.why_relevant}\n${r.snippet}`)
+          .join('\n\n---\n\n'),
+        contextItems: results.map((r) => ({
+          path: r.file,
+          lines: `${r.line_start}-${r.line_end}`,
+          tokens: Math.ceil(String(r.snippet ?? '').length / 3.6),
+        })),
+      };
+    },
+  },
+  {
+    schema: {
+      name: 'read_file',
+      description: 'Read a file from the open project by project-relative path. Costs more tokens than retrieve_context — use deliberately.',
+      parameters: {
+        type: 'object',
+        properties: {
+          path: { type: 'string', description: 'Project-relative path' },
+          line_start: { type: 'number' },
+          line_end: { type: 'number' },
+        },
+        required: ['path'],
+      },
+    },
+    sideEffecting: false,
+    run: async (args, ctx) => {
+      const rel = str(args, 'path');
+      const full = resolveInRoot(ctx.rootPath, rel);
+      const content = await fs.readFile(full, 'utf8');
+      const lines = content.split('\n');
+      const start = typeof args.line_start === 'number' ? Math.max(1, args.line_start) : 1;
+      const end = typeof args.line_end === 'number' ? Math.min(lines.length, args.line_end) : lines.length;
+      const slice = lines.slice(start - 1, end).join('\n');
+      return {
+        content: `${rel}:${start}-${end}\n${clamp(slice)}`,
+        contextItems: [{ path: rel, lines: `${start}-${end}`, tokens: Math.ceil(slice.length / 3.6) }],
+      };
+    },
+  },
+  {
+    schema: {
+      name: 'list_dir',
+      description: 'List files and folders inside a project-relative directory.',
+      parameters: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] },
+    },
+    sideEffecting: false,
+    run: async (args, ctx) => {
+      const rel = str(args, 'path', false) || '.';
+      const full = resolveInRoot(ctx.rootPath, rel);
+      const entries = await fs.readdir(full, { withFileTypes: true });
+      return {
+        content: entries
+          .filter((e) => !['node_modules', '.git', '.next', '__pycache__', '.venv'].includes(e.name))
+          .map((e) => `${e.isDirectory() ? 'dir ' : 'file'}  ${path.posix.join(rel === '.' ? '' : rel, e.name)}`)
+          .join('\n'),
+      };
+    },
+  },
+  {
+    schema: {
+      name: 'propose_edit',
+      description:
+        'Propose a change to a file. This does NOT write to disk — it shows the user a diff for block-by-block ' +
+        'approval, and only the blocks they accept get written. Always supply the complete intended file content. ' +
+        'The result tells you exactly what ended up on disk, which may be a partial application.',
+      parameters: {
+        type: 'object',
+        properties: {
+          path: { type: 'string', description: 'Project-relative path' },
+          content: { type: 'string', description: 'Complete new file content' },
+          summary: { type: 'string', description: 'One line: what this change does and why' },
+        },
+        required: ['path', 'content', 'summary'],
+      },
+    },
+    sideEffecting: true,
+    run: async (args, ctx) => {
+      const rel = str(args, 'path');
+      const newContent = typeof args.content === 'string' ? args.content : '';
+      const summary = str(args, 'summary', false) || `edit ${rel}`;
+      const full = resolveInRoot(ctx.rootPath, rel);
+
+      let oldContent: string | null = null;
+      try {
+        oldContent = await fs.readFile(full, 'utf8');
+      } catch {
+        oldContent = null; // new file
+      }
+
+      const diff = buildFileDiff(rel, oldContent, newContent);
+      if (diff.blocks.length === 0) return { content: `No change: ${rel} already matches the proposed content.` };
+
+      const outcome = await ctx.proposeDiff([diff], summary);
+      if (!outcome.approved) {
+        // Telling the model precisely what happened is what lets it work
+        // around a rejection instead of blindly re-proposing the same edit.
+        return { content: `The user REJECTED all changes to ${rel}. The file is unchanged on disk. Do not re-propose the same edit — either take a different approach or ask what they want instead.` };
+      }
+      return {
+        content:
+          outcome.written.length === 0
+            ? `No blocks were accepted for ${rel}; the file is unchanged.`
+            : `Applied to ${rel}. Note: the user may have accepted only some blocks — the file on disk now reads:\n\n${clamp(await fs.readFile(full, 'utf8'), 3000)}`,
+      };
+    },
+  },
+  {
+    schema: {
+      name: 'run_command',
+      description:
+        'Run a shell command in the project root and return its stdout, stderr and exit code. Requires user ' +
+        'approval. Use this to run tests, linters, and build steps to verify your own work.',
+      parameters: {
+        type: 'object',
+        properties: { command: { type: 'string' }, why: { type: 'string', description: 'Why you need to run it' } },
+        required: ['command'],
+      },
+    },
+    sideEffecting: true,
+    run: async (args, ctx) => {
+      const command = str(args, 'command');
+      ctx.echoToTerminal(command);
+      const { stdout, stderr, code } = await execCapture(command, ctx.rootPath);
+      return { content: `exit ${code}\n--- stdout ---\n${clamp(stdout)}\n--- stderr ---\n${clamp(stderr, 2000)}` };
+    },
+  },
+  {
+    schema: {
+      name: 'git',
+      description:
+        'Run a read-only git query on the project: status, log, diff, branch, show. State-changing subcommands ' +
+        '(commit, push, merge, checkout, reset) are routed through approval automatically.',
+      parameters: {
+        type: 'object',
+        properties: { args: { type: 'string', description: 'Arguments after "git", e.g. "status --short"' } },
+        required: ['args'],
+      },
+    },
+    sideEffecting: false,
+    run: async (args, ctx) => {
+      const gitArgs = str(args, 'args');
+      const READ_ONLY = ['status', 'log', 'diff', 'show', 'branch', 'blame', 'ls-files', 'rev-parse'];
+      const sub = gitArgs.trim().split(/\s+/)[0];
+      if (!READ_ONLY.includes(sub)) {
+        // A write-y git subcommand reached the read-only tool. Refuse and point
+        // the model at the gated path rather than quietly running it.
+        return { content: `"git ${sub}" changes repository state. Use run_command (which is approval-gated) for it.` };
+      }
+      const { stdout, stderr, code } = await execCapture(`git ${gitArgs}`, ctx.rootPath, 30_000);
+      return { content: `exit ${code}\n${clamp(stdout)}${stderr ? `\nstderr: ${clamp(stderr, 1000)}` : ''}` };
+    },
+  },
+];
+
+export function findTool(name: string): Tool | undefined {
+  return TOOLS.find((t) => t.schema.name === name);
+}
+
+export const TOOL_SCHEMAS: ToolSchema[] = TOOLS.map((t) => t.schema);
+
+/** Verifier gets a deliberately smaller surface: it checks, it does not edit. */
+export const VERIFIER_TOOL_SCHEMAS: ToolSchema[] = TOOLS.filter((t) =>
+  ['retrieve_context', 'read_file', 'list_dir', 'git', 'run_command'].includes(t.schema.name)
+).map((t) => t.schema);
