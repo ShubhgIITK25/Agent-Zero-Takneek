@@ -64,6 +64,12 @@ Provider catalogues and pricing drift; re-check model ids against the live docs 
 
 `AGENTS.md` in your project root is loaded automatically and its rules are pinned through compaction, the same as any other pinned fact.
 
+**Pinning files and code into context.** In the AI Agent panel, `@path/to/file.ts` pins a whole file and `@path/to/file.ts:20-40` pins just that line range; `+ current file` pins whatever's open in the editor. Pinned items show as removable chips above the input box — click the `×` on any chip to unpin it, or its label to jump straight to that file. Pins are read fresh off disk at send time, so a pinned file always reflects what's currently on it.
+
+**Both directions are clickable.** Typing `@path:line` in the input box turns it into a pin; anywhere the agent writes `path:line` or `path:line-line` in its reply, the chat renders it as a link that opens that file at that line — so the agent can point back at exact code just as easily as you can point it at some.
+
+**`.nexideignore` (or `.ignore`) — keeping noise out of context.** Drop a gitignore-syntax file named `.nexideignore` in the project root (a plain `.ignore` also works, if that's the name already in use) to stop matching paths from ever entering *automatic* context — `retrieve_context`, `read_file`, and `list_dir`, as called by an agent. `node_modules/`, build output, lockfiles, and anything holding secrets are good candidates. This does **not** touch a file you pin explicitly with `@path` — an explicit pin is a direct instruction, and letting a blanket ignore rule silently override it would be the more surprising behavior (the same asymmetry `.gitignore` has: `git add -f` still works on an ignored path). `.git` is always excluded, ignore file or not.
+
 ## Commands
 
 - `/bytheway <question>` — an isolated one-off query that runs in its own two-message exchange, sharing no history or tool state with the active task. Use it for a quick side question without polluting the running task's context.

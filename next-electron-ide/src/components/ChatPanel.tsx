@@ -16,13 +16,14 @@
  * into a link that opens that file at that line. Both directions, which is
  * what the requirement actually asks for.
  *
- * APPROVALS. A side-effecting tool call suspends the orchestrator until this
- * panel answers. Diffs render in DiffReview with per-block checkboxes;
- * commands get a plain approve/reject.
+ * APPROVALS. A side-effecting tool call suspends the orchestrator until it is
+ * answered. Commands are approved here inline. File edits are NOT: they open
+ * in the editor pane as a real Monaco diff with per-hunk Keep/Deny, and this
+ * panel shows a pointer card that resolves itself off `approval_resolved`.
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import DiffReview, { FileDiffView } from './DiffReview';
+import type { FileDiffView } from './DiffReview';
 import { TraceView, TraceEvent, applyEvent, emptyTrace, formatUsd } from '../lib/trace';
 
 type ChatPanelProps = {
@@ -158,7 +159,16 @@ export default function ChatPanel({
         break;
       case 'approval_resolved':
         nextBubbles = nextBubbles.map((b) =>
-          b.kind === 'approval' && b.requestId === e.requestId ? { ...b, resolved: e.approved ? 'approved (history)' : 'rejected (history)' } : b
+          b.kind === 'approval' && b.requestId === e.requestId && !b.resolved
+            ? {
+                ...b,
+                resolved: e.approved
+                  ? e.acceptedBlockIds?.length
+                    ? `kept ${e.acceptedBlockIds.length} change(s)`
+                    : 'approved'
+                  : 'denied',
+              }
+            : b
         );
         break;
       case 'task_finished':
@@ -489,14 +499,31 @@ export default function ChatPanel({
                   </div>
                 );
               }
+              // The diff itself is reviewed in the editor pane (see
+              // DiffReviewPane) where there is room to read code in context
+              // and a real Monaco buffer to read it in. Duplicating the whole
+              // review inside a 360px sidebar would give the user two places
+              // to answer the same blocking approval — and two chances to
+              // answer it differently.
               if (b.approvalKind === 'diff' && b.diffs) {
+                const files = b.diffs;
+                const hunks = files.reduce((n, d) => n + d.blocks.length, 0);
                 return (
-                  <div key={b.id} id={`approval-${b.id}`}>
-                    <DiffReview
-                      summary={b.summary}
-                      diffs={b.diffs}
-                      onDecide={(approved, ids) => decide(b.requestId, approved, ids)}
-                    />
+                  <div key={b.id} id={`approval-${b.id}`} className="chat-diff-pointer">
+                    <div className="chat-diff-pointer-head">
+                      {hunks} change{hunks === 1 ? '' : 's'} waiting for review
+                    </div>
+                    <div className="chat-diff-pointer-body">{b.summary}</div>
+                    <div className="chat-diff-pointer-files">
+                      {files.map((d) => (
+                        <code key={d.path} title={d.path}>
+                          {d.path}
+                        </code>
+                      ))}
+                    </div>
+                    <div className="chat-diff-pointer-hint">
+                      Keep or deny each change in the editor, then apply.
+                    </div>
                   </div>
                 );
               }

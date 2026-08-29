@@ -1,0 +1,26 @@
+# Keeps these out of the agent's automatic context (retrieve_context,
+# read_file, list_dir) — it does NOT stop you from pinning one of these
+# on purpose with @path in the chat panel. See README.md > Manual context
+# control.
+
+node_modules/
+.next/
+renderer-out/
+electron-dist/
+orchestrator-dist/
+release/
+tsconfig.tsbuildinfo
+_to_delete/
+__pycache__/
+*.pyc
+retrieval-service/.venv/
+.DS_Store
+
+# Generated/huge — no signal for an agent, just tokens.
+package-lock.json
+
+# Secrets — never let these reach a model's context.
+.env
+.env.*
+*.pem
+*.key

@@ -44,6 +44,7 @@ import { TaskStore, TaskSnapshot } from './store';
 import { TOOLS, TOOL_SCHEMAS, VERIFIER_TOOL_SCHEMAS, findTool, ToolContext } from './tools';
 import { compact, shouldCompact } from './compaction';
 import { loadAgentsMd, agentsMdSystemMessage } from './agentsmd';
+import { loadIgnoreMatcher } from './ignore';
 import * as agents from './agents';
 import { applyAcceptedBlocks } from './diff';
 import * as fs from 'fs/promises';
@@ -70,6 +71,8 @@ export class TaskRunner {
   private step = 0;
   private notes: string[] = [];
   private changedFiles = new Set<string>();
+  /** .nexideignore / .ignore — loaded once per task, not re-read on every tool call. */
+  private ignore: ReturnType<typeof loadIgnoreMatcher>;
 
   constructor(
     readonly taskId: string,
@@ -93,6 +96,14 @@ export class TaskRunner {
     this.router = new Router(config.enabledModelIds, this.rateLimits);
 
     const agentsMd = loadAgentsMd(config.rootPath);
+    this.ignore = loadIgnoreMatcher(config.rootPath);
+    if (this.ignore.sourceFile) {
+      emit({
+        type: 'log',
+        level: 'info',
+        message: `Context ignore: ${this.ignore.patternCount} pattern(s) loaded from ${this.ignore.sourceFile} — matching paths are excluded from retrieve_context, read_file and list_dir.`,
+      });
+    }
     this.snapshot = resumeFrom ?? {
       taskId,
       codebaseId: config.codebaseId,
@@ -180,6 +191,7 @@ export class TaskRunner {
       rootPath: this.config.rootPath,
       codebaseId: this.config.codebaseId,
       retrievalUrl: this.config.retrievalUrl,
+      ignore: this.ignore,
       echoToTerminal: this.echoToTerminal,
       proposeDiff: (diffs, summary) => this.requestDiffApproval(subtaskId, nodeId, diffs, summary),
     };

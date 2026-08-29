@@ -36,6 +36,9 @@ export type ToolContext = {
    *  The /query endpoint requires this and does NOT derive it from rootPath. */
   codebaseId: string;
   retrievalUrl: string | null;
+  /** .nexideignore / .ignore matcher — gates the AUTOMATIC tools below.
+   *  See orchestrator/ignore.ts for what it does and does not cover. */
+  ignore: { isIgnored: (relPath: string) => boolean; sourceFile: string | null };
   /** Mirrors a command into the IDE's visible terminal panel. */
   echoToTerminal: (command: string) => void;
   /** Set by the orchestrator when a proposal needs approving. `fullyApplied`
@@ -150,8 +153,14 @@ export const TOOLS: Tool[] = [
       if (!res.ok) return { content: `Retrieval failed (${res.status}).` };
       const data: any = await res.json();
       if (data.error) return { content: `Retrieval unavailable: ${data.error}` };
-      const results: any[] = data.results ?? [];
-      if (!results.length) return { content: 'No relevant code found.' };
+      const raw: any[] = data.results ?? [];
+      const results = raw.filter((r) => !ctx.ignore.isIgnored(String(r.file ?? '')));
+      if (!raw.length) return { content: 'No relevant code found.' };
+      if (!results.length) {
+        return {
+          content: `${raw.length} match(es) found, but every one is excluded by ${ctx.ignore.sourceFile}. Nothing to show.`,
+        };
+      }
       return {
         content: results
           .map((r) => `${r.file}:${r.line_start}-${r.line_end} (${r.kind} ${r.symbol}) — ${r.why_relevant}\n${r.snippet}`)
@@ -181,6 +190,11 @@ export const TOOLS: Tool[] = [
     sideEffecting: false,
     run: async (args, ctx) => {
       const rel = str(args, 'path');
+      if (ctx.ignore.isIgnored(rel)) {
+        return {
+          content: `"${rel}" is excluded from context by ${ctx.ignore.sourceFile}. It will not be read. If you genuinely need it, ask the user to pin it explicitly instead.`,
+        };
+      }
       const full = resolveInRoot(ctx.rootPath, rel);
       const content = await fs.readFile(full, 'utf8');
       const lines = content.split('\n');
@@ -207,6 +221,7 @@ export const TOOLS: Tool[] = [
       return {
         content: entries
           .filter((e) => !['node_modules', '.git', '.next', '__pycache__', '.venv'].includes(e.name))
+          .filter((e) => !ctx.ignore.isIgnored(path.posix.join(rel === '.' ? '' : rel, e.name)))
           .map((e) => `${e.isDirectory() ? 'dir ' : 'file'}  ${path.posix.join(rel === '.' ? '' : rel, e.name)}`)
           .join('\n'),
       };
