@@ -48,6 +48,7 @@ import * as agents from './agents';
 import { applyAcceptedBlocks } from './diff';
 import * as fs from 'fs/promises';
 import * as path from 'path';
+import { extractJson } from './agents';
 
 const MAX_RETRIES_PER_SUBTASK = 3;
 const MAX_STEPS_PER_SUBTASK = 12;
@@ -1002,14 +1003,13 @@ export class TaskRunner {
 
   private async aggregate(): Promise<string> {
     if (this.budget.inReserve()) {
-      // No budget left for a wrap-up call — build the summary locally rather
-      // than breaching a ceiling to say "I'm done".
       const done = this.snapshot.subtasks.filter((s) => s.status === 'done').length;
       return `Completed ${done}/${this.snapshot.subtasks.length} subtasks. Budget reserve reached, so this summary is generated locally. Files changed: ${[...this.changedFiles].join(', ') || 'none'}.`;
     }
+
     const messages = agents.summariserMessages(this.snapshot.pinnedFacts[0] ?? this.prompt, this.snapshot.subtasks, this.notes);
     const res = await this.dispatch({
-      role: 'implementer',
+      role: 'implementer', // the router will pick the compactor/cheapest model based on category
       subtaskId: null,
       parentId: null,
       messages,
@@ -1023,7 +1023,23 @@ export class TaskRunner {
         cooldownProviders: this.rateLimits.cooldownList(),
       },
     });
+
     const done = this.snapshot.subtasks.filter((s) => s.status === 'done').length;
-    return res?.text?.trim() || `Completed ${done}/${this.snapshot.subtasks.length} subtasks.`;
+    const fallback = `Completed ${done}/${this.snapshot.subtasks.length} subtasks.`;
+
+    if (!res?.text) return fallback;
+
+    // Parse the JSON. extractJson() automatically searches the string for valid JSON blocks
+    // and ignores the scratchpad text surrounding it.
+    const parsed = extractJson(res.text);
+    if (parsed && typeof parsed.summary === 'string' && parsed.summary.trim()) {
+      return parsed.summary.trim();
+    }
+
+    // Extreme fallback: If it still output plain text and failed the JSON, 
+    // grab the very last paragraph of the output.
+    const parts = res.text.trim().split('\n\n');
+    const lastParagraph = parts[parts.length - 1].replace(/^[*\s-]+/, '').trim();
+    return lastParagraph || fallback;
   }
 }
