@@ -32,6 +32,9 @@ import { FileDiff } from './protocol';
 
 export type ToolContext = {
   rootPath: string;
+  /** Identifies which per-project index the retrieval service should search.
+   *  The /query endpoint requires this and does NOT derive it from rootPath. */
+  codebaseId: string;
   retrievalUrl: string | null;
   /** Mirrors a command into the IDE's visible terminal panel. */
   echoToTerminal: (command: string) => void;
@@ -121,7 +124,12 @@ export const TOOLS: Tool[] = [
       const res = await fetch(`${ctx.retrievalUrl}/query`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query, k: typeof args.k === 'number' ? args.k : 8, root_path: ctx.rootPath }),
+        body: JSON.stringify({
+          query,
+          k: typeof args.k === 'number' ? args.k : 8,
+          codebase_id: ctx.codebaseId,
+          root_path: ctx.rootPath,
+        }),
       });
       if (!res.ok) return { content: `Retrieval failed (${res.status}).` };
       const data: any = await res.json();

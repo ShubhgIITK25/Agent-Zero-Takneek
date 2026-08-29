@@ -177,6 +177,7 @@ export class TaskRunner {
   private toolContext(subtaskId: string, nodeId: string): ToolContext {
     return {
       rootPath: this.config.rootPath,
+      codebaseId: this.config.codebaseId,
       retrievalUrl: this.config.retrievalUrl,
       echoToTerminal: this.echoToTerminal,
       proposeDiff: (diffs, summary) => this.requestDiffApproval(subtaskId, nodeId, diffs, summary),
