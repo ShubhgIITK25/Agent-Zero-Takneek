@@ -388,10 +388,13 @@ export class TaskRunner {
   async run(resumed: boolean): Promise<void> {
     this.emit({ type: 'task_started', prompt: this.prompt, resumed });
     if (resumed) {
+      const rolledBack = this.reconcileResumedState();
       this.emit({
         type: 'resumed',
         fromStep: this.step,
-        note: `Restored ${this.snapshot.subtasks.filter((s) => s.status === 'done').length} completed subtask(s) from checkpoint.`,
+        note:
+          `Restored ${this.snapshot.subtasks.filter((s) => s.status === 'done').length} completed subtask(s) from checkpoint` +
+          (rolledBack ? `; ${rolledBack} in-flight subtask(s) rolled back to re-run.` : '.'),
       });
     }
     this.emitBudget();
@@ -419,7 +422,15 @@ export class TaskRunner {
             (s.status === 'pending' || s.status === 'blocked') &&
             s.dependsOn.every((d) => this.snapshot.subtasks.find((x) => x.id === d)?.status === 'done')
         );
-        if (!next) break;
+        if (!next) {
+          // The scheduler has run dry but some subtasks never reached a
+          // terminal state. That is a dependency deadlock — a cycle, a
+          // dependency that failed/skipped without its dependents being
+          // marked, or a stale in-flight state from a crash. Surface it and
+          // skip the stranded work rather than "finishing" with silent holes.
+          this.resolveDeadlockedSubtasks();
+          break;
+        }
 
         // A dependency failed permanently — this subtask can never run.
         if (next.status === 'blocked') {
@@ -432,12 +443,36 @@ export class TaskRunner {
         this.checkpoint();
       }
 
-      const failed = this.snapshot.subtasks.filter((s) => s.status === 'failed');
+      // Terminal by construction: the scheduling loop above only exits once
+      // every subtask is 'done', 'failed', or 'skipped' (a 'blocked' subtask
+      // is converted to 'skipped' as soon as it is selected). So "did the
+      // task actually succeed" is exactly "did every subtask end 'done'" —
+      // a failed subtask, or one skipped because its dependency failed, both
+      // mean the task did NOT complete, even if most subtasks passed.
+      const incomplete = this.snapshot.subtasks.filter((s) => s.status !== 'done');
       const summary = await this.aggregate();
-      this.snapshot.status = failed.length && failed.length === this.snapshot.subtasks.length ? 'failed' : 'done';
       this.snapshot.summary = summary;
-      this.checkpoint();
-      this.emit({ type: 'task_finished', summary });
+
+      if (incomplete.length === 0) {
+        this.snapshot.status = 'done';
+        this.checkpoint();
+        this.emit({ type: 'task_finished', summary });
+      } else {
+        // Emitting task_failed (not task_finished) here matters as much as
+        // the status field: it is what makes ChatPanel render an error
+        // bubble instead of a plain assistant reply, and what makes the
+        // dashboard's live trace and the resumable-task list show 'failed'
+        // instead of a misleading green 'done'.
+        this.snapshot.status = 'failed';
+        const detail = incomplete
+          .map((s) => `${s.title} (${s.status}${s.lastError ? `: ${s.lastError}` : ''})`)
+          .join('; ');
+        this.checkpoint();
+        this.emit({
+          type: 'task_failed',
+          reason: `${incomplete.length}/${this.snapshot.subtasks.length} subtask(s) did not complete — ${detail}\n\n${summary}`,
+        });
+      }
     } catch (err) {
       this.fail(err instanceof Error ? err.message : String(err));
     }
@@ -629,6 +664,64 @@ export class TaskRunner {
       this.blockDependents(subtask.id);
       return;
     }
+  }
+
+  /**
+   * A resumed snapshot can hold subtasks that were mid-flight when the IDE
+   * died: `running` (implementer loop) or `verifying` (verifier call). The
+   * scheduler only ever starts `pending` / `blocked` work, so these would be
+   * stranded and the task would "complete" with a hole. Roll them back to
+   * `pending` — their checkpointed conversation is reused, and `attempts` is
+   * untouched, so the retry ladder is not reset. Returns how many were rolled
+   * back. */
+  private reconcileResumedState(): number {
+    let rolledBack = 0;
+    for (const s of this.snapshot.subtasks) {
+      if (s.status === 'running' || s.status === 'verifying') {
+        this.emit({
+          type: 'intervention',
+          subtaskId: s.id,
+          cause: 'resume_rollback',
+          detail: `Subtask "${s.title}" was "${s.status}" when the previous session ended.`,
+          action: 'Rolled back to pending so it re-runs from the last checkpoint.',
+        });
+        s.status = 'pending';
+        rolledBack++;
+      }
+    }
+    if (rolledBack) this.checkpoint();
+    return rolledBack;
+  }
+
+  /**
+   * Called when the scheduler can find no runnable subtask but non-terminal
+   * subtasks remain. Every such subtask is genuinely unreachable — the
+   * scheduler has already exhausted everything whose dependencies are `done` —
+   * so mark them `skipped` with a diagnosis of why. */
+  private resolveDeadlockedSubtasks(): void {
+    const terminal = new Set(['done', 'failed', 'skipped']);
+    const stranded = this.snapshot.subtasks.filter((s) => !terminal.has(s.status));
+    if (!stranded.length) return;
+
+    for (const s of stranded) {
+      const badDeps = s.dependsOn.filter((d) => {
+        const dep = this.snapshot.subtasks.find((x) => x.id === d);
+        return !dep || dep.status !== 'done';
+      });
+      const detail = badDeps.length
+        ? `Subtask "${s.title}" depends on [${badDeps.join(', ')}], which never completed.`
+        : `Subtask "${s.title}" is stuck in "${s.status}" with no path to run (possible dependency cycle).`;
+      this.emit({
+        type: 'intervention',
+        subtaskId: s.id,
+        cause: 'dependency_deadlock',
+        detail,
+        action: 'Skipping it — its dependencies cannot be satisfied.',
+      });
+      s.status = 'skipped';
+      this.emit({ type: 'subtask_finished', subtaskId: s.id, status: 'skipped', note: 'dependency deadlock' });
+    }
+    this.checkpoint();
   }
 
   private blockDependents(failedId: string): void {
