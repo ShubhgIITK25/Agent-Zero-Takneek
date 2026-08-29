@@ -8,13 +8,78 @@ type TreeNodeProps = {
   depth: number;
   activePath: string | null;
   onOpenFile: (path: string) => void;
+  onRefresh: () => void;
   refreshToken: number;
 };
 
-function TreeNode({ node, depth, activePath, onOpenFile, refreshToken }: TreeNodeProps) {
+type EditorMode = 'create-file' | 'create-folder' | 'rename';
+
+function joinPath(parentPath: string, name: string): string {
+  const separator = parentPath.includes('\\') ? '\\' : '/';
+  return `${parentPath.replace(/[\\/]$/, '')}${separator}${name}`;
+}
+
+function parentPath(targetPath: string): string {
+  return targetPath.replace(/[\\/][^\\/]+$/, '');
+}
+
+function validName(name: string | null): name is string {
+  const trimmed = name?.trim();
+  return !!trimmed && trimmed !== '.' && trimmed !== '..' && !/[\\/]/.test(trimmed);
+}
+
+function NameEntry({
+  initialValue = '',
+  placeholder,
+  onCommit,
+  onCancel,
+}: {
+  initialValue?: string;
+  placeholder: string;
+  onCommit: (name: string) => Promise<void> | void;
+  onCancel: () => void;
+}) {
+  const [value, setValue] = useState(initialValue);
+  const [submitting, setSubmitting] = useState(false);
+
+  const submit = async () => {
+    const name = value.trim();
+    if (!validName(name)) {
+      window.alert('Enter a name without path separators.');
+      return;
+    }
+    setSubmitting(true);
+    try {
+      await onCommit(name);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <input
+      className="tree-name-entry"
+      autoFocus
+      value={value}
+      placeholder={placeholder}
+      disabled={submitting}
+      onChange={(event) => setValue(event.target.value)}
+      onClick={(event) => event.stopPropagation()}
+      onBlur={onCancel}
+      onKeyDown={(event) => {
+        event.stopPropagation();
+        if (event.key === 'Enter') void submit();
+        if (event.key === 'Escape') onCancel();
+      }}
+    />
+  );
+}
+
+function TreeNode({ node, depth, activePath, onOpenFile, onRefresh, refreshToken }: TreeNodeProps) {
   const [expanded, setExpanded] = useState(false);
   const [children, setChildren] = useState<FileNode[] | null>(null);
   const [loading, setLoading] = useState(false);
+  const [editor, setEditor] = useState<EditorMode | null>(null);
 
   const loadChildren = useCallback(async () => {
     setLoading(true);
@@ -52,6 +117,47 @@ function TreeNode({ node, depth, activePath, onOpenFile, refreshToken }: TreeNod
 
   const isActive = activePath === node.path;
 
+  const create = async (kind: 'file' | 'folder', name: string) => {
+    const targetPath = joinPath(node.path, name);
+    try {
+      if (kind === 'file') {
+        await window.electronAPI!.createFile(targetPath);
+        onOpenFile(targetPath);
+      } else {
+        await window.electronAPI!.createFolder(targetPath);
+      }
+      onRefresh();
+      setEditor(null);
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : `Could not create ${kind}.`);
+    }
+  };
+
+  const rename = async (name: string) => {
+    if (name === node.name) {
+      setEditor(null);
+      return;
+    }
+    try {
+      await window.electronAPI!.rename(node.path, joinPath(parentPath(node.path), name));
+      onRefresh();
+      setEditor(null);
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : 'Could not rename this item.');
+    }
+  };
+
+  const remove = async () => {
+    const kind = node.isDirectory ? 'folder and everything inside it' : 'file';
+    if (!window.confirm(`Delete ${kind} "${node.name}"?`)) return;
+    try {
+      await window.electronAPI!.deletePath(node.path);
+      onRefresh();
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : 'Could not delete this item.');
+    }
+  };
+
   return (
     <div>
       <div
@@ -66,9 +172,50 @@ function TreeNode({ node, depth, activePath, onOpenFile, refreshToken }: TreeNod
           <span className="chevron-spacer" />
         )}
         <span className="node-icon">{node.isDirectory ? '📁' : fileIcon(node.name)}</span>
-        <span className="node-name">{node.name}</span>
+        {editor === 'rename' ? (
+          <NameEntry
+            initialValue={node.name}
+            placeholder="New name"
+            onCommit={rename}
+            onCancel={() => setEditor(null)}
+          />
+        ) : (
+          <span className="node-name">{node.name}</span>
+        )}
         {loading && <span className="node-loading">…</span>}
+        <span className="tree-row-actions" onClick={(event) => event.stopPropagation()}>
+          {node.isDirectory && (
+            <>
+              <button type="button" onClick={() => setEditor('create-file')} title="New File">
+                <span className="button-icon">📄</span>
+              </button>
+              <button type="button" onClick={() => setEditor('create-folder')} title="New Folder">
+                <span className="button-icon">📁</span>
+              </button>
+            </>
+          )}
+          <button type="button" onClick={() => setEditor('rename')} title="Rename">✎</button>
+          <button type="button" onClick={() => void remove()} title="Delete">🗑</button>
+        </span>
       </div>
+      {editor === 'create-file' && (
+        <div className="tree-entry-row" style={{ paddingLeft: 8 + (depth + 1) * 14 }}>
+          <NameEntry
+            placeholder="New file name"
+            onCommit={(name) => create('file', name)}
+            onCancel={() => setEditor(null)}
+          />
+        </div>
+      )}
+      {editor === 'create-folder' && (
+        <div className="tree-entry-row" style={{ paddingLeft: 8 + (depth + 1) * 14 }}>
+          <NameEntry
+            placeholder="New folder name"
+            onCommit={(name) => create('folder', name)}
+            onCancel={() => setEditor(null)}
+          />
+        </div>
+      )}
       {node.isDirectory && expanded && children && (
         <div>
           {children.map((child) => (
@@ -78,6 +225,7 @@ function TreeNode({ node, depth, activePath, onOpenFile, refreshToken }: TreeNod
               depth={depth + 1}
               activePath={activePath}
               onOpenFile={onOpenFile}
+              onRefresh={onRefresh}
               refreshToken={refreshToken}
             />
           ))}
@@ -132,15 +280,36 @@ export default function FileTree({
   onOpenFolder,
   onRefresh,
 }: FileTreeProps) {
+  const [rootEditor, setRootEditor] = useState<'file' | 'folder' | null>(null);
+
+  const createInRoot = async (kind: 'file' | 'folder', name: string) => {
+    if (!rootPath) return;
+    const targetPath = joinPath(rootPath, name);
+    try {
+      if (kind === 'file') {
+        await window.electronAPI!.createFile(targetPath);
+        onOpenFile(targetPath);
+      } else {
+        await window.electronAPI!.createFolder(targetPath);
+      }
+      onRefresh();
+      setRootEditor(null);
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : `Could not create ${kind}.`);
+    }
+  };
+
+  const rootName = rootPath?.split(/[\\/]/).filter(Boolean).pop() || rootPath;
+
   return (
     <div className="file-tree">
       <div className="file-tree-header">
         <span>EXPLORER</span>
-        {rootPath && (
-          <button className="file-tree-refresh-btn" onClick={onRefresh} title="Refresh Files (Ctrl+R)">
-            ⟳
-          </button>
-        )}
+        {rootPath && <div className="file-tree-header-actions">
+          <button className="file-tree-refresh-btn" onClick={() => setRootEditor('file')} title="New File">⊞</button>
+          <button className="file-tree-refresh-btn" onClick={() => setRootEditor('folder')} title="New Folder">⊞+</button>
+          <button className="file-tree-refresh-btn" onClick={onRefresh} title="Refresh Files (Ctrl+R)">⟳</button>
+        </div>}
       </div>
       {!rootPath ? (
         <div className="file-tree-empty">
@@ -149,10 +318,19 @@ export default function FileTree({
         </div>
       ) : (
         <>
-          <div className="file-tree-root" onClick={onOpenFolder} title="Click to open a different folder">
-            {rootPath.split('/').pop() || rootPath}
+          <div className="file-tree-root" title={rootPath}>
+            {rootName}
           </div>
           <div className="file-tree-body">
+            {rootEditor && (
+              <div className="tree-entry-row">
+                <NameEntry
+                  placeholder={rootEditor === 'file' ? 'New file name' : 'New folder name'}
+                  onCommit={(name) => createInRoot(rootEditor, name)}
+                  onCancel={() => setRootEditor(null)}
+                />
+              </div>
+            )}
             {rootEntries.map((node) => (
               <TreeNode
                 key={node.path}
@@ -160,6 +338,7 @@ export default function FileTree({
                 depth={0}
                 activePath={activePath}
                 onOpenFile={onOpenFile}
+                onRefresh={onRefresh}
                 refreshToken={refreshToken}
               />
             ))}

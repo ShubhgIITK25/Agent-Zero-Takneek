@@ -26,6 +26,7 @@ export default function Home() {
   const [activePath, setActivePath] = useState<string | null>(null);
   const contents = useRef<Map<string, string>>(new Map());
   const savedContents = useRef<Map<string, string>>(new Map());
+  const autoSaveTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
   const [electronReady, setElectronReady] = useState(false);
   const [terminalOpen, setTerminalOpen] = useState(false);
   const [chatOpen, setChatOpen] = useState(false);
@@ -108,7 +109,7 @@ export default function Home() {
     }
     setOpenFiles((prev) => {
       if (prev.some((f) => f.path === path)) return prev;
-      const name = path.split('/').pop() || path;
+      const name = path.split(/[\\/]/).pop() || path;
       return [...prev, { path, name, dirty: false }];
     });
     setActivePath(path);
@@ -123,28 +124,57 @@ export default function Home() {
         }
         return next;
       });
+      const timer = autoSaveTimers.current.get(path);
+      if (timer) clearTimeout(timer);
+      autoSaveTimers.current.delete(path);
       contents.current.delete(path);
       savedContents.current.delete(path);
     },
     [activePath]
   );
 
+  const saveFile = useCallback(async (path: string) => {
+    if (!window.electronAPI) return;
+    const value = contents.current.get(path);
+    if (value === undefined || savedContents.current.get(path) === value) return;
+    try {
+      await window.electronAPI.writeFile(path, value);
+      // A later edit may have arrived while the write was in flight. In that
+      // case leave the tab dirty; its own debounce timer will save it next.
+      if (contents.current.get(path) !== value) return;
+      savedContents.current.set(path, value);
+      setOpenFiles((prev) => prev.map((f) => (f.path === path ? { ...f, dirty: false } : f)));
+    } catch (error) {
+      console.error(`Could not save ${path}:`, error);
+    }
+  }, []);
+
   const updateContent = useCallback(
     (path: string, value: string) => {
       contents.current.set(path, value);
       const isDirty = savedContents.current.get(path) !== value;
       setOpenFiles((prev) => prev.map((f) => (f.path === path ? { ...f, dirty: isDirty } : f)));
+
+      const existingTimer = autoSaveTimers.current.get(path);
+      if (existingTimer) clearTimeout(existingTimer);
+      const timer = setTimeout(() => {
+        autoSaveTimers.current.delete(path);
+        void saveFile(path);
+      }, 700);
+      autoSaveTimers.current.set(path, timer);
     },
-    []
+    [saveFile]
   );
 
   const saveActiveFile = useCallback(async () => {
-    if (!activePath || !window.electronAPI) return;
-    const value = contents.current.get(activePath) ?? '';
-    await window.electronAPI.writeFile(activePath, value);
-    savedContents.current.set(activePath, value);
-    setOpenFiles((prev) => prev.map((f) => (f.path === activePath ? { ...f, dirty: false } : f)));
-  }, [activePath]);
+    if (activePath) await saveFile(activePath);
+  }, [activePath, saveFile]);
+
+  useEffect(() => {
+    return () => {
+      for (const timer of autoSaveTimers.current.values()) clearTimeout(timer);
+    };
+  }, []);
 
   // Re-reads the file tree from disk, and reloads any open, non-dirty
   // file's content from disk (never clobbers unsaved edits). Pass a
