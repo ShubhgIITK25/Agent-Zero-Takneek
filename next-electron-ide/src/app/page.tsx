@@ -9,6 +9,7 @@ import ChatPanel from '../components/ChatPanel';
 import SettingsPanel from '../components/SettingsPanel';
 import Dashboard from '../components/Dashboard';
 import type { FileNode, RetrievalStatus } from '../lib/electron-api';
+import type { ReviewDiff } from '../lib/review-buffer';
 import { TraceView, TraceEvent, applyEvent, emptyTrace } from '../lib/trace';
 
 // Monaco touches `self`/`window` at module load time, so it must never be
@@ -16,6 +17,9 @@ import { TraceView, TraceEvent, applyEvent, emptyTrace } from '../lib/trace';
 const EditorPane = dynamic(() => import('../components/EditorPane'), { ssr: false });
 // xterm.js has the same constraint (touches `window`/`navigator` at import time).
 const TerminalPanel = dynamic(() => import('../components/TerminalPanel'), { ssr: false });
+// The inline diff review renders its own Monaco instance, so it is bound by
+// exactly the same rule as EditorPane above.
+const DiffReviewPane = dynamic(() => import('../components/DiffReviewPane'), { ssr: false });
 
 const TERMINAL_ID = 'main-terminal';
 
@@ -38,8 +42,34 @@ export default function Home() {
   // The live trace lives here, not in ChatPanel, so the dashboard keeps
   // rendering a running task even when the chat panel is closed.
   const [trace, setTrace] = useState<TraceView>(emptyTrace);
+  // A pending diff approval is IDE-level state, not chat state: the review
+  // surface is the editor, and the orchestrator stays blocked until it is
+  // answered, so it must survive the chat panel being closed.
+  const [pendingDiff, setPendingDiff] = useState<{
+    requestId: string;
+    summary: string;
+    diffs: ReviewDiff[];
+  } | null>(null);
+
   const handleTraceEvent = useCallback((e: TraceEvent) => {
     setTrace((prev) => applyEvent(e.type === 'task_started' ? emptyTrace() : prev, e));
+
+    if (e.type === 'approval_request' && e.request?.kind === 'diff' && e.request.diff?.length) {
+      setPendingDiff({
+        requestId: e.request.requestId,
+        summary: e.request.summary,
+        diffs: e.request.diff,
+      });
+    }
+    // Clear on the orchestrator's own resolution too, not just ours — an
+    // approval answered from anywhere must not leave a dead pane holding the
+    // editor hostage.
+    if (e.type === 'approval_resolved') {
+      setPendingDiff((prev) => (prev && prev.requestId === e.requestId ? null : prev));
+    }
+    if (e.type === 'task_finished' || e.type === 'task_failed' || e.type === 'task_cancelled') {
+      setPendingDiff(null);
+    }
   }, []);
 
   // One code path for "a folder is now open", whether that came from the
@@ -215,6 +245,36 @@ export default function Home() {
     refreshWorkspaceRef.current = refreshWorkspace;
   }, [refreshWorkspace]);
 
+  // Answers the approval the orchestrator is blocked on. Returns false when
+  // the decision could not be delivered so the pane can re-enable its buttons
+  // and let the user retry, rather than the task hanging with a dead UI.
+  const decidePendingDiff = useCallback(
+    async (approved: boolean, acceptedBlockIds: string[]): Promise<boolean> => {
+      if (!pendingDiff) return false;
+      try {
+        await window.electronAPI?.orchestratorApprove({
+          requestId: pendingDiff.requestId,
+          approved,
+          acceptedBlockIds,
+        });
+      } catch (error) {
+        console.error('Could not deliver the approval decision:', error);
+        return false;
+      }
+      setPendingDiff(null);
+      // Accepted hunks are written by the orchestrator right after this
+      // returns, so re-read the files it touched to show what actually landed.
+      if (approved) {
+        for (const d of pendingDiff.diffs) {
+          const full = `${rootPath ?? ''}/${d.path}`.replace(/\\/g, '/');
+          void refreshWorkspaceRef.current(full);
+        }
+      }
+      return true;
+    },
+    [pendingDiff, rootPath]
+  );
+
   // Clickable file/line tags in the chat resolve project-relative paths
   // against the open root, so `src/foo.ts:42` in agent prose opens the file.
   const openFileAt = useCallback(
@@ -277,7 +337,14 @@ export default function Home() {
       <main className="main-panel">
         <Tabs files={openFiles} activePath={activePath} onSelect={setActivePath} onClose={closeFile} />
         <div className="editor-container">
-          {electronReady ? (
+          {pendingDiff ? (
+            <DiffReviewPane
+              key={pendingDiff.requestId}
+              summary={pendingDiff.summary}
+              diffs={pendingDiff.diffs}
+              onDecide={decidePendingDiff}
+            />
+          ) : electronReady ? (
             <EditorPane
               filePath={activePath}
               content={activePath ? contents.current.get(activePath) ?? '' : ''}

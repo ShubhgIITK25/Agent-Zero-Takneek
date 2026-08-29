@@ -2275,3 +2275,376 @@ button:hover {
   padding: 30px;
   color: var(--nx-muted);
 }
+/* ==========================================================================
+   INLINE DIFF REVIEW — the agent's proposal, shown in the editor
+   ========================================================================== */
+
+.review-pane {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--bg-panel);
+}
+
+.review-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  background: #202020;
+}
+
+.review-head-main {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.review-badge {
+  flex-shrink: 0;
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #d29922;
+  border: 1px solid rgba(210, 153, 34, 0.4);
+  background: rgba(210, 153, 34, 0.1);
+  border-radius: 3px;
+  padding: 2px 6px;
+}
+
+.review-summary {
+  font-size: 12px;
+  color: var(--text-main);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.review-head-note {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.review-tabs {
+  display: flex;
+  gap: 2px;
+  padding: 0 8px;
+  background: var(--bg-tab);
+  border-bottom: 1px solid var(--border);
+  overflow-x: auto;
+}
+
+.review-tab {
+  background: transparent;
+  color: var(--text-dim);
+  border: none;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  padding: 7px 12px;
+  font-size: 12px;
+  white-space: nowrap;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.review-tab:hover {
+  filter: none;
+  color: var(--text-main);
+}
+
+.review-tab.active {
+  color: var(--text-main);
+  border-bottom-color: var(--accent);
+  background: var(--bg-tab-active);
+}
+
+.review-tab-count {
+  font-size: 10px;
+  color: var(--text-dim);
+  background: rgba(255, 255, 255, 0.07);
+  border-radius: 8px;
+  padding: 1px 6px;
+}
+
+.review-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.review-path {
+  flex: 1;
+  min-width: 0;
+  font-family: 'JetBrains Mono', 'Fira Code', Menlo, Consolas, monospace;
+  font-size: 11px;
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.review-new-badge {
+  margin-left: 8px;
+  font-family: var(--font-ui);
+  color: #3fb950;
+  border: 1px solid rgba(63, 185, 80, 0.4);
+  border-radius: 3px;
+  padding: 1px 5px;
+  font-size: 10px;
+}
+
+.review-nav {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.review-nav button {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-main);
+  padding: 2px 8px;
+  font-size: 11px;
+}
+
+.review-nav button:hover:not(:disabled) {
+  filter: none;
+  background: var(--bg-hover);
+}
+
+.review-nav button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.review-nav-label {
+  font-size: 11px;
+  color: var(--text-dim);
+  min-width: 42px;
+  text-align: center;
+}
+
+.review-bulk {
+  display: flex;
+  gap: 6px;
+}
+
+.review-bulk-btn {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-main);
+  font-size: 11px;
+  padding: 3px 10px;
+}
+
+.review-bulk-btn:hover:not(:disabled) {
+  filter: none;
+  background: var(--bg-hover);
+}
+
+.review-bulk-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.review-editor {
+  flex: 1;
+  min-height: 0;
+}
+
+.review-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border-top: 1px solid var(--border);
+  background: #202020;
+}
+
+.review-actions-count {
+  flex: 1;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.review-partial {
+  color: #d29922;
+}
+
+.review-btn {
+  font-size: 12px;
+  padding: 5px 14px;
+}
+
+.review-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+  filter: none;
+}
+
+.review-btn-deny {
+  background: transparent;
+  border: 1px solid #f85149;
+  color: #f85149;
+}
+
+.review-btn-deny:hover:not(:disabled) {
+  filter: none;
+  background: rgba(248, 81, 73, 0.12);
+}
+
+.review-btn-apply {
+  background: #238636;
+}
+
+/* --- Monaco line decorations ---------------------------------------------
+   Struck-through text means "this will NOT be in the saved file" — which is
+   true both of a denied addition and of a deletion the user is keeping. */
+
+.nx-line-add {
+  background: rgba(63, 185, 80, 0.16);
+}
+
+.nx-line-del {
+  background: rgba(248, 81, 73, 0.15);
+}
+
+.nx-line-add-off {
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.nx-line-del-off {
+  background: rgba(88, 166, 255, 0.1);
+}
+
+.nx-line-add-gutter {
+  border-left: 3px solid #3fb950;
+  margin-left: 3px;
+}
+
+.nx-line-del-gutter {
+  border-left: 3px solid #f85149;
+  margin-left: 3px;
+}
+
+.nx-line-add-off-gutter {
+  border-left: 3px solid #4d4d4d;
+  margin-left: 3px;
+}
+
+.nx-line-del-off-gutter {
+  border-left: 3px solid #58a6ff;
+  margin-left: 3px;
+}
+
+.nx-text-struck {
+  text-decoration: line-through;
+  opacity: 0.6;
+}
+
+/* --- the per-hunk Keep / Deny toolbar (a Monaco view zone) ---------------- */
+
+.nx-hunk-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 30px;
+  padding: 0 12px;
+  font-family: var(--font-ui);
+  font-size: 11px;
+  background: rgba(255, 255, 255, 0.05);
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+}
+
+.nx-hunk-stat {
+  font-family: 'JetBrains Mono', 'Fira Code', Menlo, Consolas, monospace;
+  color: var(--text-dim);
+}
+
+.nx-hunk-state {
+  flex: 1;
+  color: var(--text-dim);
+}
+
+.nx-hunk-btn {
+  font-size: 11px;
+  padding: 2px 12px;
+  border-radius: 3px;
+  border: 1px solid transparent;
+  background: #30363d;
+  color: #c9d1d9;
+  cursor: pointer;
+}
+
+.nx-hunk-btn:hover {
+  filter: brightness(1.25);
+}
+
+.nx-hunk-bar[data-state='keep'] .nx-hunk-btn-keep {
+  background: #238636;
+  color: #fff;
+  border-color: #3fb950;
+}
+
+.nx-hunk-bar[data-state='deny'] .nx-hunk-btn-deny {
+  background: #8b2f2a;
+  color: #fff;
+  border-color: #f85149;
+}
+
+.nx-hunk-bar[data-locked='yes'] .nx-hunk-btn {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* --- chat panel pointer card (the review itself lives in the editor) ------ */
+
+.chat-diff-pointer {
+  border: 1px solid rgba(210, 153, 34, 0.45);
+  background: rgba(210, 153, 34, 0.07);
+  border-radius: 6px;
+  padding: 10px 12px;
+  margin: 6px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.chat-diff-pointer-head {
+  font-size: 12px;
+  font-weight: 600;
+  color: #d29922;
+}
+
+.chat-diff-pointer-body {
+  font-size: 12px;
+  color: var(--text-main);
+}
+
+.chat-diff-pointer-files {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.chat-diff-pointer-files code {
+  font-size: 11px;
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-diff-pointer-hint {
+  font-size: 11px;
+  color: var(--text-dim);
+}
