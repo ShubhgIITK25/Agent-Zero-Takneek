@@ -306,8 +306,8 @@ export default function FileTree({
       <div className="file-tree-header">
         <span>EXPLORER</span>
         {rootPath && <div className="file-tree-header-actions">
-          <button className="file-tree-refresh-btn" onClick={() => setRootEditor('file')} title="New File">⊞</button>
-          <button className="file-tree-refresh-btn" onClick={() => setRootEditor('folder')} title="New Folder">⊞+</button>
+          <button className="file-tree-refresh-btn" onClick={() => setRootEditor('file')} title="New File">📄</button>
+          <button className="file-tree-refresh-btn" onClick={() => setRootEditor('folder')} title="New Folder">📁</button>
           <button className="file-tree-refresh-btn" onClick={onRefresh} title="Refresh Files (Ctrl+R)">⟳</button>
         </div>}
       </div>
