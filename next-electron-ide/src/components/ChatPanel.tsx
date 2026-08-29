@@ -31,6 +31,7 @@ type ChatPanelProps = {
   activeFileContent: string | null;
   trace: TraceView;
   onTraceEvent: (e: TraceEvent) => void;
+  onClearTrace?: () => void;
   onClose: () => void;
   onOpenSettings: () => void;
   onOpenDashboard: () => void;
@@ -105,6 +106,7 @@ export default function ChatPanel({
   onRunCommand,
   onFileChanged,
   onOpenFileAt,
+  onClearTrace,
 }: ChatPanelProps) {
   const [bubbles, setBubbles] = useState<Bubble[]>([]);
   const [input, setInput] = useState('');
@@ -114,8 +116,67 @@ export default function ChatPanel({
   const [resumable, setResumable] = useState<{ taskId: string; prompt: string; step: number } | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const push = (b: Bubble) => setBubbles((prev) => [...prev, b]);
+  const [showHistory, setShowHistory] = useState(false);
+  const [historyTasks, setHistoryTasks] = useState<any[]>([]);
 
-  // Offer to resume an interrupted task from a previous session.
+  const processEventIntoBubbles = (e: TraceEvent, currentBubbles: Bubble[]) => {
+    let nextBubbles = [...currentBubbles];
+    const pushLocal = (b: Bubble) => { nextBubbles.push(b); };
+
+    switch (e.type) {
+      case 'task_started':
+        if (e.prompt) pushLocal({ id: nextId(), kind: 'user', text: e.prompt });
+        break;
+      case 'plan_created':
+        pushLocal({
+          id: nextId(),
+          kind: 'system',
+          text: e.shortCircuited ? 'Handling this directly — too simple to be worth decomposing.' : `Plan: ${e.subtasks.map((s: any, i: number) => `${i + 1}. ${s.title}`).join('  ')}`,
+        });
+        break;
+      case 'routing_decision': {
+        const { model, text } = compactRouting(e);
+        const last = nextBubbles[nextBubbles.length - 1];
+        if (last?.kind === 'routing' && last.model === model && last.text === text) {
+          last.count += 1;
+        } else {
+          pushLocal({ id: nextId(), kind: 'routing', model, text, count: 1 });
+        }
+        break;
+      }
+      case 'subtask_started':
+        pushLocal({ id: nextId(), kind: 'system', text: `▸ ${e.title}${e.attempt > 1 ? ` (attempt ${e.attempt})` : ''}` });
+        break;
+      case 'compaction':
+        pushLocal({ id: nextId(), kind: 'system', text: `Compacted context ${e.beforeTokens}→${e.afterTokens} tokens.` });
+        break;
+      case 'intervention':
+        pushLocal({ id: nextId(), kind: e.cause === 'provider_failover' ? 'error' : 'system', text: `${e.cause.replace(/_/g, ' ')} — ${e.detail}\n${e.action}` });
+        break;
+      case 'approval_request':
+        pushLocal({ id: nextId(), kind: 'approval', requestId: e.request.requestId, approvalKind: e.request.kind, summary: e.request.summary, command: e.request.command, diffs: e.request.diff });
+        break;
+      case 'approval_resolved':
+        nextBubbles = nextBubbles.map((b) =>
+          b.kind === 'approval' && b.requestId === e.requestId ? { ...b, resolved: e.approved ? 'approved (history)' : 'rejected (history)' } : b
+        );
+        break;
+      case 'task_finished':
+        pushLocal({ id: nextId(), kind: 'agent', text: e.summary });
+        break;
+      case 'task_failed':
+        pushLocal({ id: nextId(), kind: 'error', text: e.reason });
+        break;
+      case 'task_cancelled':
+        pushLocal({ id: nextId(), kind: 'system', text: 'Task cancelled.' });
+        break;
+      case 'resumed':
+        pushLocal({ id: nextId(), kind: 'system', text: e.note });
+        break;
+    }
+    return nextBubbles;
+  };
+
   useEffect(() => {
     (async () => {
       const tasks = await window.electronAPI?.orchestratorListTasks();
@@ -132,90 +193,18 @@ export default function ChatPanel({
   useEffect(() => {
     const off = window.electronAPI?.onOrchestratorEvent((e: TraceEvent) => {
       onTraceEvent(e);
-      switch (e.type) {
-        case 'plan_created':
-          push({
-            id: nextId(),
-            kind: 'system',
-            text: e.shortCircuited
-              ? 'Handling this directly — too simple to be worth decomposing.'
-              : `Plan: ${e.subtasks.map((s: any, i: number) => `${i + 1}. ${s.title}`).join('  ')}`,
-          });
-          break;
-        case 'routing_decision': {
-          const { model, text } = compactRouting(e);
-          // A multi-step subtask re-routes on every turn and usually picks the
-          // same model each time. Stacking those verbatim buried the actual
-          // content, so identical consecutive decisions collapse to one row.
-          setBubbles((prev) => {
-            const last = prev[prev.length - 1];
-            if (last?.kind === 'routing' && last.model === model && last.text === text) {
-              return [...prev.slice(0, -1), { ...last, count: last.count + 1 }];
-            }
-            return [...prev, { id: nextId(), kind: 'routing', model, text, count: 1 }];
-          });
-          break;
-        }
-        case 'subtask_started':
-          push({ id: nextId(), kind: 'system', text: `▸ ${e.title}${e.attempt > 1 ? ` (attempt ${e.attempt})` : ''}` });
-          break;
-        case 'compaction':
-          push({
-            id: nextId(),
-            kind: 'system',
-            text: `Compacted context ${e.beforeTokens}→${e.afterTokens} tokens, ${e.preserved.length} rules preserved verbatim.`,
-          });
-          break;
-        case 'intervention':
-          // e.detail carries the SPECIFIC reason (e.g. the exact provider
-          // error message); e.action is only the generic "what happens
-          // next". Showing detail is what makes an auth/key failure
-          // self-diagnosing instead of a dead end.
-          push({
-            id: nextId(),
-            kind: e.cause === 'provider_failover' ? 'error' : 'system',
-            text: `${e.cause.replace(/_/g, ' ')} — ${e.detail}\n${e.action}`,
-          });
-          break;
-        case 'approval_request':
-          push({
-            id: nextId(),
-            kind: 'approval',
-            requestId: e.request.requestId,
-            approvalKind: e.request.kind,
-            summary: e.request.summary,
-            command: e.request.command,
-            diffs: e.request.diff,
-          });
-          break;
-        case 'task_finished':
-          push({ id: nextId(), kind: 'agent', text: e.summary });
-          setRunning(false);
-          setTaskId(null);
-          onFileChanged('');
-          break;
-        case 'task_failed':
-          push({ id: nextId(), kind: 'error', text: e.reason });
-          setRunning(false);
-          setTaskId(null);
-          break;
-        case 'task_cancelled':
-          push({ id: nextId(), kind: 'system', text: 'Task cancelled.' });
-          setRunning(false);
-          setTaskId(null);
-          break;
-        case 'resumed':
-          push({ id: nextId(), kind: 'system', text: e.note });
-          break;
+      setBubbles((prev) => processEventIntoBubbles(e, prev));
+      
+      if (['task_finished', 'task_failed', 'task_cancelled'].includes(e.type)) {
+        setRunning(false);
+        setTaskId(null);
+        if (e.type === 'task_finished') onFileChanged('');
       }
     });
     const offStatus = window.electronAPI?.onOrchestratorStatus((s) => {
       if (s.state !== 'ready') push({ id: nextId(), kind: 'error', text: s.message ?? s.state });
     });
-    return () => {
-      off?.();
-      offStatus?.();
-    };
+    return () => { off?.(); offStatus?.(); };
   }, [onTraceEvent, onFileChanged]);
 
   // Follow the tail only when the user is already at it. Unconditionally
@@ -266,6 +255,34 @@ export default function ChatPanel({
     return `\n\nThe user has explicitly pinned this context. Treat it as directly relevant:\n\n${chunks.join('\n\n')}`;
   }, [pinned, rootPath]);
 
+  const loadPastTask = async (id: string) => {
+    try {
+      if (onClearTrace) onClearTrace();
+      const events: TraceEvent[] = await window.electronAPI!.orchestratorReadTaskEvents(id);
+      
+      let replayedBubbles: Bubble[] = [];
+      for (const e of events) {
+        onTraceEvent(e);
+        replayedBubbles = processEventIntoBubbles(e, replayedBubbles);
+      }
+      
+      setBubbles(replayedBubbles);
+      setTaskId(id);
+      setRunning(false);
+      setShowHistory(false);
+    } catch (err) {
+      push({ id: nextId(), kind: 'error', text: 'Failed to load history: ' + err });
+    }
+  };
+
+  const toggleHistory = async () => {
+    if (!showHistory) {
+      const tasks = await window.electronAPI?.orchestratorListTasks();
+      setHistoryTasks(tasks || []);
+    }
+    setShowHistory(!showHistory);
+  };
+
   const send = async () => {
     const text = input.trim();
     if (!text || running) return;
@@ -288,8 +305,6 @@ export default function ChatPanel({
       });
     }
 
-    push({ id: nextId(), kind: 'user', text });
-
     // `/run` — manual bypass straight to the visible terminal, no agent.
     if (text.startsWith('/run ')) {
       const command = text.slice(5).trim();
@@ -308,6 +323,7 @@ export default function ChatPanel({
         push({ id: nextId(), kind: 'error', text: 'Usage: /bytheway <question>' });
         return;
       }
+      push({ id: nextId(), kind: 'user', text });
       try {
         const res = await window.electronAPI!.orchestratorIsolatedQuery(question);
         push({ id: nextId(), kind: 'system', text: `isolated · ${res.modelId} · ${formatUsd(res.costUsd)} — no project context, no tools, not added to the task` });
@@ -379,6 +395,9 @@ export default function ChatPanel({
       <div className="chat-header">
         <span>AI AGENT</span>
         <div className="chat-header-actions">
+          <button className="chat-icon-btn" onClick={toggleHistory} title="Task History">
+            🕒
+          </button>
           <button className="chat-icon-btn" onClick={onOpenDashboard} title="Observability dashboard (Ctrl+Shift+D)">
             ▤
           </button>
@@ -390,6 +409,33 @@ export default function ChatPanel({
           </button>
         </div>
       </div>
+
+      {showHistory && (
+        <div className="chat-history-menu" style={{ padding: '12px', backgroundColor: '#252526', borderBottom: '1px solid #333' }}>
+          <h4 style={{ margin: '0 0 8px 0', fontSize: '12px', color: '#ccc' }}>Previous Tasks</h4>
+          {historyTasks.length === 0 ? (
+            <div style={{ fontSize: '12px', color: '#888' }}>No history found for this project.</div>
+          ) : (
+            <div style={{ maxHeight: '200px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+              {historyTasks.map(task => (
+                <button 
+                  key={task.taskId} 
+                  onClick={() => loadPastTask(task.taskId)}
+                  style={{ textAlign: 'left', padding: '6px', background: '#333', border: 'none', color: '#ddd', borderRadius: '4px', cursor: 'pointer', fontSize: '12px' }}
+                >
+                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '4px' }}>
+                    <strong>{new Date(task.createdAt).toLocaleDateString()}</strong>
+                    <span style={{ color: task.status === 'done' ? '#4caf50' : task.status === 'failed' ? '#f44336' : '#ff9800' }}>
+                      {task.status}
+                    </span>
+                  </div>
+                  <div style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{task.prompt}</div>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
       {running && (
         <div className="chat-budget">
