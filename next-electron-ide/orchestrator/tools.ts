@@ -333,6 +333,72 @@ export const TOOLS: Tool[] = [
       return { content: `exit ${code}\n${clamp(stdout)}${stderr ? `\nstderr: ${clamp(stderr, 1000)}` : ''}` };
     },
   },
+  {
+    schema: {
+      name: 'web_search',
+      description:
+        'Search the web using DuckDuckGo to find current documentation, API signatures, migration guides, compiler errors, and general knowledge. Returns extracted text from the search results.',
+      parameters: {
+        type: 'object',
+        properties: {
+          query: { type: 'string', description: 'The search query' },
+        },
+        required: ['query'],
+      },
+    },
+    sideEffecting: false,
+    run: async (args) => {
+      const query = str(args, 'query');
+      
+      try {
+
+        const res = await fetch('https://lite.duckduckgo.com/lite/', {
+          method: 'POST',
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          },
+          body: `q=${encodeURIComponent(query)}`
+        });
+
+        if (!res.ok) {
+          return { content: `Web search failed with status ${res.status}.` };
+        }
+
+        const html = await res.text();
+
+        // 1. Remove script and style blocks entirely (though DDG Lite has very few)
+        let text = html.replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, ' ');
+        text = text.replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, ' ');
+        
+        // 2. Remove all HTML tags
+        text = text.replace(/<[^>]+>/g, ' ');
+        
+        // 3. Decode basic HTML entities
+        text = text.replace(/&quot;/g, '"')
+                     .replace(/&#39;/g, "'")
+                     .replace(/&amp;/g, '&')
+                     .replace(/&lt;/g, '<')
+                     .replace(/&gt;/g, '>');
+                     
+        // 4. Collapse multiple spaces, tabs, and newlines into a dense, readable block
+        text = text.replace(/\s+/g, ' ').trim();
+
+        if (!text || text.length < 50) {
+          return { content: `No meaningful results found for query: ${query}` };
+        }
+
+        // Return clamped text so we don't blow out the agent's context window
+        return { 
+          content: `Search results for "${query}":\n\n${clamp(text, 6000)}\n\n(Note: This is scraped text. Look for keywords or URLs within the block.)` 
+        };
+        
+      } catch (err) {
+        return { content: `Search request failed: ${err instanceof Error ? err.message : String(err)}` };
+      }
+    },
+  },
 ];
 
 export function findTool(name: string): Tool | undefined {
@@ -343,5 +409,5 @@ export const TOOL_SCHEMAS: ToolSchema[] = TOOLS.map((t) => t.schema);
 
 /** Verifier gets a deliberately smaller surface: it checks, it does not edit. */
 export const VERIFIER_TOOL_SCHEMAS: ToolSchema[] = TOOLS.filter((t) =>
-  ['retrieve_context', 'read_file', 'list_dir', 'git', 'run_command'].includes(t.schema.name)
+  ['retrieve_context', 'read_file', 'list_dir', 'git', 'run_command', 'web_search'].includes(t.schema.name)
 ).map((t) => t.schema);
