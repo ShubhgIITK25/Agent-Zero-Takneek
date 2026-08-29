@@ -1,164 +1,387 @@
 'use client';
 
-import { useRef, useState } from 'react';
-import { AgentSession, AgentEvent, runIsolatedQuery } from '../lib/agent';
-import type { LLMToolCall } from '../lib/llm';
+/**
+ * AGENT PANEL — drives the orchestrator and renders its stream.
+ *
+ * Three things live here beyond plain chat:
+ *
+ * MANUAL CONTEXT CONTROL. Files and line ranges the user pins are read at
+ * send time and injected into the prompt as an explicit, labelled block. They
+ * are listed as removable chips, so "what the agent can see" is always visible
+ * and always editable. `@path` and `@path:12-40` typed in the input box are
+ * parsed into the same chips.
+ *
+ * CLICKABLE TAGGING BOTH WAYS. The input box turns `@path:lines` into a pin;
+ * the output chat turns any `path:line` or `path:line-line` the agent mentions
+ * into a link that opens that file at that line. Both directions, which is
+ * what the requirement actually asks for.
+ *
+ * APPROVALS. A side-effecting tool call suspends the orchestrator until this
+ * panel answers. Diffs render in DiffReview with per-block checkboxes;
+ * commands get a plain approve/reject.
+ */
+
+import { useCallback, useEffect, useRef, useState } from 'react';
+import DiffReview, { FileDiffView } from './DiffReview';
+import { TraceView, TraceEvent, applyEvent, emptyTrace, formatUsd } from '../lib/trace';
 
 type ChatPanelProps = {
   rootPath: string | null;
   activeFilePath: string | null;
   activeFileContent: string | null;
+  trace: TraceView;
+  onTraceEvent: (e: TraceEvent) => void;
   onClose: () => void;
   onOpenSettings: () => void;
+  onOpenDashboard: () => void;
   onRunCommand: (command: string) => void;
   onFileChanged: (path: string) => void;
+  onOpenFileAt: (path: string, line?: number) => void;
 };
 
-type UIMessage =
-  | { id: string; kind: 'user'; text: string }
-  | { id: string; kind: 'assistant'; text: string }
-  | { id: string; kind: 'error'; text: string }
-  | {
-      id: string;
-      kind: 'tool';
-      callId: string;
-      name: string;
-      args: Record<string, unknown>;
-      sideEffecting: boolean;
-      status: 'awaiting-approval' | 'running' | 'done' | 'rejected' | 'error';
-      result?: string;
-    };
+type PinnedItem = { path: string; lineStart?: number; lineEnd?: number };
 
-let nextId = 0;
-function makeId(): string {
-  nextId += 1;
-  return `msg-${nextId}`;
+type Bubble =
+  | { id: string; kind: 'user'; text: string }
+  | { id: string; kind: 'agent'; text: string }
+  | { id: string; kind: 'system'; text: string }
+  | { id: string; kind: 'error'; text: string }
+  /** `count` collapses N consecutive identical routing decisions into one row. */
+  | { id: string; kind: 'routing'; text: string; model: string; count: number }
+  | { id: string; kind: 'approval'; requestId: string; approvalKind: 'diff' | 'command'; summary: string; command?: string; diffs?: FileDiffView[]; resolved?: string };
+
+let bubbleSeq = 0;
+const nextId = () => `b${++bubbleSeq}`;
+
+/**
+ * The router's `reason` already opens with "<label> (<provider>): ", and the
+ * event carries modelId and provider separately — printing all three put the
+ * same words on screen three times and turned every routing line into a
+ * three-line paragraph. Keep the short model name and the actual justification.
+ */
+function compactRouting(e: TraceEvent): { model: string; text: string } {
+  const model = String(e.modelId ?? '').split(':').pop() || String(e.modelId ?? '');
+  const reason = String(e.reason ?? '');
+  const colon = reason.indexOf('): ');
+  return { model, text: colon >= 0 ? reason.slice(colon + 3) : reason };
+}
+
+/** Matches `src/foo.ts:120` and `src/foo.ts:120-140` inside agent prose. */
+const FILE_REF = /([\w./\\-]+\.[A-Za-z0-9]{1,8}):(\d+)(?:-(\d+))?/g;
+
+function LinkedText({ text, onOpenFileAt }: { text: string; onOpenFileAt: (p: string, l?: number) => void }) {
+  const parts: React.ReactNode[] = [];
+  let last = 0;
+  let m: RegExpExecArray | null;
+  FILE_REF.lastIndex = 0;
+  while ((m = FILE_REF.exec(text)) !== null) {
+    if (m.index > last) parts.push(text.slice(last, m.index));
+    const [full, path, line] = m;
+    parts.push(
+      <button
+        key={`${m.index}-${full}`}
+        type="button"
+        className="chat-file-link"
+        onClick={() => onOpenFileAt(path, Number(line))}
+        title={`Open ${path} at line ${line}`}
+      >
+        {full}
+      </button>
+    );
+    last = m.index + full.length;
+  }
+  if (last < text.length) parts.push(text.slice(last));
+  return <>{parts}</>;
 }
 
 export default function ChatPanel({
   rootPath,
   activeFilePath,
-  activeFileContent,
+  trace,
+  onTraceEvent,
   onClose,
   onOpenSettings,
+  onOpenDashboard,
   onRunCommand,
   onFileChanged,
+  onOpenFileAt,
 }: ChatPanelProps) {
-  const [messages, setMessages] = useState<UIMessage[]>([]);
+  const [bubbles, setBubbles] = useState<Bubble[]>([]);
   const [input, setInput] = useState('');
-  const [includeActiveFile, setIncludeActiveFile] = useState(true);
-  const [sending, setSending] = useState(false);
-  const [session] = useState(() => new AgentSession());
-  const approvalResolverRef = useRef<((approved: boolean) => void) | null>(null);
+  const [pinned, setPinned] = useState<PinnedItem[]>([]);
+  const [running, setRunning] = useState(false);
+  const [taskId, setTaskId] = useState<string | null>(null);
+  const [resumable, setResumable] = useState<{ taskId: string; prompt: string; step: number } | null>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const push = (b: Bubble) => setBubbles((prev) => [...prev, b]);
 
-  const handleEvent = (event: AgentEvent) => {
-    if (event.type === 'assistant-text') {
-      setMessages((prev) => [...prev, { id: makeId(), kind: 'assistant', text: event.text }]);
-    } else if (event.type === 'error') {
-      setMessages((prev) => [...prev, { id: makeId(), kind: 'error', text: event.message }]);
-    } else if (event.type === 'tool-start') {
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: event.call.id,
-          kind: 'tool',
-          callId: event.call.id,
-          name: event.call.name,
-          args: event.call.arguments,
-          sideEffecting: event.sideEffecting,
-          status: event.sideEffecting ? 'awaiting-approval' : 'running',
-        },
-      ]);
-    } else if (event.type === 'tool-result') {
-      setMessages((prev) =>
-        prev.map((m) => (m.kind === 'tool' && m.callId === event.call.id ? { ...m, status: event.outcome, result: event.result } : m))
-      );
-    }
-  };
+  // Offer to resume an interrupted task from a previous session.
+  useEffect(() => {
+    (async () => {
+      const tasks = await window.electronAPI?.orchestratorListTasks();
+      const interrupted = (tasks ?? []).find((t: any) => t.status === 'running' || t.status === 'paused');
+      if (interrupted) {
+        setResumable({ taskId: interrupted.taskId, prompt: interrupted.prompt, step: interrupted.step });
+      }
+    })();
+  }, [rootPath]);
 
-  const resolveApproval = (call: LLMToolCall, approved: boolean) => {
-    // Optimistic UI update so the buttons disappear immediately, before the
-    // tool-result event comes back from the (possibly slow) tool execution.
-    setMessages((prev) =>
-      prev.map((m) => (m.kind === 'tool' && m.callId === call.id ? { ...m, status: approved ? 'running' : 'rejected' } : m))
-    );
-    approvalResolverRef.current?.(approved);
-    approvalResolverRef.current = null;
-  };
-
-  const requestApproval = (call: LLMToolCall): Promise<boolean> =>
-    new Promise((resolve) => {
-      approvalResolverRef.current = resolve;
+  // Turn the orchestrator's stream into chat bubbles. The dashboard consumes
+  // the same events through the shared reducer; this view is the human-facing
+  // digest of them, not a second source of truth.
+  useEffect(() => {
+    const off = window.electronAPI?.onOrchestratorEvent((e: TraceEvent) => {
+      onTraceEvent(e);
+      switch (e.type) {
+        case 'plan_created':
+          push({
+            id: nextId(),
+            kind: 'system',
+            text: e.shortCircuited
+              ? 'Handling this directly — too simple to be worth decomposing.'
+              : `Plan: ${e.subtasks.map((s: any, i: number) => `${i + 1}. ${s.title}`).join('  ')}`,
+          });
+          break;
+        case 'routing_decision': {
+          const { model, text } = compactRouting(e);
+          // A multi-step subtask re-routes on every turn and usually picks the
+          // same model each time. Stacking those verbatim buried the actual
+          // content, so identical consecutive decisions collapse to one row.
+          setBubbles((prev) => {
+            const last = prev[prev.length - 1];
+            if (last?.kind === 'routing' && last.model === model && last.text === text) {
+              return [...prev.slice(0, -1), { ...last, count: last.count + 1 }];
+            }
+            return [...prev, { id: nextId(), kind: 'routing', model, text, count: 1 }];
+          });
+          break;
+        }
+        case 'subtask_started':
+          push({ id: nextId(), kind: 'system', text: `▸ ${e.title}${e.attempt > 1 ? ` (attempt ${e.attempt})` : ''}` });
+          break;
+        case 'compaction':
+          push({
+            id: nextId(),
+            kind: 'system',
+            text: `Compacted context ${e.beforeTokens}→${e.afterTokens} tokens, ${e.preserved.length} rules preserved verbatim.`,
+          });
+          break;
+        case 'intervention':
+          // e.detail carries the SPECIFIC reason (e.g. the exact provider
+          // error message); e.action is only the generic "what happens
+          // next". Showing detail is what makes an auth/key failure
+          // self-diagnosing instead of a dead end.
+          push({
+            id: nextId(),
+            kind: e.cause === 'provider_failover' ? 'error' : 'system',
+            text: `${e.cause.replace(/_/g, ' ')} — ${e.detail}\n${e.action}`,
+          });
+          break;
+        case 'approval_request':
+          push({
+            id: nextId(),
+            kind: 'approval',
+            requestId: e.request.requestId,
+            approvalKind: e.request.kind,
+            summary: e.request.summary,
+            command: e.request.command,
+            diffs: e.request.diff,
+          });
+          break;
+        case 'task_finished':
+          push({ id: nextId(), kind: 'agent', text: e.summary });
+          setRunning(false);
+          setTaskId(null);
+          onFileChanged('');
+          break;
+        case 'task_failed':
+          push({ id: nextId(), kind: 'error', text: e.reason });
+          setRunning(false);
+          setTaskId(null);
+          break;
+        case 'task_cancelled':
+          push({ id: nextId(), kind: 'system', text: 'Task cancelled.' });
+          setRunning(false);
+          setTaskId(null);
+          break;
+        case 'resumed':
+          push({ id: nextId(), kind: 'system', text: e.note });
+          break;
+      }
     });
+    const offStatus = window.electronAPI?.onOrchestratorStatus((s) => {
+      if (s.state !== 'ready') push({ id: nextId(), kind: 'error', text: s.message ?? s.state });
+    });
+    return () => {
+      off?.();
+      offStatus?.();
+    };
+  }, [onTraceEvent, onFileChanged]);
 
-  const handleSend = async () => {
+  // Follow the tail only when the user is already at it. Unconditionally
+  // scrolling to the bottom on every event yanked the view away mid-review of
+  // a pending diff — and that diff is the one thing the whole task is blocked
+  // on, so it is the last thing that should scroll off screen.
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    if (distanceFromBottom < 120) {
+      el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
+    }
+  }, [bubbles]);
+
+  // A newly-raised approval is what the orchestrator is now blocked on, so it
+  // always gets scrolled to regardless of where the user was reading.
+  const pendingApproval = bubbles.find((b) => b.kind === 'approval' && !b.resolved);
+  useEffect(() => {
+    if (!pendingApproval) return;
+    document
+      .getElementById(`approval-${pendingApproval.id}`)
+      ?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }, [pendingApproval?.id]);
+
+  const pinActiveFile = useCallback(() => {
+    if (!activeFilePath) return;
+    const rel = rootPath && activeFilePath.startsWith(rootPath) ? activeFilePath.slice(rootPath.length + 1) : activeFilePath;
+    setPinned((prev) => (prev.some((p) => p.path === rel) ? prev : [...prev, { path: rel }]));
+  }, [activeFilePath, rootPath]);
+
+  /** Reads pinned files at send time so the agent sees current disk content. */
+  const buildContextBlock = useCallback(async (): Promise<string> => {
+    if (!pinned.length || !rootPath) return '';
+    const chunks: string[] = [];
+    for (const p of pinned) {
+      try {
+        const full = `${rootPath}/${p.path}`.replace(/\\/g, '/');
+        const text = await window.electronAPI!.readFile(full);
+        const lines = text.split('\n');
+        const start = p.lineStart ?? 1;
+        const end = p.lineEnd ?? lines.length;
+        chunks.push(`--- ${p.path}:${start}-${end} ---\n${lines.slice(start - 1, end).join('\n')}`);
+      } catch {
+        chunks.push(`--- ${p.path} --- (could not be read)`);
+      }
+    }
+    return `\n\nThe user has explicitly pinned this context. Treat it as directly relevant:\n\n${chunks.join('\n\n')}`;
+  }, [pinned, rootPath]);
+
+  const send = async () => {
     const text = input.trim();
-    if (!text || sending) return;
+    if (!text || running) return;
     setInput('');
-    setMessages((prev) => [...prev, { id: makeId(), kind: 'user', text }]);
-    setSending(true);
 
+    // `@path` / `@path:12-40` become pins rather than prose.
+    const pinMatches = [...text.matchAll(/@([\w./\\-]+?)(?::(\d+)(?:-(\d+))?)?(?=\s|$)/g)];
+    if (pinMatches.length) {
+      setPinned((prev) => {
+        const next = [...prev];
+        for (const m of pinMatches) {
+          const item: PinnedItem = {
+            path: m[1],
+            lineStart: m[2] ? Number(m[2]) : undefined,
+            lineEnd: m[3] ? Number(m[3]) : m[2] ? Number(m[2]) : undefined,
+          };
+          if (!next.some((p) => p.path === item.path && p.lineStart === item.lineStart)) next.push(item);
+        }
+        return next;
+      });
+    }
+
+    push({ id: nextId(), kind: 'user', text });
+
+    // `/run` — manual bypass straight to the visible terminal, no agent.
+    if (text.startsWith('/run ')) {
+      const command = text.slice(5).trim();
+      if (command) {
+        onRunCommand(command);
+        push({ id: nextId(), kind: 'system', text: `Sent straight to the terminal (agent bypassed): ${command}` });
+      }
+      return;
+    }
+
+    // `/bytheway` — isolated, zero-context. Runs as its own command in the
+    // orchestrator and never touches a running task's history.
+    if (text.startsWith('/bytheway') || text.startsWith('/btw')) {
+      const question = text.replace(/^\/(bytheway|btw)\s*/, '');
+      if (!question) {
+        push({ id: nextId(), kind: 'error', text: 'Usage: /bytheway <question>' });
+        return;
+      }
+      try {
+        const res = await window.electronAPI!.orchestratorIsolatedQuery(question);
+        push({ id: nextId(), kind: 'system', text: `isolated · ${res.modelId} · ${formatUsd(res.costUsd)} — no project context, no tools, not added to the task` });
+        push({ id: nextId(), kind: 'agent', text: res.answer });
+      } catch (err) {
+        push({ id: nextId(), kind: 'error', text: err instanceof Error ? err.message : String(err) });
+      }
+      return;
+    }
+
+    const contextBlock = await buildContextBlock();
+    const id = `task_${Date.now()}`;
+    setTaskId(id);
+    setRunning(true);
     try {
-      // Manual escape hatch: run a command directly without going through
-      // the (currently unimplemented) LLM. Useful for testing the terminal
-      // wiring on its own.
-      if (text.startsWith('/run ')) {
-        const command = text.slice('/run '.length).trim();
-        if (command) {
-          onRunCommand(command);
-          setMessages((prev) => [
-            ...prev,
-            { id: makeId(), kind: 'assistant', text: `Sent directly to the terminal (bypassed the agent): \`${command}\`` },
-          ]);
-        }
-        return;
-      }
-
-      // `/bytheway` — isolated, zero-context, doesn't touch the session.
-      if (text.startsWith('/bytheway') || text.startsWith('/btw')) {
-        const question = text.replace(/^\/(bytheway|btw)\s*/, '');
-        if (!question) {
-          setMessages((prev) => [...prev, { id: makeId(), kind: 'error', text: 'Usage: /bytheway <question>' }]);
-          return;
-        }
-        try {
-          const answer = await runIsolatedQuery(question);
-          setMessages((prev) => [...prev, { id: makeId(), kind: 'assistant', text: answer }]);
-        } catch (err) {
-          setMessages((prev) => [
-            ...prev,
-            { id: makeId(), kind: 'error', text: err instanceof Error ? err.message : String(err) },
-          ]);
-        }
-        return;
-      }
-
-      await session.sendMessage(
-        text,
-        {
-          rootPath,
-          activeFilePath: includeActiveFile ? activeFilePath : null,
-          activeFileContent: includeActiveFile ? activeFileContent : null,
-        },
-        { onEvent: handleEvent, requestApproval, runInTerminal: onRunCommand, notifyFileChanged: onFileChanged }
-      );
-    } finally {
-      setSending(false);
+      await window.electronAPI!.orchestratorStartTask(id, text + contextBlock);
+    } catch (err) {
+      push({ id: nextId(), kind: 'error', text: err instanceof Error ? err.message : String(err) });
+      setRunning(false);
+      setTaskId(null);
     }
   };
 
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      handleSend();
+  /** Returns false when the decision could not be delivered, so the widget can
+   *  re-enable itself and let the user retry rather than dead-ending. */
+  const decide = async (requestId: string, approved: boolean, acceptedBlockIds: string[]): Promise<boolean> => {
+    // Send FIRST, then collapse the widget. Marking it resolved optimistically
+    // and then failing to deliver left the orchestrator blocked on an approval
+    // the user could no longer answer — the task just hung with the UI
+    // claiming it had been handled.
+    try {
+      await window.electronAPI?.orchestratorApprove({ requestId, approved, acceptedBlockIds });
+    } catch (err) {
+      push({
+        id: nextId(),
+        kind: 'error',
+        text: `Could not deliver that decision: ${err instanceof Error ? err.message : String(err)}. The task is still waiting — try again.`,
+      });
+      return false;
+    }
+    setBubbles((prev) =>
+      prev.map((b) =>
+        b.kind === 'approval' && b.requestId === requestId
+          ? { ...b, resolved: approved ? (acceptedBlockIds.length ? `applied ${acceptedBlockIds.length} block(s)` : 'approved') : 'rejected' }
+          : b
+      )
+    );
+    return true;
+  };
+
+  const resume = async () => {
+    if (!resumable) return;
+    setRunning(true);
+    setTaskId(resumable.taskId);
+    push({ id: nextId(), kind: 'user', text: resumable.prompt });
+    try {
+      await window.electronAPI!.orchestratorResumeTask(resumable.taskId);
+      setResumable(null);
+    } catch (err) {
+      push({ id: nextId(), kind: 'error', text: err instanceof Error ? err.message : String(err) });
+      setRunning(false);
     }
   };
+
+  const budgetPct = trace.budget.maxCostUsd > 0 ? (trace.budget.costUsd / trace.budget.maxCostUsd) * 100 : 0;
 
   return (
     <aside className="chat-sidebar">
       <div className="chat-header">
         <span>AI AGENT</span>
         <div className="chat-header-actions">
+          <button className="chat-icon-btn" onClick={onOpenDashboard} title="Observability dashboard (Ctrl+Shift+D)">
+            ▤
+          </button>
           <button className="chat-icon-btn" onClick={onOpenSettings} title="Agent Settings (Ctrl+,)">
             ⚙
           </button>
@@ -168,98 +391,166 @@ export default function ChatPanel({
         </div>
       </div>
 
-      <div className="chat-messages">
-        {messages.length === 0 ? (
+      {running && (
+        <div className="chat-budget">
+          <div className="chat-budget-bar">
+            <div
+              className={`chat-budget-fill${budgetPct > 85 ? ' danger' : budgetPct > 60 ? ' warn' : ''}`}
+              style={{ width: `${Math.min(100, budgetPct)}%` }}
+            />
+          </div>
+          <span className="chat-budget-text">
+            {formatUsd(trace.budget.costUsd)} / ${trace.budget.maxCostUsd} · {Math.round(trace.budget.elapsedSeconds)}s
+            / {trace.budget.maxSeconds}s
+          </span>
+          <button type="button" className="chat-cancel-btn" onClick={() => taskId && window.electronAPI?.orchestratorCancelTask(taskId)}>
+            Stop
+          </button>
+        </div>
+      )}
+
+      {resumable && !running && (
+        <div className="chat-resume">
+          <span>Interrupted task from a previous session (step {resumable.step}).</span>
+          <div>
+            <button type="button" onClick={resume}>
+              Resume
+            </button>
+            <button type="button" className="chat-resume-dismiss" onClick={() => setResumable(null)}>
+              Dismiss
+            </button>
+          </div>
+        </div>
+      )}
+
+      <div className="chat-messages" ref={scrollRef}>
+        {bubbles.length === 0 ? (
           <div className="chat-empty">
-            <p>The agent loop, tool execution, and approval gate are real — only the model call is a stub.</p>
+            <p>Multi-agent orchestration: the request is decomposed, each subtask is routed to a model chosen live, and results are independently verified before anything is called done.</p>
             <p className="chat-empty-hint">
-              Set <code>LLM_ENDPOINT</code> and implement <code>callLLM()</code> in{' '}
-              <code>src/lib/llm.ts</code> to go live. Add API keys in <code>Agent → Settings</code> first.
+              <code>@path/to/file.ts:10-40</code> pins context · <code>/bytheway</code> asks in isolation ·{' '}
+              <code>/run</code> bypasses the agent
             </p>
-            <p className="chat-empty-hint">
-              <code>/run &lt;command&gt;</code> bypasses the agent and runs directly in the
-              terminal. <code>/bytheway &lt;question&gt;</code> is an isolated, zero-context aside.
-            </p>
+            <p className="chat-empty-hint">Enable at least one model in <code>Agent → Settings</code> first.</p>
           </div>
         ) : (
-          messages.map((m) => {
-            if (m.kind === 'user' || m.kind === 'assistant') {
+          bubbles.map((b) => {
+            if (b.kind === 'approval') {
+              if (b.resolved) {
+                return (
+                  <div key={b.id} className="chat-approval-resolved">
+                    {b.summary} — <strong>{b.resolved}</strong>
+                  </div>
+                );
+              }
+              if (b.approvalKind === 'diff' && b.diffs) {
+                return (
+                  <div key={b.id} id={`approval-${b.id}`}>
+                    <DiffReview
+                      summary={b.summary}
+                      diffs={b.diffs}
+                      onDecide={(approved, ids) => decide(b.requestId, approved, ids)}
+                    />
+                  </div>
+                );
+              }
               return (
-                <div key={m.id} className={`chat-message ${m.kind}`}>
-                  <div className="chat-message-role">{m.kind === 'user' ? 'You' : 'Agent'}</div>
-                  <div className="chat-message-text">{m.text}</div>
-                </div>
-              );
-            }
-            if (m.kind === 'error') {
-              return (
-                <div key={m.id} className="chat-message chat-message-error">
-                  <div className="chat-message-role">Error</div>
-                  <div className="chat-message-text">{m.text}</div>
-                </div>
-              );
-            }
-            // tool
-            return (
-              <div key={m.id} className={`chat-tool-call chat-tool-${m.status}`}>
-                <div className="chat-tool-header">
-                  <span className="chat-tool-name">{m.name}</span>
-                  <span className={`chat-tool-status chat-tool-status-${m.status}`}>{m.status.replace('-', ' ')}</span>
-                </div>
-                <pre className="chat-tool-args">{JSON.stringify(m.args, null, 2)}</pre>
-                {m.status === 'awaiting-approval' && (
+                <div key={b.id} id={`approval-${b.id}`} className="chat-command-approval">
+                  <div className="chat-command-head">Approve this command?</div>
+                  <pre className="chat-command-body">{b.command}</pre>
                   <div className="chat-approval-actions">
-                    <button
-                      type="button"
-                      className="chat-approve-btn"
-                      onClick={() => resolveApproval({ id: m.callId, name: m.name, arguments: m.args }, true)}
-                    >
+                    <button type="button" className="chat-approve-btn" onClick={() => decide(b.requestId, true, [])}>
                       Approve
                     </button>
-                    <button
-                      type="button"
-                      className="chat-reject-btn"
-                      onClick={() => resolveApproval({ id: m.callId, name: m.name, arguments: m.args }, false)}
-                    >
+                    <button type="button" className="chat-reject-btn" onClick={() => decide(b.requestId, false, [])}>
                       Reject
                     </button>
                   </div>
-                )}
-                {m.result && <div className="chat-tool-result">{m.result}</div>}
+                </div>
+              );
+            }
+            if (b.kind === 'routing') {
+              return (
+                <div key={b.id} className="chat-routing" title={b.text}>
+                  <span className="chat-routing-icon">⇄</span>
+                  <span className="chat-routing-model">{b.model}</span>
+                  <span className="chat-routing-why">{b.text}</span>
+                  {b.count > 1 && <span className="chat-routing-count">×{b.count}</span>}
+                </div>
+              );
+            }
+            if (b.kind === 'system') {
+              return (
+                <div key={b.id} className="chat-system">
+                  {b.text}
+                </div>
+              );
+            }
+            if (b.kind === 'error') {
+              return (
+                <div key={b.id} className="chat-message chat-message-error">
+                  <div className="chat-message-role">Error</div>
+                  <div className="chat-message-text">{b.text}</div>
+                </div>
+              );
+            }
+            return (
+              <div key={b.id} className={`chat-message ${b.kind === 'user' ? 'user' : 'assistant'}`}>
+                <div className="chat-message-role">{b.kind === 'user' ? 'You' : 'Agent'}</div>
+                <div className="chat-message-text">
+                  <LinkedText text={b.text} onOpenFileAt={onOpenFileAt} />
+                </div>
               </div>
             );
           })
         )}
-        {sending && <div className="chat-message assistant chat-thinking">Agent is working…</div>}
+        {running && <div className="chat-thinking">Working…</div>}
       </div>
 
       <div className="chat-context-row">
-        <label>
-          <input
-            type="checkbox"
-            checked={includeActiveFile}
-            onChange={(e) => setIncludeActiveFile(e.target.checked)}
-            disabled={!activeFilePath}
-          />
-          {activeFilePath ? (
-            <span>
-              Include current file: <span className="chat-context-file">{activeFilePath.split(/[\\/]/).pop()}</span>
+        <div className="chat-pins">
+          {pinned.map((p, i) => (
+            <span key={`${p.path}-${i}`} className="chat-pin">
+              <button
+                type="button"
+                className="chat-pin-open"
+                onClick={() => onOpenFileAt(p.path, p.lineStart)}
+                title="Open this file"
+              >
+                {p.path}
+                {p.lineStart ? `:${p.lineStart}${p.lineEnd && p.lineEnd !== p.lineStart ? `-${p.lineEnd}` : ''}` : ''}
+              </button>
+              <button
+                type="button"
+                className="chat-pin-remove"
+                onClick={() => setPinned((prev) => prev.filter((_, j) => j !== i))}
+                aria-label={`Remove ${p.path} from context`}
+              >
+                ×
+              </button>
             </span>
-          ) : (
-            <span>No file open</span>
-          )}
-        </label>
+          ))}
+          <button type="button" className="chat-pin-add" onClick={pinActiveFile} disabled={!activeFilePath}>
+            + current file
+          </button>
+        </div>
       </div>
 
       <div className="chat-input-row">
         <textarea
           value={input}
           onChange={(e) => setInput(e.target.value)}
-          onKeyDown={handleKeyDown}
-          placeholder="Ask the agent, /run a command, or /bytheway…"
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+              e.preventDefault();
+              send();
+            }
+          }}
+          placeholder="Describe a task, @pin a file, /bytheway…"
           rows={3}
+          disabled={running}
         />
-        <button type="button" onClick={handleSend} disabled={sending || !input.trim()}>
+        <button type="button" onClick={send} disabled={running || !input.trim()}>
           Send
         </button>
       </div>

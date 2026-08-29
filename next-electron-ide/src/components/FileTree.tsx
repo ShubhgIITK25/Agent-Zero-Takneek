@@ -7,15 +7,11 @@ type TreeNodeProps = {
   node: FileNode;
   depth: number;
   activePath: string | null;
-  selectedDirectoryPath: string | null;
-  selectedPath: string | null;
   onOpenFile: (path: string) => void;
-  onSelectDirectory: (path: string) => void;
-  onSelectPath: (path: string) => void;
   refreshToken: number;
 };
 
-function TreeNode({ node, depth, activePath, selectedDirectoryPath, selectedPath, onOpenFile, onSelectDirectory, onSelectPath, refreshToken }: TreeNodeProps) {
+function TreeNode({ node, depth, activePath, onOpenFile, refreshToken }: TreeNodeProps) {
   const [expanded, setExpanded] = useState(false);
   const [children, setChildren] = useState<FileNode[] | null>(null);
   const [loading, setLoading] = useState(false);
@@ -29,12 +25,9 @@ function TreeNode({ node, depth, activePath, selectedDirectoryPath, selectedPath
 
   const toggle = useCallback(async () => {
     if (!node.isDirectory) {
-      onSelectPath(node.path);
       onOpenFile(node.path);
       return;
     }
-    onSelectPath(node.path);
-    onSelectDirectory(node.path);
     if (!expanded && children === null) {
       await loadChildren();
     }
@@ -57,12 +50,12 @@ function TreeNode({ node, depth, activePath, selectedDirectoryPath, selectedPath
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [refreshToken]);
 
-  const isSelected = selectedPath === node.path;
+  const isActive = activePath === node.path;
 
   return (
     <div>
       <div
-        className={`tree-row${isSelected ? ' selected-item' : ''}`}
+        className={`tree-row${isActive ? ' active' : ''}`}
         style={{ paddingLeft: 8 + depth * 14 }}
         onClick={toggle}
         title={node.path}
@@ -84,11 +77,7 @@ function TreeNode({ node, depth, activePath, selectedDirectoryPath, selectedPath
               node={child}
               depth={depth + 1}
               activePath={activePath}
-              selectedDirectoryPath={selectedDirectoryPath}
-              selectedPath={selectedPath}
               onOpenFile={onOpenFile}
-              onSelectDirectory={onSelectDirectory}
-              onSelectPath={onSelectPath}
               refreshToken={refreshToken}
             />
           ))}
@@ -128,84 +117,29 @@ type FileTreeProps = {
   rootPath: string | null;
   rootEntries: FileNode[];
   activePath: string | null;
-  selectedDirectoryPath: string | null;
-  selectedPath: string | null;
   refreshToken: number;
   onOpenFile: (path: string) => void;
-  onSelectDirectory: (path: string) => void;
-  onSelectPath: (path: string) => void;
   onOpenFolder: () => void;
   onRefresh: () => void;
-  onCreateFile: (name: string) => void;
-  onCreateFolder: (name: string) => void;
-  onDeletePath: (path: string) => void;
 };
 
 export default function FileTree({
   rootPath,
   rootEntries,
   activePath,
-  selectedDirectoryPath,
-  selectedPath,
   refreshToken,
   onOpenFile,
-  onSelectDirectory,
-  onSelectPath,
   onOpenFolder,
   onRefresh,
-  onCreateFile,
-  onCreateFolder,
-  onDeletePath,
 }: FileTreeProps) {
-  const [creating, setCreating] = useState<'file' | 'folder' | null>(null);
-  const [newName, setNewName] = useState('');
-  const createInputRef = useRef<HTMLInputElement>(null);
-
-  useEffect(() => {
-    if (creating) {
-      createInputRef.current?.focus();
-      createInputRef.current?.select();
-    }
-  }, [creating]);
-
-  const beginCreate = (kind: 'file' | 'folder') => {
-    setCreating(kind);
-    setNewName('');
-  };
-
-  const finishCreate = () => {
-    const name = newName.trim();
-    if (!creating || !name) return;
-    if (creating === 'file') onCreateFile(name);
-    else onCreateFolder(name);
-    setCreating(null);
-    setNewName('');
-  };
-
   return (
     <div className="file-tree">
       <div className="file-tree-header">
         <span>EXPLORER</span>
         {rootPath && (
-          <div className="file-tree-actions">
-            <button className="file-tree-action-btn" onClick={() => beginCreate('file')} title="New File">
-              +
-            </button>
-            <button className="file-tree-action-btn" onClick={() => beginCreate('folder')} title="New Folder">
-              📁+
-            </button>
-            <button
-              className="file-tree-action-btn"
-              onClick={() => selectedPath && selectedPath !== rootPath && onDeletePath(selectedPath)}
-              title="Delete Selected"
-              disabled={!selectedPath || selectedPath === rootPath}
-            >
-              🗑
-            </button>
-            <button className="file-tree-refresh-btn" onClick={onRefresh} title="Refresh Files (Ctrl+R)">
-              ⟳
-            </button>
-          </div>
+          <button className="file-tree-refresh-btn" onClick={onRefresh} title="Refresh Files (Ctrl+R)">
+            ⟳
+          </button>
         )}
       </div>
       {!rootPath ? (
@@ -215,41 +149,9 @@ export default function FileTree({
         </div>
       ) : (
         <>
-          <div
-            className={`file-tree-root${selectedDirectoryPath === rootPath ? ' selected-directory' : ''}`}
-            onClick={() => {
-              onSelectPath(rootPath);
-              onSelectDirectory(rootPath);
-            }}
-            title="Select workspace folder"
-          >
+          <div className="file-tree-root" onClick={onOpenFolder} title="Click to open a different folder">
             {rootPath.split('/').pop() || rootPath}
           </div>
-          {creating && (
-            <form
-              className="file-tree-create-form"
-              onSubmit={(event) => {
-                event.preventDefault();
-                finishCreate();
-              }}
-              onClick={(event) => event.stopPropagation()}
-              onMouseDown={(event) => event.stopPropagation()}
-            >
-              <input
-                ref={createInputRef}
-                className="file-tree-create-input"
-                value={newName}
-                onChange={(event) => setNewName(event.target.value)}
-                onBlur={() => setCreating(null)}
-                onKeyDown={(event) => {
-                  event.stopPropagation();
-                  if (event.key === 'Escape') setCreating(null);
-                }}
-                placeholder={creating === 'file' ? 'New file name' : 'New folder name'}
-                autoFocus
-              />
-            </form>
-          )}
           <div className="file-tree-body">
             {rootEntries.map((node) => (
               <TreeNode
@@ -257,11 +159,7 @@ export default function FileTree({
                 node={node}
                 depth={0}
                 activePath={activePath}
-                selectedDirectoryPath={selectedDirectoryPath}
-                selectedPath={selectedPath}
                 onOpenFile={onOpenFile}
-                onSelectDirectory={onSelectDirectory}
-                onSelectPath={onSelectPath}
                 refreshToken={refreshToken}
               />
             ))}

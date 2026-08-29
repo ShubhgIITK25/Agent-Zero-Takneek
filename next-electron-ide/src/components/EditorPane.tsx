@@ -1,17 +1,20 @@
 'use client';
 
 import Editor, { OnMount } from '@monaco-editor/react';
-import { useRef } from 'react';
+import { useEffect, useRef } from 'react';
 import { languageFromPath } from '../lib/language';
 
 type EditorPaneProps = {
   filePath: string | null;
   content: string;
+  /** Scroll to and highlight this line — set when a clickable file:line tag
+   *  in the agent chat is followed. */
+  revealLine?: number;
   onChange: (value: string) => void;
   onSave: () => void;
 };
 
-export default function EditorPane({ filePath, content, onChange, onSave }: EditorPaneProps) {
+export default function EditorPane({ filePath, content, revealLine, onChange, onSave }: EditorPaneProps) {
   const editorRef = useRef<Parameters<OnMount>[0] | null>(null);
 
   const handleMount: OnMount = (editor, monaco) => {
@@ -20,6 +23,15 @@ export default function EditorPane({ filePath, content, onChange, onSave }: Edit
       onSave();
     });
   };
+
+  // Following a file:line tag from the chat scrolls the editor to that line.
+  useEffect(() => {
+    if (!revealLine || !editorRef.current) return;
+    const editor = editorRef.current;
+    editor.revealLineInCenter(revealLine);
+    editor.setPosition({ lineNumber: revealLine, column: 1 });
+    editor.focus();
+  }, [revealLine, filePath]);
 
   if (!filePath) {
     return (

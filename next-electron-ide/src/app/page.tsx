@@ -7,7 +7,9 @@ import Tabs, { OpenFile } from '../components/Tabs';
 import StatusBar from '../components/StatusBar';
 import ChatPanel from '../components/ChatPanel';
 import SettingsPanel from '../components/SettingsPanel';
+import Dashboard from '../components/Dashboard';
 import type { FileNode, RetrievalStatus } from '../lib/electron-api';
+import { TraceView, TraceEvent, applyEvent, emptyTrace } from '../lib/trace';
 
 // Monaco touches `self`/`window` at module load time, so it must never be
 // evaluated during SSR/static export — load it only on the client.
@@ -19,8 +21,6 @@ const TERMINAL_ID = 'main-terminal';
 
 export default function Home() {
   const [rootPath, setRootPath] = useState<string | null>(null);
-  const [selectedDirectoryPath, setSelectedDirectoryPath] = useState<string | null>(null);
-  const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [rootEntries, setRootEntries] = useState<FileNode[]>([]);
   const [openFiles, setOpenFiles] = useState<OpenFile[]>([]);
   const [activePath, setActivePath] = useState<string | null>(null);
@@ -31,18 +31,38 @@ export default function Home() {
   const [chatOpen, setChatOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [refreshToken, setRefreshToken] = useState(0);
+  const [pendingLine, setPendingLine] = useState<{ path: string; line: number } | null>(null);
   const [retrievalStatus, setRetrievalStatus] = useState<RetrievalStatus | null>(null);
+  const [dashboardOpen, setDashboardOpen] = useState(false);
+  // The live trace lives here, not in ChatPanel, so the dashboard keeps
+  // rendering a running task even when the chat panel is closed.
+  const [trace, setTrace] = useState<TraceView>(emptyTrace);
+  const handleTraceEvent = useCallback((e: TraceEvent) => {
+    setTrace((prev) => applyEvent(e.type === 'task_started' ? emptyTrace() : prev, e));
+  }, []);
+
+  // One code path for "a folder is now open", whether that came from the
+  // dialog, the menu, or main restoring the previous session's folder.
+  const adoptFolder = useCallback(async (folderPath: string) => {
+    setRootPath(folderPath);
+    try {
+      setRootEntries(await window.electronAPI!.readDir(folderPath));
+    } catch {
+      // Restored path vanished between main's stat and this read.
+      setRootEntries([]);
+    }
+    window.electronAPI!.terminalChangeDir(TERMINAL_ID, folderPath);
+  }, []);
 
   useEffect(() => {
     setElectronReady(typeof window !== 'undefined' && !!window.electronAPI);
-    const offFolder = window.electronAPI?.onFolderOpened(async (folderPath) => {
-      setRootPath(folderPath);
-      setSelectedDirectoryPath(folderPath);
-      setSelectedPath(folderPath);
-      const entries = await window.electronAPI!.readDir(folderPath);
-      setRootEntries(entries);
-      console.log('[page] onFolderOpened ->', folderPath, '-> terminalChangeDir');
-      window.electronAPI!.terminalChangeDir(TERMINAL_ID, folderPath);
+    // Main may have restored a folder before this window finished loading, so
+    // its 'folder:opened' push landed with nobody listening — ask directly.
+    window.electronAPI?.getCurrentFolder().then((folderPath) => {
+      if (folderPath) adoptFolder(folderPath);
+    });
+    const offFolder = window.electronAPI?.onFolderOpened((folderPath) => {
+      adoptFolder(folderPath);
     });
     const offTerminal = window.electronAPI?.onTerminalToggle(() => {
       setTerminalOpen((open) => !open);
@@ -52,6 +72,9 @@ export default function Home() {
     });
     const offSettings = window.electronAPI?.onSettingsToggle(() => {
       setSettingsOpen((open) => !open);
+    });
+    const offDashboard = window.electronAPI?.onDashboardToggle(() => {
+      setDashboardOpen((open) => !open);
     });
     const offFilesRefresh = window.electronAPI?.onFilesRefresh(() => {
       refreshWorkspaceRef.current();
@@ -64,23 +87,17 @@ export default function Home() {
       offTerminal?.();
       offChat?.();
       offSettings?.();
+      offDashboard?.();
       offFilesRefresh?.();
       offRetrievalStatus?.();
     };
-  }, []);
+  }, [adoptFolder]);
 
   const openFolder = useCallback(async () => {
     if (!window.electronAPI) return;
     const folderPath = await window.electronAPI.openFolder();
-    if (!folderPath) return;
-    setRootPath(folderPath);
-    setSelectedDirectoryPath(folderPath);
-    setSelectedPath(folderPath);
-    const entries = await window.electronAPI.readDir(folderPath);
-    setRootEntries(entries);
-    console.log('[page] openFolder ->', folderPath, '-> terminalChangeDir');
-    window.electronAPI.terminalChangeDir(TERMINAL_ID, folderPath);
-  }, []);
+    if (folderPath) adoptFolder(folderPath);
+  }, [adoptFolder]);
 
   const openFile = useCallback(async (path: string) => {
     if (!window.electronAPI) return;
@@ -168,61 +185,22 @@ export default function Home() {
     refreshWorkspaceRef.current = refreshWorkspace;
   }, [refreshWorkspace]);
 
-  const createWorkspaceEntry = useCallback(
-    async (kind: 'file' | 'folder', name: string) => {
-      if (!rootPath || !window.electronAPI) return;
-      if (name === '.' || name === '..' || /[\\/]/.test(name)) {
-        window.alert('Use a direct child name without path separators.');
-        return;
-      }
-
-      const parentPath = selectedDirectoryPath || rootPath;
-      const separator = parentPath.includes('\\') ? '\\' : '/';
-      const entryPath = `${parentPath.replace(/[\\/]$/, '')}${separator}${name}`;
+  // Clickable file/line tags in the chat resolve project-relative paths
+  // against the open root, so `src/foo.ts:42` in agent prose opens the file.
+  const openFileAt = useCallback(
+    async (relOrAbs: string, line?: number) => {
+      if (!window.electronAPI || !rootPath) return;
+      const isAbs = /^([a-zA-Z]:[\\/]|\/)/.test(relOrAbs);
+      const full = isAbs ? relOrAbs : `${rootPath}/${relOrAbs}`.replace(/\\/g, '/');
       try {
-        if (kind === 'file') {
-          await window.electronAPI.createFile(entryPath);
-          await refreshWorkspace();
-          await openFile(entryPath);
-        } else {
-          await window.electronAPI.createFolder(entryPath);
-          await refreshWorkspace();
-        }
-      } catch (error) {
-        const message = error instanceof Error ? error.message : `Could not create ${kind}.`;
-        console.error(`[explorer] Could not create ${entryPath}:`, error);
-        window.alert(message);
+        await openFile(full);
+        if (line) setPendingLine({ path: full, line });
+      } catch {
+        // Path the agent mentioned does not exist locally — ignore rather
+        // than throwing inside a click handler.
       }
     },
-    [openFile, refreshWorkspace, rootPath, selectedDirectoryPath]
-  );
-
-  const selectDirectory = useCallback((path: string) => {
-    setSelectedDirectoryPath(path);
-    setSelectedPath(path);
-    setActivePath(null);
-  }, []);
-
-  const deleteWorkspacePath = useCallback(
-    async (targetPath: string) => {
-      if (!rootPath || targetPath === rootPath || !window.electronAPI) return;
-      const name = targetPath.split(/[\\/]/).pop() || targetPath;
-      if (!window.confirm(`Delete "${name}"?`)) return;
-      try {
-        await window.electronAPI.deletePath(targetPath);
-        if (openFiles.some((file) => file.path === targetPath)) closeFile(targetPath);
-        if (selectedDirectoryPath === targetPath || selectedDirectoryPath?.startsWith(`${targetPath}\\`) || selectedDirectoryPath?.startsWith(`${targetPath}/`)) {
-          setSelectedDirectoryPath(rootPath);
-        }
-        setSelectedPath(null);
-        await refreshWorkspace();
-      } catch (error) {
-        const message = error instanceof Error ? error.message : 'Could not delete the selected item.';
-        console.error(`[explorer] Could not delete ${targetPath}:`, error);
-        window.alert(message);
-      }
-    },
-    [closeFile, openFiles, refreshWorkspace, rootPath, selectedDirectoryPath]
+    [rootPath, openFile]
   );
 
   const toggleTerminal = useCallback(() => {
@@ -260,17 +238,10 @@ export default function Home() {
           rootPath={rootPath}
           rootEntries={rootEntries}
           activePath={activePath}
-          selectedPath={selectedPath}
-          selectedDirectoryPath={selectedDirectoryPath}
           refreshToken={refreshToken}
           onOpenFile={openFile}
-          onSelectDirectory={selectDirectory}
-          onSelectPath={setSelectedPath}
           onOpenFolder={openFolder}
           onRefresh={() => refreshWorkspace()}
-          onCreateFile={(name) => createWorkspaceEntry('file', name)}
-          onCreateFolder={(name) => createWorkspaceEntry('folder', name)}
-          onDeletePath={deleteWorkspacePath}
         />
       </aside>
       <main className="main-panel">
@@ -280,6 +251,7 @@ export default function Home() {
             <EditorPane
               filePath={activePath}
               content={activePath ? contents.current.get(activePath) ?? '' : ''}
+              revealLine={pendingLine && pendingLine.path === activePath ? pendingLine.line : undefined}
               onChange={(value) => activePath && updateContent(activePath, value)}
               onSave={saveActiveFile}
             />
@@ -303,6 +275,8 @@ export default function Home() {
           chatOpen={chatOpen}
           onToggleChat={electronReady ? toggleChat : undefined}
           onOpenSettings={electronReady ? () => setSettingsOpen(true) : undefined}
+          onOpenDashboard={electronReady ? () => setDashboardOpen(true) : undefined}
+          taskCost={trace.status === 'running' ? trace.budget.costUsd : null}
           retrievalStatus={retrievalStatus}
         />
       </main>
@@ -311,13 +285,18 @@ export default function Home() {
           rootPath={rootPath}
           activeFilePath={activePath}
           activeFileContent={activePath ? contents.current.get(activePath) ?? null : null}
+          trace={trace}
+          onTraceEvent={handleTraceEvent}
           onClose={() => setChatOpen(false)}
           onOpenSettings={() => setSettingsOpen(true)}
+          onOpenDashboard={() => setDashboardOpen(true)}
           onRunCommand={runInTerminal}
           onFileChanged={refreshWorkspace}
+          onOpenFileAt={openFileAt}
         />
       )}
       {settingsOpen && <SettingsPanel onClose={() => setSettingsOpen(false)} />}
+      {dashboardOpen && <Dashboard live={trace} onClose={() => setDashboardOpen(false)} />}
     </div>
   );
 }

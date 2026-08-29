@@ -11,6 +11,9 @@ type StatusBarProps = {
   chatOpen?: boolean;
   onToggleChat?: () => void;
   onOpenSettings?: () => void;
+  onOpenDashboard?: () => void;
+  /** Live spend on the running task, or null when nothing is running. */
+  taskCost?: number | null;
   retrievalStatus?: RetrievalStatus | null;
 };
 
@@ -43,6 +46,8 @@ export default function StatusBar({
   chatOpen,
   onToggleChat,
   onOpenSettings,
+  onOpenDashboard,
+  taskCost,
   retrievalStatus,
 }: StatusBarProps) {
   const retrievalText = retrievalLabel(retrievalStatus);
@@ -80,6 +85,21 @@ export default function StatusBar({
             title="Toggle AI Chat (Ctrl+L)"
           >
             {chatOpen ? '▾' : '▸'} AI Chat
+          </button>
+        )}
+        {taskCost != null && (
+          <span className="status-item status-cost" title="Spend on the running task">
+            ${taskCost.toFixed(4)}
+          </span>
+        )}
+        {onOpenDashboard && (
+          <button
+            type="button"
+            className="status-toggle-btn"
+            onClick={onOpenDashboard}
+            title="Observability dashboard (Ctrl+Shift+D)"
+          >
+            ▤ Dashboard
           </button>
         )}
         {onOpenSettings && (
