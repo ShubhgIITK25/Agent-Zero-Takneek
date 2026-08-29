@@ -109,8 +109,23 @@ export default function TerminalPanel({
         activeCommandIds.delete(msg.callId);
         
         if (typeof msg.result === 'string') {
-          const formattedOutput = msg.result.replace(/\n/g, '\r\n');          
-          term.write(`${formattedOutput}\r\n`);
+          let cleanOutput = msg.result;
+          
+          if (msg.result.includes('--- stdout ---')) {
+            const stdoutPart = msg.result.split('--- stdout ---\n')[1]?.split('\n--- stderr ---')[0] || '';
+            const stderrPart = msg.result.split('--- stderr ---\n')[1] || '';
+            
+            cleanOutput = stdoutPart;
+            if (stderrPart.trim()) {
+              cleanOutput += (cleanOutput ? '\n' : '') + stderrPart;
+            }
+          }
+
+          cleanOutput = cleanOutput.trim();
+          if (cleanOutput) {
+            const formattedOutput = cleanOutput.replace(/\n/g, '\r\n');          
+            term.write(`${formattedOutput}\r\n`);
+          }
         }
       }
     });
