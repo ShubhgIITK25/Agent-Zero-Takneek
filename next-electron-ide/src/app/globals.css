@@ -535,20 +535,24 @@ button:hover {
 .settings-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.5);
+  background: rgba(10, 10, 12, 0.38);
   display: flex;
   align-items: center;
   justify-content: center;
+  padding: 24px;
   z-index: 100;
 }
 
+/* .settings-panel is the class SettingsPanel.tsx actually renders — kept
+   .settings-modal below too in case anything legacy still targets it. */
+.settings-panel,
 .settings-modal {
   width: 520px;
   max-width: 90vw;
   max-height: 80vh;
   display: flex;
   flex-direction: column;
-  background: var(--bg-panel);
+  background: #000;
   border: 1px solid var(--border);
   border-radius: 8px;
   box-shadow: 0 12px 32px rgba(0, 0, 0, 0.4);
@@ -1158,7 +1162,7 @@ button:hover {
 .dash-badge-pending { background: rgba(215,186,125,0.18); color: var(--nx-warn); }
 
 /* ------------------------------------------------------------ settings --- */
-.settings-panel-wide { width: min(880px, 94vw); max-height: 88vh; display: flex; flex-direction: column; }
+.settings-panel-wide { width: min(880px, 94vw); max-height: 88vh; }
 .settings-tabs { display: flex; gap: 2px; padding: 0 14px; border-bottom: 1px solid var(--nx-border); }
 .settings-tab {
   background: transparent; border: none; border-bottom: 2px solid transparent;

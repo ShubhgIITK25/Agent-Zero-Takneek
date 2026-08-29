@@ -27,7 +27,7 @@ const PROVIDER_HELP: Record<ProviderId, { url: string; hint: string }> = {
 export default function SettingsPanel({ onClose }: SettingsPanelProps) {
   const [settings, setSettings] = useState<AgentSettings | null>(null);
   const [saved, setSaved] = useState(false);
-  const [tab, setTab] = useState<'models' | 'keys' | 'limits'>('models');
+  const [tab, setTab] = useState<'models' | 'keys'>('models');
 
   useEffect(() => {
     (async () => {
@@ -96,9 +96,9 @@ export default function SettingsPanel({ onClose }: SettingsPanelProps) {
         </header>
 
         <div className="settings-tabs">
-          {(['models', 'keys', 'limits'] as const).map((t) => (
+          {(['models', 'keys'] as const).map((t) => (
             <button key={t} type="button" className={`settings-tab${tab === t ? ' active' : ''}`} onClick={() => setTab(t)}>
-              {t === 'models' ? `Models (${enabledCount} enabled)` : t === 'keys' ? 'API Keys' : 'Limits'}
+              {t === 'models' ? `Models (${enabledCount} enabled)` : 'API Keys'}
             </button>
           ))}
         </div>
@@ -120,56 +120,61 @@ export default function SettingsPanel({ onClose }: SettingsPanelProps) {
                 why some MoE models below are blocked despite a small active size.
               </p>
 
-              {(Object.keys(byProvider) as ProviderId[]).map((provider) => (
-                <section key={provider} className="settings-provider">
-                  <h3>
-                    {PROVIDER_CONFIG[provider].label}
-                    <span className="settings-provider-hint">{PROVIDER_HELP[provider].hint}</span>
-                  </h3>
-                  <div className="model-list">
-                    {byProvider[provider].map((m) => {
-                      const el = checkEligibility(m);
-                      const enabled = settings.enabledModelIds.includes(m.id);
-                      return (
-                        <label
-                          key={m.id}
-                          className={`model-row${el.eligible ? '' : ' model-row-blocked'}${enabled ? ' model-row-on' : ''}`}
-                        >
-                          <input
-                            type="checkbox"
-                            checked={enabled}
-                            disabled={!el.eligible}
-                            onChange={() => toggleModel(m.id)}
-                          />
-                          <span className="model-main">
-                            <span className="model-name">{m.label}</span>
-                            <span className="model-api-id">{m.apiId}</span>
-                          </span>
-                          <span className="model-meta">
-                            <span className={`model-params${el.eligible ? '' : ' model-params-bad'}`}>
-                              {m.paramsBTotal == null ? 'unpublished' : `${m.paramsBTotal}B total`}
-                              {m.paramsBActive != null && ` / ${m.paramsBActive}B active`}
+              {(Object.keys(byProvider) as ProviderId[]).map((provider) => {
+                const visibleModels = byProvider[provider].filter((m) => checkEligibility(m).eligible);
+                if (visibleModels.length === 0) return null;
+
+                return (
+                  <section key={provider} className="settings-provider">
+                    <h3>
+                      {PROVIDER_CONFIG[provider].label}
+                      <span className="settings-provider-hint">{PROVIDER_HELP[provider].hint}</span>
+                    </h3>
+                    <div className="model-list">
+                      {visibleModels.map((m) => {
+                        const el = checkEligibility(m);
+                        const enabled = settings.enabledModelIds.includes(m.id);
+                        return (
+                          <label
+                            key={m.id}
+                            className={`model-row${el.eligible ? '' : ' model-row-blocked'}${enabled ? ' model-row-on' : ''}`}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={enabled}
+                              disabled={!el.eligible}
+                              onChange={() => toggleModel(m.id)}
+                            />
+                            <span className="model-main">
+                              <span className="model-name">{m.label}</span>
+                              <span className="model-api-id">{m.apiId}</span>
                             </span>
-                            <span className="model-ctx">{(m.contextWindow / 1024).toFixed(0)}k ctx</span>
-                            <span className="model-price">
-                              {m.pricing.inputPerM === 0 && m.pricing.outputPerM === 0
-                                ? m.tier === 'local'
-                                  ? 'local — free'
-                                  : 'free tier'
-                                : `$${m.pricing.inputPerM}/$${m.pricing.outputPerM} per M`}
+                            <span className="model-meta">
+                              <span className={`model-params${el.eligible ? '' : ' model-params-bad'}`}>
+                                {m.paramsBTotal == null ? 'unpublished' : `${m.paramsBTotal}B total`}
+                                {m.paramsBActive != null && ` / ${m.paramsBActive}B active`}
+                              </span>
+                              <span className="model-ctx">{(m.contextWindow / 1024).toFixed(0)}k ctx</span>
+                              <span className="model-price">
+                                {m.pricing.inputPerM === 0 && m.pricing.outputPerM === 0
+                                  ? m.tier === 'local'
+                                    ? 'local — free'
+                                    : 'free tier'
+                                  : `$${m.pricing.inputPerM}/$${m.pricing.outputPerM} per M`}
+                              </span>
                             </span>
-                          </span>
-                          <span className={`model-status${el.eligible ? ' model-status-ok' : ' model-status-bad'}`}>
-                            {el.eligible ? 'eligible' : 'blocked'}
-                          </span>
-                          {!el.eligible && <span className="model-block-reason">{el.reason}</span>}
-                          {el.eligible && m.notes && <span className="model-note">{m.notes}</span>}
-                        </label>
-                      );
-                    })}
-                  </div>
-                </section>
-              ))}
+                            <span className={`model-status${el.eligible ? ' model-status-ok' : ' model-status-bad'}`}>
+                              {el.eligible ? 'eligible' : 'blocked'}
+                            </span>
+                            {!el.eligible && <span className="model-block-reason">{el.reason}</span>}
+                            {el.eligible && m.notes && <span className="model-note">{m.notes}</span>}
+                          </label>
+                        );
+                      })}
+                    </div>
+                  </section>
+                );
+              })}
             </>
           )}
 
@@ -235,39 +240,6 @@ export default function SettingsPanel({ onClose }: SettingsPanelProps) {
             </>
           )}
 
-          {tab === 'limits' && (
-            <>
-              <p className="settings-intro">
-                Per-task hard ceilings. The orchestrator stops before breaching either, because exceeding one scores
-                the task zero regardless of partial progress. It also holds back a small reserve so the wrap-up step
-                still fits.
-              </p>
-              <div className="settings-limit-row">
-                <label htmlFor="maxcost">Max cost per task (USD)</label>
-                <input
-                  id="maxcost"
-                  type="number"
-                  step="0.05"
-                  min="0.01"
-                  value={settings.maxCostUsd}
-                  onChange={(e) => update({ maxCostUsd: Number(e.target.value) })}
-                />
-                <span className="settings-muted">Evaluation ceiling: $0.50</span>
-              </div>
-              <div className="settings-limit-row">
-                <label htmlFor="maxtime">Max wall-clock per task (seconds)</label>
-                <input
-                  id="maxtime"
-                  type="number"
-                  step="60"
-                  min="30"
-                  value={settings.maxSeconds}
-                  onChange={(e) => update({ maxSeconds: Number(e.target.value) })}
-                />
-                <span className="settings-muted">Evaluation ceiling: 2700s</span>
-              </div>
-            </>
-          )}
         </div>
 
         <footer className="settings-footer">
