@@ -92,6 +92,22 @@ function execCapture(
   });
 }
 
+function execSafeGit(
+  args: string[],
+  cwd: string,
+  timeoutMs = 30_000
+): Promise<{ stdout: string; stderr: string; code: number }> {
+  return new Promise((resolve) => {
+    execFile('git', args, { cwd, timeout: timeoutMs, maxBuffer: 4 * 1024 * 1024 }, (err, stdout, stderr) => {
+      resolve({
+        stdout: String(stdout ?? ''),
+        stderr: String(stderr ?? ''),
+        code: err && typeof (err as any).code === 'number' ? (err as any).code : err ? 1 : 0,
+      });
+    });
+  });
+}
+
 /** Trim tool output so one noisy command cannot blow the context window. */
 function clamp(text: string, max = 6000): string {
   if (text.length <= max) return text;
@@ -288,21 +304,32 @@ export const TOOLS: Tool[] = [
         '(commit, push, merge, checkout, reset) are routed through approval automatically.',
       parameters: {
         type: 'object',
-        properties: { args: { type: 'string', description: 'Arguments after "git", e.g. "status --short"' } },
+        properties: { 
+          // CHANGED: Force the LLM to provide a safe array of strings instead of one long string
+          args: { 
+            type: 'array', 
+            items: { type: 'string' },
+            description: 'Array of git arguments, e.g. ["log", "-n", "5", "--oneline"]' 
+          } 
+        },
         required: ['args'],
       },
     },
     sideEffecting: false,
     run: async (args, ctx) => {
-      const gitArgs = str(args, 'args');
+      // Ensure we have an array of strings
+      const gitArgs = Array.isArray(args.args) ? args.args.map(String) : [];
+      if (gitArgs.length === 0) return { content: 'No git arguments provided.' };
+
       const READ_ONLY = ['status', 'log', 'diff', 'show', 'branch', 'blame', 'ls-files', 'rev-parse'];
-      const sub = gitArgs.trim().split(/\s+/)[0];
+      const sub = gitArgs[0]; // The first item is always the subcommand
+
       if (!READ_ONLY.includes(sub)) {
-        // A write-y git subcommand reached the read-only tool. Refuse and point
-        // the model at the gated path rather than quietly running it.
         return { content: `"git ${sub}" changes repository state. Use run_command (which is approval-gated) for it.` };
       }
-      const { stdout, stderr, code } = await execCapture(`git ${gitArgs}`, ctx.rootPath, 30_000);
+
+      // Execute safely using the array
+      const { stdout, stderr, code } = await execSafeGit(gitArgs, ctx.rootPath, 30_000);
       return { content: `exit ${code}\n${clamp(stdout)}${stderr ? `\nstderr: ${clamp(stderr, 1000)}` : ''}` };
     },
   },

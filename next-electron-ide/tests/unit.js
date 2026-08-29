@@ -68,6 +68,30 @@ t('unified render has +/- markers', () => {
   const u = renderUnified(d);
   assert.ok(u.includes('-  return 1;') && u.includes('+  return 100;'));
 });
+t('unknown block ids are ignored rather than thrown on', () => {
+  // only-junk ids => nothing real accepted => original content, no exception
+  assert.strictEqual(applyAcceptedBlocks(d, ['bogus#99', 'nope#0']), oldC);
+});
+t('every real block id plus junk still applies the full change', () => {
+  const ids = [...d.blocks.map((b) => b.id), 'not-a-real-id'];
+  assert.strictEqual(applyAcceptedBlocks(d, ids), newC);
+});
+t('buildFileDiff and applyAcceptedBlocks agree on hunk boundaries', () => {
+  // three edits: two close (one hunk) + one far (separate hunk)
+  const o = Array.from({ length: 30 }, (_, i) => `line ${i}`).join('\n');
+  const n2 = o
+    .replace('line 2', 'LINE 2')
+    .replace('line 4', 'LINE 4')
+    .replace('line 25', 'LINE 25');
+  const dd = buildFileDiff('m.js', o, n2);
+  assert.strictEqual(dd.blocks.length, 2, `expected 2 hunks, got ${dd.blocks.length}`);
+  // accept only the far hunk: near edits must NOT leak in
+  const far = applyAcceptedBlocks(dd, [dd.blocks[1].id]);
+  assert.ok(far.includes('LINE 25') && far.includes('line 2\n') && far.includes('line 4\n'));
+  // accept only the near hunk: far edit must NOT leak in
+  const near = applyAcceptedBlocks(dd, [dd.blocks[0].id]);
+  assert.ok(near.includes('LINE 2') && near.includes('LINE 4') && near.includes('line 25'));
+});
 
 console.log('\n== agents: defensive parsing of small-model output ==');
 t('parses fenced json', () => assert.deepStrictEqual(extractJson('sure!\n```json\n{"a":1}\n```\nhope that helps'), { a: 1 }));
