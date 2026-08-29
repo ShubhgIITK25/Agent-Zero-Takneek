@@ -24,6 +24,11 @@ import embeddings
 RECALL_K = 25
 GRAPH_EXPAND_TOP_N = 8
 MAX_SNIPPET_LINES = 60
+# RRF deliberately combines ranks, not raw BM25/vector/cross-encoder scores:
+# those scores have different scales and cannot safely be compared directly.
+RRF_K = 60
+GRAPH_RRF_WEIGHT = 0.5
+RERANK_RRF_WEIGHT = 2.0
 
 
 def _snippet(code: str, max_lines=MAX_SNIPPET_LINES):
@@ -44,6 +49,26 @@ def _heuristic_score(chunk: dict, query_words: set, base_rank_score: float, now:
     return score
 
 
+def _rrf_fuse(rank_lists: list, weights: list = None) -> dict:
+    """Fuse ordered candidate lists with Reciprocal Rank Fusion.
+
+    RRF score is weight / (RRF_K + rank), with ranks starting at 1.  This
+    makes keyword, vector, graph, and reranker results comparable without
+    pretending their raw scores share a scale.  Duplicate ids in one list
+    are counted only at their first occurrence.
+    """
+    weights = weights or [1.0] * len(rank_lists)
+    scores = {}
+    for candidates, weight in zip(rank_lists, weights):
+        seen = set()
+        for rank, cid in enumerate(candidates, start=1):
+            if cid in seen:
+                continue
+            seen.add(cid)
+            scores[cid] = scores.get(cid, 0.0) + weight / (RRF_K + rank)
+    return scores
+
+
 def retrieve_context(data_dir: str, codebase_id: str, query_text: str, k: int = 8):
     db = store.get_db(data_dir, codebase_id)
 
@@ -52,17 +77,23 @@ def retrieve_context(data_dir: str, codebase_id: str, query_text: str, k: int = 
     query_vec = embeddings.embed_query(query_text)
     vec_hits = dict(store.vector_search(db, query_vec, limit=RECALL_K))
 
-    candidate_ids = set(bm25_hits) | set(vec_hits)
-    signal = {cid: ("keyword" if cid in bm25_hits else "") + ("+semantic" if cid in vec_hits else "")
-              for cid in candidate_ids}
+    # Keep the source ranking intact.  Converting these to a set too early
+    # loses rank information and makes ties depend on hash iteration order.
+    bm25_order = list(bm25_hits.keys())
+    vec_order = list(vec_hits.keys())
+    candidate_ids = set(bm25_order) | set(vec_order)
+    signal = {cid: set() for cid in candidate_ids}
+    for cid in bm25_order:
+        signal[cid].add("keyword")
+    for cid in vec_order:
+        signal[cid].add("semantic")
 
     # --- Stage 2: graph expansion off the strongest vector hits ---
     top_vec_ids = [cid for cid, _ in sorted(vec_hits.items(), key=lambda kv: -kv[1])[:GRAPH_EXPAND_TOP_N]]
     neighbor_ids = store.graph_neighbors(db, top_vec_ids)
     for nid in neighbor_ids:
-        if nid not in candidate_ids:
-            candidate_ids.add(nid)
-            signal[nid] = "graph"
+        candidate_ids.add(nid)
+        signal.setdefault(nid, set()).add("graph")
 
     if not candidate_ids:
         return {"results": [], "candidates_considered": 0, "vector_search": bool(vec_enabled(db))}
@@ -71,18 +102,44 @@ def retrieve_context(data_dir: str, codebase_id: str, query_text: str, k: int = 
     chunks = {cid: c for cid, c in chunks.items() if c is not None}
 
     # --- Stage 3: rerank ---
-    ordered_ids = list(chunks.keys())
+    # The union is ordered by recall evidence, then by id as a stable tie
+    # breaker.  This keeps query results reproducible when SQLite returns
+    # equal scores.
+    graph_order = sorted(neighbor_ids)
+    recall_scores = _rrf_fuse(
+        [bm25_order, vec_order, graph_order],
+        [1.0, 1.0, GRAPH_RRF_WEIGHT],
+    )
+    ordered_ids = sorted(chunks, key=lambda cid: (-recall_scores.get(cid, 0.0), cid))
     reranked = embeddings.rerank(query_text, [chunks[cid]["code"][:1500] for cid in ordered_ids])
 
     now = time.time()
     if reranked is not None:
-        scored = list(zip(ordered_ids, reranked))
-        scored.sort(key=lambda kv: -kv[1])
+        rerank_order = [cid for cid, _ in sorted(zip(ordered_ids, reranked), key=lambda kv: (-kv[1], kv[0]))]
+        # Keep the cross-encoder's judgment important, but retain independent
+        # recall evidence.  A reranker can score a weakly-recalled candidate
+        # highly; RRF prevents it from completely erasing keyword/vector
+        # agreement and graph evidence.
+        final_scores = _rrf_fuse(
+            [bm25_order, vec_order, graph_order, rerank_order],
+            [1.0, 1.0, GRAPH_RRF_WEIGHT, RERANK_RRF_WEIGHT],
+        )
+        scored = [(cid, final_scores.get(cid, 0.0)) for cid in chunks]
+        scored.sort(key=lambda kv: (-kv[1], kv[0]))
         rerank_used = True
     else:
         query_words = set(w.lower() for w in query_text.split())
-        base = {cid: max(bm25_hits.get(cid, 0), vec_hits.get(cid, 0), 0.1) for cid in ordered_ids}
-        scored = [(cid, _heuristic_score(chunks[cid], query_words, base[cid], now)) for cid in ordered_ids]
+        # The heuristic is now a small tie-breaker over the RRF result, rather
+        # than a max() over incomparable BM25 and vector score scales.
+        scored = [
+            (
+                cid,
+                recall_scores.get(cid, 0.0) + 0.001 * _heuristic_score(
+                    chunks[cid], query_words, 0.0, now
+                ),
+            )
+            for cid in chunks
+        ]
         scored.sort(key=lambda kv: -kv[1])
         rerank_used = False
 
@@ -90,13 +147,19 @@ def retrieve_context(data_dir: str, codebase_id: str, query_text: str, k: int = 
     results = []
     for cid, score in top:
         c = chunks[cid]
-        sig = signal.get(cid, "")
-        why = {
-            "keyword": "matched search terms directly",
-            "semantic": "semantically similar to the query",
-            "keyword+semantic": "matched both keyword search and semantic similarity",
-            "graph": "structurally connected (1 call/import hop) to a top semantic match",
-        }.get(sig, "matched the query")
+        sig = signal.get(cid, set())
+        if "graph" in sig and ("keyword" in sig or "semantic" in sig):
+            why = "matched retrieval and is structurally connected (1 call/import hop)"
+        elif "graph" in sig:
+            why = "structurally connected (1 call/import hop) to a top semantic match"
+        elif "keyword" in sig and "semantic" in sig:
+            why = "matched both keyword search and semantic similarity"
+        elif "keyword" in sig:
+            why = "matched search terms directly"
+        elif "semantic" in sig:
+            why = "semantically similar to the query"
+        else:
+            why = "matched the query"
         results.append({
             "file": c["file_path"],
             "symbol": c["symbol"],
