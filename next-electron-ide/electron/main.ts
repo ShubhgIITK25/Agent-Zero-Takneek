@@ -306,9 +306,61 @@ function watchFolder(folderPath: string) {
   };
 }
 
+// ---------- Workspace persistence (last opened folder) ----------
+//
+// Kept in its own tiny file rather than folded into agent-settings.json:
+// that file holds API keys and is what the user edits through the Settings
+// screen, whereas this is incidental UI state the app rewrites on its own.
+// Mixing them would mean every folder switch rewrites the file holding the
+// user's keys, which is a needless way to lose them to a bad write.
+type UiState = { lastFolder?: string };
+
+function uiStateFilePath(): string {
+  return path.join(app.getPath("userData"), "ui-state.json");
+}
+
+async function readUiState(): Promise<UiState> {
+  try {
+    return JSON.parse(await fs.readFile(uiStateFilePath(), "utf-8"));
+  } catch {
+    return {};
+  }
+}
+
+async function writeUiState(patch: UiState): Promise<void> {
+  try {
+    const next = { ...(await readUiState()), ...patch };
+    await fs.writeFile(uiStateFilePath(), JSON.stringify(next, null, 2), "utf-8");
+  } catch (err) {
+    // Failing to remember the folder must never block opening it.
+    console.log("[ui-state] could not persist:", err);
+  }
+}
+
+/**
+ * Reopen the folder from the previous session. Validated before use: a
+ * remembered path can have been deleted, renamed, or been on a drive that is
+ * no longer mounted, and silently "opening" a folder that is not there would
+ * leave the file tree, the watcher and the indexer all pointed at nothing.
+ */
+async function restoreLastFolder(): Promise<void> {
+  const { lastFolder } = await readUiState();
+  if (!lastFolder) return;
+  try {
+    const stat = await fs.stat(lastFolder);
+    if (!stat.isDirectory()) return;
+  } catch {
+    console.log(`[ui-state] last folder is gone, not restoring: ${lastFolder}`);
+    return;
+  }
+  setOpenFolder(lastFolder);
+  mainWindow?.webContents.send("folder:opened", lastFolder);
+}
+
 function setOpenFolder(folderPath: string) {
   const previousCodebaseId = currentCodebaseId;
   openFolderPath = folderPath;
+  void writeUiState({ lastFolder: folderPath });
   watchFolder(folderPath);
 
   if (retrievalReady) {
@@ -432,6 +484,12 @@ ipcMain.handle("dialog:openFolder", async () => {
   setOpenFolder(result.filePaths[0]);
   return openFolderPath;
 });
+
+// The renderer asks for this on mount rather than waiting for a
+// 'folder:opened' push, because main may have restored the folder before the
+// window finished loading — in which case that event already fired into a
+// renderer that had no listener attached yet.
+ipcMain.handle("folder:getCurrent", async () => openFolderPath);
 
 ipcMain.handle(
   "fs:readDir",
@@ -828,6 +886,7 @@ function killAllTerminals() {
 app.whenReady().then(() => {
   buildMenu();
   createWindow();
+  void restoreLastFolder();
   startRetrievalService();
 
   orchestrator = new OrchestratorBridge(

@@ -35,8 +35,13 @@ export type ToolContext = {
   retrievalUrl: string | null;
   /** Mirrors a command into the IDE's visible terminal panel. */
   echoToTerminal: (command: string) => void;
-  /** Set by the orchestrator when a proposal needs approving. */
-  proposeDiff: (diffs: FileDiff[], summary: string) => Promise<{ approved: boolean; written: string[] }>;
+  /** Set by the orchestrator when a proposal needs approving. `fullyApplied`
+   *  is true when every proposed block landed on disk; `rejectedBlocks` counts
+   *  the blocks the user kept out on a partial approval. */
+  proposeDiff: (
+    diffs: FileDiff[],
+    summary: string
+  ) => Promise<{ approved: boolean; written: string[]; fullyApplied: boolean; rejectedBlocks: number }>;
 };
 
 export type ToolResult = { content: string; contextItems?: { path: string; lines?: string; tokens: number }[] };
@@ -98,7 +103,7 @@ export const TOOLS: Tool[] = [
       name: 'retrieve_context',
       description:
         'Search the open codebase for code relevant to a natural-language or symbol query. Returns the most ' +
-        'relevant function/class snippets with file paths and line ranges. This is the cheap default — use it ' +
+        'relevant function/class snippets with file paths and line ranges. This is the cheap default - use it ' +
         'before reading whole files.',
       parameters: {
         type: 'object',
@@ -223,11 +228,27 @@ export const TOOLS: Tool[] = [
         // around a rejection instead of blindly re-proposing the same edit.
         return { content: `The user REJECTED all changes to ${rel}. The file is unchanged on disk. Do not re-propose the same edit — either take a different approach or ask what they want instead.` };
       }
+      if (outcome.written.length === 0) {
+        return { content: `No blocks were accepted for ${rel}; the file is unchanged on disk. Do not re-propose the same edit.` };
+      }
+      if (outcome.fullyApplied) {
+        // The whole proposal is on disk. Re-reading and echoing the file back
+        // here just tempts a small model into "reviewing" its own change and
+        // proposing again — so confirm succinctly and tell it to move on.
+        return {
+          content:
+            `Applied to ${rel} in full — every proposed block is now on disk. This edit is complete. ` +
+            `Do NOT call propose_edit for ${rel} again unless you have a further, genuinely different change to make. ` +
+            `If this was the last thing the subtask needed, reply now with a line starting "DONE:".`,
+        };
+      }
+      // Partial approval: the model DOES need to see the real file to continue
+      // correctly around the blocks the user rejected.
       return {
         content:
-          outcome.written.length === 0
-            ? `No blocks were accepted for ${rel}; the file is unchanged.`
-            : `Applied to ${rel}. Note: the user may have accepted only some blocks — the file on disk now reads:\n\n${clamp(await fs.readFile(full, 'utf8'), 3000)}`,
+          `Partial approval on ${rel}: the user rejected ${outcome.rejectedBlocks} block(s). The file on disk now reads:\n\n` +
+          `${clamp(await fs.readFile(full, 'utf8'), 3000)}\n\n` +
+          `Continue from this actual on-disk content. Do not re-propose the rejected block(s) unchanged.`,
       };
     },
   },

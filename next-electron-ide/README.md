@@ -114,146 +114,228 @@ on `PATH`, the status bar shows "Retrieval unavailable" instead of the
 app crashing — everything else keeps working, the agent just falls back
 to its `read_file`/`list_dir` tools.
 
-## AI chat & agent settings
+## The agent system
 
-**View → Toggle AI Chat** (`Cmd/Ctrl+L`, or the AI Chat button in the status
-bar) opens a chat panel on the right. **Agent → Agent Settings…**
-(`Cmd/Ctrl+,`, or the Settings button) opens a key/value editor for API keys
-and other environment variables (e.g. `OPENROUTER_API_KEY`, `GROQ_API_KEY`,
-`OLLAMA_HOST`) — saved to a JSON file in Electron's per-user app-data
-directory (`app.getPath('userData')/agent-settings.json`), outside the repo,
-so it's never accidentally committed.
+Four processes, three boundaries:
 
-**The orchestration is real; only the model call is a stub.** Sending a
-chat message drives an actual multi-step agent loop (`src/lib/agent.ts`,
-`AgentSession.sendMessage`):
-
-1. It calls `callLLM()` (`src/lib/llm.ts`) with the running conversation and
-   the tool schemas from `src/lib/tools.ts` (`retrieve_context`, `open_file`,
-   `read_file`, `list_dir`, `write_file`, `delete_path`, `run_command`). The
-   system prompt steers the model to reach for `retrieve_context` first —
-   it returns a handful of relevant snippets, not whole files, which
-   matters because the PS's scoring formula weights cost 2x harder than
-   time.
-2. If the model asks to use a tool, `write_file` / `delete_path` /
-   `run_command` — anything side-effecting — is held for a human
-   Approve/Reject click in the chat panel before it runs (per the PS's "any
-   side-effect action needs human approval" requirement); the retrieval and
-   read-only tools run immediately.
-3. The tool's result is appended to the conversation and the loop calls the
-   model again — up to `MAX_STEPS` (8) rounds, or until it stops early
-   because the same tool call repeated 3x in a row (a minimal version of
-   "detect stuck/looping tasks").
-4. `/bytheway <question>` is a genuinely isolated call — fresh system+user
-   messages only, no tools, no access to the running session's history —
-   that never touches the main conversation.
-
-**`src/lib/llm.ts` is wired to Google's Gemini API** (`generateContent`,
-with function calling) — add a `GEMINI_API_KEY` row in Agent → Settings with
-your Google AI Studio key and it's live; no other file needs to change.
-
-⚠ **Check this before the actual submission**: the brain file's hard
-constraint is every model ≤80B TOTAL params, and Google doesn't publish
-Gemini's parameter count — there's no way to verify Gemini satisfies that
-constraint, which risks disqualification. This wiring is real and useful
-for development, but treat it as a placeholder to swap for a provider with
-a published open-weight parameter count (Groq, OpenRouter, or a local
-Ollama server all work) before you present. `llm.ts` has a commented-out
-OpenAI-compatible implementation ready to drop in for any of those — it's
-the shape most other providers actually speak, unlike Gemini's. (The
-retrieval service's own models — `BAAI/bge-small-en-v1.5`,
-`Xenova/ms-marco-MiniLM-L-6-v2` — are already small, local, and disclosed,
-so they're not part of this risk.)
-
-`/run <command>` still exists as a manual bypass — it skips the agent
-entirely and runs directly in the terminal, useful for testing that wiring
-without a model configured.
-
-## Production build
-
-```bash
-npm run build   # next build (static export) + tsc for electron/
-npm run dist    # electron-builder — produces installers in release/
+```
+  Renderer (Next.js)          no Node access at all
+        |  contextBridge
+  Electron main               fs, node-pty, dialogs, settings, watcher
+        |  stdio JSON-RPC          |  local HTTP
+  Orchestrator (Node)          retrieval-service (Python)
 ```
 
-`retrieval-service/` is copied into the packaged app as an `extraResource`
-(see `package.json`'s `build.extraResources`) — the end user still needs a
-Python interpreter with the deps installed (`retrieval-service/requirements.txt`)
-on their machine; this scaffold doesn't bundle a Python runtime.
+**The orchestrator is a separate child process**, spawned by `electron/main.ts`
+(`electron/orchestrator-bridge.ts`) and driven by newline-delimited JSON-RPC
+over stdio. It is launched as `process.execPath` with `ELECTRON_RUN_AS_NODE=1`,
+so the packaged app needs no separate Node installation.
 
-## What's intentionally NOT here (extend as needed)
+Why stdio rather than a local HTTP port like the retrieval service uses: no port
+allocation and no Windows firewall prompt; the channel dies exactly when the
+process dies, which makes the watchdog trivially correct (EOF on stdout means
+"gone", whereas an HTTP client cannot distinguish crashed from slow); and the
+pipe guarantees ordering, so the event log the dashboard renders is in true
+causal order for free. The retrieval service is HTTP because it is a
+request/response service written in Python — a different problem.
 
-This is a scaffold, sized to actually run rather than to be exhaustive.
-Natural next additions, each fairly self-contained given the IPC pattern
-already in place:
+Why a separate process rather than running in-process in Electron main: an
+orchestrator crash cannot take the IDE down with it, and the boundary is a real
+one you can point at. `main.ts` restarts it with backoff (capped at 5) and tells
+the renderer, so an interrupted task can be resumed from its checkpoint.
 
-- **Multi-root workspaces / recent folders** — persist via `electron-store`.
-- **Git integration** — shell out to `git` from the main process, surface
-  status/diff in the sidebar.
-- **Extension/plugin system, LSP** — this is where it becomes a "real" IDE;
-  worth designing deliberately rather than bolting on.
-- **Unsaved-changes-on-close guard**, multi-window support.
+### The pipeline
 
-## Notes for your Takneek build
+```
+ingest -> decompose -> [ route -> execute -> verify -> retry? ]* -> aggregate
+                              checkpoint after every step
+```
 
-This scaffold now covers several of the PS's boxes for real, not just as
-UI: the **mandatory settings screen** for API keys (Agent → Settings), a
-**multi-step tool-calling loop** (`AgentSession` in `agent.ts`), tools that
-actually touch the filesystem, terminal, and codebase index (`tools.ts`),
-a **human approval gate** in front of every side-effecting tool call, and
-a real **code retrieval pipeline** (`retrieval-service/`). All of the
-LLM-facing part is provider-agnostic — plugging in a model is one file
-(`llm.ts`). Here's what that does and doesn't cover against the PS's
-required features, so you know exactly what's left to design:
+| Stage | File | What it does |
+|---|---|---|
+| Decompose | `agents.ts` | A planner call turns the prompt into a dependency-ordered subtask DAG. Trivial prompts short-circuit to one subtask — running plan/execute/verify to answer "what does this function do" costs three calls for a one-call question. |
+| Route | `router.ts` | Scores every eligible model on capability fit, context fit, cost pressure and speed. Emits the decision **and every rejection with its reason** the instant it is made. |
+| Execute | `orchestrator.ts` | The implementer's tool-calling loop for one subtask, with only that subtask's context. |
+| Verify | `agents.ts` | An **independent** call, different context, no memory of the implementer's reasoning — an agent asked "are you sure?" in its own conversation almost always says yes. |
+| Tie-break | `agents.ts` | Implementer and verifier disagree and the verifier is unsure → a third model on a different provider decides. Neither side wins by default. |
+| Aggregate | `orchestrator.ts` | Summarises. If the budget reserve is gone, the summary is built locally rather than breaching a ceiling to say "I'm done". |
 
-- **Multi-agent orchestration (14%)** — `AgentSession` is ONE agent
-  looping with tools, not multiple agents collaborating, disagreeing, or
-  dividing work. Stuck-detection is minimal (fixed step cap + "same tool
-  call 3x in a row" — no retry-with-backoff, no semantic notion of "stuck",
-  no backtracking). Long-horizon/multi-session resume doesn't exist:
-  `AgentSession` lives in memory only and is lost when the chat panel
-  unmounts or the app closes. All real design work still to do.
-- **Smart routing (5%)** — doesn't exist. `llm.ts` always calls whatever
-  single endpoint/model you hardcode; there's no signal-based model/provider
-  selection, no visible routing decision in the UI, no rate-limit fallback.
-- **Context compaction (5%)** — doesn't exist. `AgentSession.history` grows
-  unbounded every turn; nothing detects an approaching context limit or
-  summarizes/trims older messages.
-- **Code retrieval pipeline (12%)** — real now: AST-boundary chunking
-  (tree-sitter), a keyword index (SQLite FTS5/BM25), a vector index
-  (sqlite-vec), and a symbol/call graph, combined in a 3-stage
-  recall→graph-expand→rerank pipeline (`retrieval-service/retrieval.py`),
-  with per-project isolation enforced by `codebase_id` at the API layer.
-  What's still simplified, and worth naming yourself in Q&A rather than
-  letting a judge find it: import extraction is file-level not per-chunk;
-  the call graph matches on identifier text, not real cross-file symbol
-  resolution (no true "go to definition"); only 8 languages have a wired
-  grammar (others fall back to line-window chunking); the service holds
-  one connection per project it's seen since last close, with no eviction
-  cap for many concurrently open projects. See `retrieval-service/README.md`
-  for the full design writeup and reasoning — read it before you present,
-  it's written to be defended line-by-line.
-- **Manual context control (6%)** — the context checkbox is a start, not
-  the feature: no clickable file/line tagging in the chat input or output,
-  no per-message add/remove of individual files or code blocks.
-  `/bytheway` IS properly isolated now (`runIsolatedQuery` in `agent.ts`
-  bypasses `AgentSession` entirely — no shared history, no tools).
-- **Human-in-the-loop review (3%)** — the approval gate covers *whether* a
-  side-effecting tool call runs, which is the "Autonomous Tool Use"
-  requirement (#8), not this one. #10 specifically wants real Git diffs
-  with **block-by-block** accept/reject and continuation around partial
-  rejection — `write_file`'s approval today is all-or-nothing on the whole
-  file write, no diff view. Different feature, not yet built.
-- **Observability dashboard (8%)** — doesn't exist. `AgentEvent`s
-  (tool-start/tool-result/assistant-text/error) are the natural hook point
-  — they already carry per-call args/results — but nothing traces, times,
-  token-counts, or persists them anywhere for later drill-down.
-- **AGENTS.md handling (2%)** — not read or enforced anywhere;
-  `buildSystemPrompt()` in `agent.ts` is a fixed string.
+### The three independent caps
 
-If you're adapting this for the agentic-IDE project generally: `llm.ts`'s
-network calls run in the renderer process by default (plain `fetch`,
-simplest) — only proxy them through a main-process IPC channel if you have
-a specific reason to (e.g. keeping keys out of renderer memory), since that
-boundary exists in this codebase for Node/OS access (filesystem, PTY,
-native dialogs), not for network calls.
+`retries` (per subtask) catches the same approach failing repeatedly. `steps`
+catches tool-calling forever without finishing. `tokens` catches the case a step
+cap misses entirely — forty cheap steps and six expensive ones both hit "6
+steps" at wildly different costs. Whichever fires first halts the subtask and
+**emits an intervention**; nothing stops silently, because a failsafe nobody can
+see is a failsafe nobody trusts.
+
+Retries escalate rather than repeat: `attemptNumber` feeds the router (biasing
+toward capability) and the verifier's failure reason is appended to the
+conversation, so attempt 2 is a genuinely different attempt.
+
+### Routing
+
+Signals: task category, estimated context size, remaining budget, remaining
+time, attempt number, and which providers are in rate-limit backoff. Cost
+pressure scales with how tight the remaining budget is — early in a task a
+capable model is worth paying for, near the ceiling cheap wins. That is the
+mechanism that keeps runs under $0.50 instead of hoping.
+
+Rejected alternatives, and why: **asking a model which model to use** adds a
+full round-trip of cost and latency to every subtask to answer what four numbers
+answer deterministically, and makes the routing trace unreproducible and
+therefore useless for debugging. **Static category→model mapping** was the first
+version; it happily routes a 60k-token context into a 32k window and keeps
+picking a provider that is currently 429-ing.
+
+Failover keeps the conversation and swaps the model underneath it, so no work is
+lost. Non-retryable failures (bad key, malformed request) fail fast instead of
+burning budget retrying everywhere.
+
+### Compaction
+
+Triggers against the **active model's real window**, not a constant: soft at
+70% (opportunistic — input tokens are billed every turn), hard at 88% (compact
+or the next call fails). A fixed "every N messages" rule is wrong in both
+directions.
+
+Survives compaction: the system prompt verbatim; the last 6 messages verbatim;
+and `pinnedFacts` — AGENTS.md rules, the task goal, decisions taken — re-injected
+**verbatim as a system message after every compaction**, so they cannot degrade
+through repeated summarisation. Everything older becomes one summary from a
+cheap model. Tool-call/tool-result pairs are never split across the boundary.
+
+Rejected alternative: **drop-oldest** is cheaper but silently loses the decisions
+that explain why the code is in its current state, and the agent then re-derives
+them wrongly. One small call beats losing correctness.
+
+### Human-in-the-loop
+
+`propose_edit` **does not touch the disk**. It computes a diff against the file
+on disk and blocks on an approval request; only accepted hunks are then written.
+Rejecting is genuinely a no-op, not an undo.
+
+Partial approval rebuilds the file from the original plus only the accepted
+hunks, then tells the agent exactly what landed — so its next step reasons about
+the real file rather than the one it proposed. Diffs are computed in-process
+(`diff.ts`) rather than by shelling out to `git diff`, because the proposal
+exists only in memory before approval; writing it to disk so git could diff it
+would invert the whole approval gate. Git is still used for repository
+operations.
+
+### Persistence and resume
+
+Per task, under `userData/tasks/<codebaseId>/<taskId>/`:
+`events.jsonl` (append-only trace) and `state.json` (snapshot, written
+write-temp-then-rename so a crash leaves the previous good snapshot rather than a
+truncated one).
+
+Chosen over SQLite: crash safety is free (a torn last line is detectable and
+discardable); the dashboard wants an ordered event stream anyway, so no query
+planner and no migration when an event type is added; and zero native
+dependencies — `better-sqlite3` would need an Electron ABI rebuild on three
+platforms. The trade-off accepted is no cross-task queries, which is fine
+because the access pattern is always "one task, in order".
+
+### Observability
+
+**Live and post-hoc are the same component over the same reducer**
+(`src/lib/trace.ts`). Live folds events arriving over IPC; history folds events
+read back from `events.jsonl`. One code path, so there are no gaps between the
+modes. `Ctrl/Cmd+Shift+D`, or the Dashboard button in the status bar.
+
+Per task it shows the full call hierarchy grouped by subtask; per node the exact
+prompt and response, thought stream, tokens, cost and latency; the exact files
+and chunks in each agent's context; every routing decision with its signals and
+rejected candidates; compaction events with what was preserved; every
+intervention; the approval history; and live cost/time meters against the
+ceilings.
+
+## Model roster and eligibility
+
+Every model in the pipeline must have a published **total** parameter count of
+80B or less. Total, not active — the trap is that the cheapest-looking models on
+every provider are sparse MoE advertised by active count.
+
+`orchestrator/models.ts` is the single source of truth, and `checkEligibility()`
+is called by both the router at runtime and the settings screen at display time,
+so there is exactly one definition of "allowed" and no path around it. Two
+entries exist specifically to prove the rule is enforced rather than assumed:
+
+| Model | Total | Active | Verdict |
+|---|---|---|---|
+| `openai/gpt-oss-120b` (Groq) | 120B | — | **blocked** |
+| `nvidia/nemotron-3-super-120b-a12b` (OpenRouter) | 120B | 12B | **blocked** — passes a naive active-param check |
+| `google/gemma-4-26b-a4b-it` (OpenRouter) | 26B | 4B | allowed on total |
+
+Both blocked models are *shown* in Settings, greyed, with the reason — a model
+that silently vanished would teach nobody why it cannot be used. An unpublished
+parameter count is also treated as ineligible: unverifiable is a disqualification
+risk, which is why the earlier Gemini wiring was removed.
+
+Providers: **Groq** (free tier, fastest, helps the T term), **OpenRouter** (free
+routes; exists so failover is real), **Ollama** (local, zero marginal cost —
+the strongest lever on the C term, which is weighted ~2x time).
+
+⚠ Provider catalogues churn. These ids were checked against provider docs in
+August 2026 — re-verify before submission.
+
+## Settings
+
+`Agent → Settings` (`Ctrl/Cmd+,`). Three tabs: **Models** (enable per model,
+with eligibility gating), **API Keys** (`GROQ_API_KEY`, `OPENROUTER_API_KEY`,
+`OLLAMA_HOST`), **Limits** (per-task cost and time ceilings, defaulting to the
+evaluation's $0.50 / 2700s).
+
+Keys are stored in `app.getPath('userData')/agent-settings.json`, outside the
+repository, so they never reach git.
+
+## Manual context control
+
+Pin files or line ranges with `@path/to/file.ts` or `@path/to/file.ts:10-40` in
+the input box, or the "+ current file" button. Pins render as removable chips —
+what the agent can see is always visible and always editable. They are read at
+send time, so the agent gets current disk content.
+
+Tagging works both directions: any `path:line` or `path:line-line` the agent
+mentions in the chat becomes a link that opens that file at that line.
+
+`/bytheway <question>` is isolated at the protocol level — its own command in
+the orchestrator, building its own two-message conversation with no tools and
+never touching a running task. Isolation is structural, not a convention.
+`/run <command>` bypasses the agent entirely and types into the terminal.
+
+## Commands
+
+```bash
+npm run dev          # Next dev server + Electron + orchestrator + retrieval service
+npm run build        # next build (static export) + tsc for electron/ and orchestrator/
+npm run dist         # electron-builder -> release/
+npm run typecheck    # all three tsconfigs
+npm test             # 29 unit tests + an end-to-end stdio protocol test
+```
+
+`npm test` needs no test framework and no network — it covers partial-approval
+diff reconstruction, defensive parsing of small-model output, the 80B total-vs-
+active rule, routing decisions, and pre-dispatch budget enforcement, then spawns
+the real orchestrator and drives the real protocol.
+
+## Known limitations
+
+Name these yourself rather than letting a judge find them:
+
+- **One task at a time.** Two agents editing the same working tree with no
+  coordination is a correctness problem, not a throughput opportunity.
+  Concurrency belongs inside a task (independent subtasks in the DAG), not
+  across tasks — it is not implemented yet either way.
+- **Retrieval**: import extraction is file-level not per-chunk; the call graph
+  matches identifier text rather than resolving symbols, so two unrelated
+  `validate()` functions both surface as neighbours; 8 languages have wired
+  grammars, others fall back to line-window chunking.
+- **Token estimates** before a call are `chars/3.6`; real accounting uses the
+  provider's reported usage, but routing and compaction decisions use the
+  estimate.
+- **The planner is a single call.** It does not re-plan mid-task; a failed
+  subtask escalates and retries but the DAG itself is fixed after planning.
+- **Ollama model sizes** assume ~4-bit quantisation to fit 16GB RAM / 8GB VRAM.
+  Verify `qwen2.5-coder:14b` actually loads on your box before relying on it.

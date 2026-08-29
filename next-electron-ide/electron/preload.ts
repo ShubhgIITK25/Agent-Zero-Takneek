@@ -59,6 +59,9 @@ export type RetrievalStatus = {
 const api = {
   openFolder: (): Promise<string | null> =>
     ipcRenderer.invoke("dialog:openFolder"),
+  /** The folder already open in main (restored from the last session), or null. */
+  getCurrentFolder: (): Promise<string | null> =>
+    ipcRenderer.invoke("folder:getCurrent"),
   onFolderOpened: (cb: (folderPath: string) => void) => {
     const listener = (_evt: unknown, folderPath: string) => cb(folderPath);
     ipcRenderer.on("folder:opened", listener);

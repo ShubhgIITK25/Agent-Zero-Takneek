@@ -6,6 +6,23 @@ export type FileNode = {
 
 export type AgentSettings = {
   envVars: Record<string, string>;
+  /** Model ids from orchestrator/models.ts the user enabled for routing. */
+  enabledModelIds: string[];
+  maxCostUsd: number;
+  maxSeconds: number;
+};
+
+export type OrchestratorStatus = {
+  state: 'ready' | 'restarting' | 'unavailable';
+  message?: string;
+};
+
+export type IsolatedQueryResult = {
+  answer: string;
+  modelId: string;
+  costUsd: number;
+  promptTokens: number;
+  completionTokens: number;
 };
 
 export type RetrievalMatch = {
@@ -48,6 +65,8 @@ export type RetrievalStatus = {
 
 export interface ElectronAPI {
   openFolder: () => Promise<string | null>;
+  /** Folder main already has open (restored from the last session), or null. */
+  getCurrentFolder: () => Promise<string | null>;
   onFolderOpened: (cb: (folderPath: string) => void) => () => void;
   readDir: (dirPath: string) => Promise<FileNode[]>;
   readFile: (filePath: string) => Promise<string>;
@@ -74,6 +93,23 @@ export interface ElectronAPI {
   onChatToggle: (cb: () => void) => () => void;
   onSettingsToggle: (cb: () => void) => () => void;
   onFilesRefresh: (cb: () => void) => () => void;
+
+  // ---- orchestrator ----
+  orchestratorStartTask: (taskId: string, prompt: string) => Promise<unknown>;
+  orchestratorResumeTask: (taskId: string) => Promise<unknown>;
+  orchestratorCancelTask: (taskId: string) => Promise<unknown>;
+  orchestratorApprove: (decision: {
+    requestId: string;
+    approved: boolean;
+    acceptedBlockIds?: string[];
+  }) => Promise<unknown>;
+  orchestratorIsolatedQuery: (question: string) => Promise<IsolatedQueryResult>;
+  orchestratorIsReady: () => Promise<boolean>;
+  orchestratorListTasks: () => Promise<any[]>;
+  orchestratorReadTaskEvents: (taskId: string) => Promise<any[]>;
+  onOrchestratorEvent: (cb: (event: any) => void) => () => void;
+  onOrchestratorStatus: (cb: (status: OrchestratorStatus) => void) => () => void;
+  onDashboardToggle: (cb: () => void) => () => void;
 
   // ---- code retrieval ----
   retrievalQuery: (query: string, k?: number) => Promise<RetrievalQueryResult>;

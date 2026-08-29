@@ -192,7 +192,7 @@ export class TaskRunner {
     nodeId: string,
     diffs: FileDiff[],
     summary: string
-  ): Promise<{ approved: boolean; written: string[] }> {
+  ): Promise<{ approved: boolean; written: string[]; fullyApplied: boolean; rejectedBlocks: number }> {
     const requestId = `ap_${this.taskId}_${++nodeCounter}`;
     const request: PendingApproval = { requestId, taskId: this.taskId, kind: 'diff', subtaskId, summary, diff: diffs };
 
@@ -208,29 +208,51 @@ export class TaskRunner {
       acceptedBlockIds: decision.acceptedBlockIds ?? [],
     });
 
-    if (!decision.approved) return { approved: false, written: [] };
+    if (!decision.approved) return { approved: false, written: [], fullyApplied: false, rejectedBlocks: 0 };
 
-    // Default to every block when the UI sends a plain accept-all.
-    const accepted = decision.acceptedBlockIds ?? diffs.flatMap((d) => d.blocks.map((b) => b.id));
+    // An explicit list means block-level review; its absence means a plain
+    // accept-all. `null`, not a pre-expanded list, so the per-file fallback
+    // below can tell "user reviewed and picked none here" from "no list sent".
+    const explicit = Array.isArray(decision.acceptedBlockIds) ? decision.acceptedBlockIds : null;
     const written: string[] = [];
+    let fullyApplied = true;
+    let rejectedBlocks = 0;
 
     for (const d of diffs) {
       const blockIds = d.blocks.map((b) => b.id);
-      const acceptedHere = blockIds.filter((id) => accepted.includes(id));
-      if (acceptedHere.length === 0) continue;
+      if (blockIds.length === 0) continue;
+
+      let acceptedHere = explicit ? blockIds.filter((id) => explicit.includes(id)) : blockIds;
+
+      // Approved, but nothing here matched — an id/serialisation mismatch, not
+      // a real rejection (the UI disables "Accept" at zero selected). Landing
+      // nothing on disk after an approval is exactly what makes the agent
+      // re-propose forever, so apply the whole change and say so.
+      if (acceptedHere.length === 0) {
+        this.emit({
+          type: 'log',
+          level: 'warn',
+          message: `Approval for ${d.path} carried no matching block ids (${explicit?.length ?? 0} sent); applying the full change.`,
+        });
+        acceptedHere = blockIds;
+      }
+
       const finalContent = applyAcceptedBlocks(d, acceptedHere);
       const full = path.resolve(this.config.rootPath, d.path);
       await fs.mkdir(path.dirname(full), { recursive: true });
       await fs.writeFile(full, finalContent, 'utf8');
       written.push(d.path);
       this.changedFiles.add(d.path);
+
       if (acceptedHere.length < blockIds.length) {
+        fullyApplied = false;
+        rejectedBlocks += blockIds.length - acceptedHere.length;
         this.notes.push(
           `Partial approval on ${d.path}: ${acceptedHere.length}/${blockIds.length} blocks applied.`
         );
       }
     }
-    return { approved: true, written };
+    return { approved: true, written, fullyApplied, rejectedBlocks };
   }
 
   private async requestCommandApproval(subtaskId: string, command: string): Promise<boolean> {

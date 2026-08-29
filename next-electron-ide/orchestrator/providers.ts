@@ -1,13 +1,16 @@
 /**
  * ============================================================================
- *  PROVIDER CLIENTS — one OpenAI-compatible path, one Ollama path
+ *  PROVIDER CLIENTS — OpenAI-compatible path, Ollama path, Gemini path
  * ============================================================================
  * Groq and OpenRouter both speak OpenAI's /chat/completions with the same
  * tool-calling shape, so they share a client and differ only in base URL,
  * auth header, and a couple of extra headers OpenRouter wants. Ollama's
  * /api/chat is close but not identical (no `tool_call_id`, different token
- * accounting fields), so it gets its own small adapter rather than a pile of
- * conditionals inside one function.
+ * accounting fields), so it gets its own small adapter. Gemini's
+ * generateContent REST API has a fundamentally different message format
+ * (`contents` with `parts`, `systemInstruction` as a top-level field,
+ * `functionResponse` instead of `role: tool`), so it also gets its own
+ * adapter rather than a pile of conditionals inside one function.
  *
  * Everything returns the same `LLMResult`, so router.ts and agents.ts never
  * branch on provider.
@@ -26,7 +29,15 @@ export type ChatMessage =
   | { role: 'assistant'; content: string | null; toolCalls?: ToolCall[] }
   | { role: 'tool'; toolCallId: string; name: string; content: string };
 
-export type ToolCall = { id: string; name: string; arguments: Record<string, unknown> };
+export type ToolCall = {
+  id: string;
+  name: string;
+  arguments: Record<string, unknown>;
+  /** Opaque blob Gemini 3.x attaches to a functionCall part (JSON field
+   *  `thoughtSignature`). Must be round-tripped verbatim in history or the model
+   *  returns a 400 "Function call is missing a thought_signature". */
+  _geminiThoughtSignature?: string;
+};
 
 export type ToolSchema = {
   name: string;
@@ -306,6 +317,213 @@ async function callOllama(
 }
 
 // ---------------------------------------------------------------------------
+// Gemini (generativelanguage.googleapis.com)
+// ---------------------------------------------------------------------------
+
+/**
+ * Convert our flat ChatMessage list to Gemini's `contents` array.
+ *
+ * Rules:
+ *  - `system` messages are returned separately as `systemInstruction` text;
+ *    Gemini does not accept `role: system` inside `contents`.
+ *  - `tool` messages become a `user` turn containing a `functionResponse` part.
+ *    Gemini groups multi-tool responses: consecutive tool messages for the same
+ *    assistant turn are collapsed into one user content with multiple parts.
+ *  - `assistant` messages become `model` turns; tool calls become
+ *    `functionCall` parts and any text becomes a `text` part.
+ */
+function toGeminiContents(messages: ChatMessage[]): {
+  systemInstruction: { parts: { text: string }[] } | undefined;
+  contents: unknown[];
+} {
+  const systemParts: { text: string }[] = [];
+  const contents: unknown[] = [];
+
+  for (let i = 0; i < messages.length; i++) {
+    const m = messages[i];
+
+    if (m.role === 'system') {
+      systemParts.push({ text: m.content });
+      continue;
+    }
+
+    if (m.role === 'tool') {
+      // Collect all consecutive tool-result messages into a single user turn.
+      const parts: unknown[] = [];
+      while (i < messages.length && messages[i].role === 'tool') {
+        const t = messages[i] as { role: 'tool'; toolCallId: string; name: string; content: string };
+        parts.push({
+          functionResponse: {
+            name: t.name,
+            response: { output: t.content },
+          },
+        });
+        i++;
+      }
+      i--; // outer loop will increment
+      contents.push({ role: 'user', parts });
+      continue;
+    }
+
+    if (m.role === 'assistant') {
+      const parts: unknown[] = [];
+      if (m.content) parts.push({ text: m.content });
+      for (const tc of m.toolCalls ?? []) {
+        const fcPart: Record<string, unknown> = { functionCall: { name: tc.name, args: tc.arguments } };
+        // Sibling of `functionCall` on the Part, camelCase per the v1beta REST API.
+        if (tc._geminiThoughtSignature != null) fcPart.thoughtSignature = tc._geminiThoughtSignature;
+        parts.push(fcPart);
+      }
+      if (parts.length === 0) parts.push({ text: '' });
+      contents.push({ role: 'model', parts });
+      continue;
+    }
+
+    // role === 'user'
+    contents.push({ role: 'user', parts: [{ text: m.content }] });
+  }
+
+  return {
+    systemInstruction: systemParts.length > 0 ? { parts: systemParts } : undefined,
+    contents,
+  };
+}
+
+async function callGemini(
+  model: ModelEntry,
+  messages: ChatMessage[],
+  tools: ToolSchema[],
+  env: Record<string, string>
+): Promise<LLMResult> {
+  const apiKey = env.GEMINI_API_KEY;
+  if (!apiKey) {
+    throw new ProviderError(
+      'No API key for Gemini. Add GEMINI_API_KEY in Agent -> Settings.',
+      { retryable: false, rateLimited: false }
+    );
+  }
+
+  // The registry stores apiId as "gemini/<model-name>" for namespacing clarity.
+  // The actual Gemini REST endpoint uses just the model name.
+  const modelName = model.apiId.startsWith('gemini/') ? model.apiId.slice('gemini/'.length) : model.apiId;
+  const baseUrl = env.GEMINI_BASE_URL || 'https://generativelanguage.googleapis.com/v1beta';
+  const url = `${baseUrl}/models/${modelName}:generateContent?key=${apiKey}`;
+
+  const { systemInstruction, contents } = toGeminiContents(messages);
+
+  // Gemma models are served through the same Gemini API but have no system
+  // role — passing `systemInstruction` to them is a 400. Fold that text into
+  // the first user turn instead so the same adapter serves both.
+  const isGemma = /gemma/i.test(modelName);
+  if (isGemma && systemInstruction) {
+    const sysText = systemInstruction.parts.map((p) => p.text).join('\n\n');
+    const firstUser = (contents as any[]).find((c) => c?.role === 'user');
+    if (firstUser) firstUser.parts.unshift({ text: `${sysText}\n\n---\n\n` });
+    else (contents as any[]).unshift({ role: 'user', parts: [{ text: sysText }] });
+  }
+
+  const body: Record<string, unknown> = {
+    contents,
+    generationConfig: { temperature: 0.2 },
+  };
+  if (systemInstruction && !isGemma) body.systemInstruction = systemInstruction;
+  if (tools.length) {
+    body.tools = [
+      {
+        functionDeclarations: tools.map((t) => ({
+          name: t.name,
+          description: t.description,
+          parameters: t.parameters,
+        })),
+      },
+    ];
+    body.toolConfig = { functionCallingConfig: { mode: 'AUTO' } };
+  }
+
+  const started = Date.now();
+  const res = await postJson(url, {}, body);
+  const latencyMs = Date.now() - started;
+
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    // Gemini uses 429 for quota, 400 for bad requests, 401/403 for auth.
+    throw classifyHttp(res.status, text);
+  }
+
+  const data: any = await res.json();
+
+  // Gemini surfaces quota/safety errors inside a 200 body.
+  if (data.error) {
+    const msg = String(data.error.message ?? JSON.stringify(data.error));
+    const rateLimited = /quota|rate|limit/i.test(msg);
+    throw new ProviderError(`Gemini returned an error body: ${msg}`, { retryable: true, rateLimited });
+  }
+
+  const candidate = data.candidates?.[0];
+  if (!candidate) {
+    const reason = data.promptFeedback?.blockReason ?? 'unknown';
+    throw new ProviderError(
+      `Gemini returned no candidates (blockReason: ${reason})`,
+      { retryable: false, rateLimited: false }
+    );
+  }
+
+  const parts: any[] = candidate.content?.parts ?? [];
+  let text = '';
+  const toolCalls: ToolCall[] = [];
+
+  // The v1beta REST API returns this as `thoughtSignature` (camelCase); the proto
+  // name `thought_signature` never appears in a JSON response, so reading only
+  // the snake_case form captured nothing and the next tool turn 400'd with
+  // "Function call is missing a thought_signature". Read camelCase first, keep
+  // snake_case as a fallback for a proxy that might rewrite it.
+  const sigOf = (part: any): string | null => {
+    const s = part?.thoughtSignature ?? part?.thought_signature;
+    return s != null ? String(s) : null;
+  };
+
+  let turnSignature: string | null = null;
+  for (const part of parts) {
+    turnSignature = turnSignature ?? sigOf(part);
+    if (typeof part.text === 'string') {
+      text += part.text;
+    } else if (part.functionCall) {
+      const fc = part.functionCall;
+      const sig = sigOf(part);
+      toolCalls.push({
+        // Gemini doesn't assign call IDs; synthesise a stable-ish one.
+        id: `gemini_${Date.now()}_${toolCalls.length}`,
+        name: fc.name ?? 'unknown',
+        arguments: (fc.args ?? {}) as Record<string, unknown>,
+        // Preserved so toGeminiContents can round-trip it into history.
+        ...(sig != null ? { _geminiThoughtSignature: sig } : {}),
+      });
+    }
+  }
+
+  // Gemini attaches the signature to just one part per turn — usually the first
+  // functionCall, but sometimes a leading thought part. If the calls themselves
+  // carried none but the turn did, pin it to the first call so the history
+  // round-trip still satisfies the check instead of 400'ing next request.
+  if (turnSignature && toolCalls.length && !toolCalls.some((c) => c._geminiThoughtSignature != null)) {
+    toolCalls[0]._geminiThoughtSignature = turnSignature;
+  }
+
+  const usage = data.usageMetadata ?? {};
+  const promptTokens: number = usage.promptTokenCount ?? estimateMessageTokens(messages);
+  const completionTokens: number = usage.candidatesTokenCount ?? estimateTokens(text);
+
+  return {
+    text,
+    toolCalls,
+    promptTokens,
+    completionTokens,
+    costUsd: costOf(model, promptTokens, completionTokens),
+    latencyMs,
+  };
+}
+
+// ---------------------------------------------------------------------------
 
 export async function callModel(
   model: ModelEntry,
@@ -314,5 +532,6 @@ export async function callModel(
   env: Record<string, string>
 ): Promise<LLMResult> {
   if (model.provider === 'ollama') return callOllama(model, messages, tools, env);
+  if (model.provider === 'gemini') return callGemini(model, messages, tools, env);
   return callOpenAICompatible(model, messages, tools, env);
 }

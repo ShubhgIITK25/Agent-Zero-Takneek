@@ -2,9 +2,12 @@ node_modules/
 .next/
 renderer-out/
 electron-dist/
+orchestrator-dist/
 release/
-*.log
-.DS_Store
-
+tsconfig.tsbuildinfo
+_to_delete/
 __pycache__/
-*.py[cod]
+*.pyc
+retrieval-service/.venv/
+.DS_Store
+retrieval-service/__pycache__/

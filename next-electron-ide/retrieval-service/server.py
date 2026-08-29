@@ -95,6 +95,7 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json({"error": "root_path is required"}, 400)
             return
         codebase_id = body.get("codebase_id") or store.codebase_id_for(root_path)
+        print(codebase_id)
         with _lock_for(codebase_id):
             result = indexer.full_index(DATA_DIR, root_path, codebase_id)
         self._send_json({"codebase_id": codebase_id, **result})
