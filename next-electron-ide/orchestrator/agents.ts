@@ -282,7 +282,9 @@ export function summariserMessages(goal: string, subtasks: Subtask[], notes: str
       role: 'system',
       content:
         'Summarise for the user what the system just did, in 2-5 sentences of plain prose. Mention what ' +
-        'changed and anything left incomplete or rejected. No headings, no bullet lists, no preamble.',
+        'changed and anything left incomplete or rejected.\n\n' +
+        'Reply with ONLY this JSON:\n' +
+        '{"summary": "your 2-5 sentences of plain prose here"}',
     },
     {
       role: 'user',
