@@ -432,12 +432,36 @@ export class TaskRunner {
         this.checkpoint();
       }
 
-      const failed = this.snapshot.subtasks.filter((s) => s.status === 'failed');
+      // Terminal by construction: the scheduling loop above only exits once
+      // every subtask is 'done', 'failed', or 'skipped' (a 'blocked' subtask
+      // is converted to 'skipped' as soon as it is selected). So "did the
+      // task actually succeed" is exactly "did every subtask end 'done'" —
+      // a failed subtask, or one skipped because its dependency failed, both
+      // mean the task did NOT complete, even if most subtasks passed.
+      const incomplete = this.snapshot.subtasks.filter((s) => s.status !== 'done');
       const summary = await this.aggregate();
-      this.snapshot.status = failed.length && failed.length === this.snapshot.subtasks.length ? 'failed' : 'done';
       this.snapshot.summary = summary;
-      this.checkpoint();
-      this.emit({ type: 'task_finished', summary });
+
+      if (incomplete.length === 0) {
+        this.snapshot.status = 'done';
+        this.checkpoint();
+        this.emit({ type: 'task_finished', summary });
+      } else {
+        // Emitting task_failed (not task_finished) here matters as much as
+        // the status field: it is what makes ChatPanel render an error
+        // bubble instead of a plain assistant reply, and what makes the
+        // dashboard's live trace and the resumable-task list show 'failed'
+        // instead of a misleading green 'done'.
+        this.snapshot.status = 'failed';
+        const detail = incomplete
+          .map((s) => `${s.title} (${s.status}${s.lastError ? `: ${s.lastError}` : ''})`)
+          .join('; ');
+        this.checkpoint();
+        this.emit({
+          type: 'task_failed',
+          reason: `${incomplete.length}/${this.snapshot.subtasks.length} subtask(s) did not complete — ${detail}\n\n${summary}`,
+        });
+      }
     } catch (err) {
       this.fail(err instanceof Error ? err.message : String(err));
     }
