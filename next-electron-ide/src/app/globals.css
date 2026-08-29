@@ -127,7 +127,11 @@ button:hover {
   display: flex;
   align-items: center;
   gap: 4px;
+  width: 100%;
+  min-width: 0;
+  min-height: 28px;
   padding: 3px 6px;
+  box-sizing: border-box;
   cursor: pointer;
   white-space: nowrap;
   user-select: none;
@@ -142,15 +146,19 @@ button:hover {
 }
 
 .tree-row-actions {
-  display: none;
+  display: flex;
+  visibility: hidden;
+  width: 56px;
   margin-left: auto;
   align-items: center;
+  justify-content: flex-end;
   gap: 1px;
+  flex-shrink: 0;
 }
 
 .tree-row:hover .tree-row-actions,
 .tree-row.active .tree-row-actions {
-  display: flex;
+  visibility: visible;
 }
 
 .tree-row-actions button {
@@ -219,6 +227,8 @@ button:hover {
 }
 
 .node-name {
+  flex: 1 1 auto;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
 }

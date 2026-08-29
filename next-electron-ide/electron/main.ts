@@ -498,7 +498,7 @@ ipcMain.handle(
       withFileTypes: true,
     });
     return entries
-      .filter((e) => e.name !== "node_modules" && e.name !== ".git")
+      .filter((e) => e.name !== ".git")
       .map((e) => ({
         name: e.name,
         path: path.join(dirPath, e.name),
