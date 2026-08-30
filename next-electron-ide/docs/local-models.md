@@ -42,6 +42,21 @@ The tag must match the registry's `apiId` **exactly**. `qwen2.5-coder` and `qwen
 
 > `Ollama has no model "qwen2.5-coder:7b" pulled. Run: ollama pull qwen2.5-coder:7b`
 
+### If you already installed `llama3:latest`
+
+NEXide does not silently substitute the original Llama 3 tag. That tag is not
+the registered agent model and does not provide the tool-calling template the
+orchestrator needs. Pull the compatible replacement instead:
+
+```bash
+ollama pull llama3.1:8b
+```
+
+NEXide migrates the old saved model ID `ollama:llama3` to
+`ollama:llama3.1-8b` when settings are loaded. The original `llama3:latest`
+can remain installed, but it will not be selected for the tool-using agent
+loop.
+
 ## 3. Enable it in NEXide
 
 Open **Settings**:

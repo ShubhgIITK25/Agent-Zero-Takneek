@@ -756,7 +756,7 @@ async function readAgentSettings(): Promise<AgentSettings> {
       path.join(app.getPath("userData"), "agent-settings.json"),
       "utf-8",
     );
-    return { ...DEFAULT_AGENT_SETTINGS, ...JSON.parse(raw) };
+    return normalizeAgentSettings(JSON.parse(raw));
   } catch {
     return DEFAULT_AGENT_SETTINGS;
   }
@@ -887,10 +887,22 @@ type AgentSettings = {
 
 const DEFAULT_AGENT_SETTINGS: AgentSettings = {
   envVars: {},
-  enabledModelIds: [],
+  // The local tool-capable model is the safest default: it needs no API key
+  // and is small enough for the reference 16GB RAM / 8GB VRAM machine.
+  enabledModelIds: ["ollama:llama3.1-8b"],
   maxCostUsd: 0.5,
   maxSeconds: 2700,
 };
+
+/** Migrate IDs used by the earlier local-model setup to the agent-capable tag. */
+function normalizeAgentSettings(parsed: any): AgentSettings {
+  const enabled = Array.isArray(parsed?.enabledModelIds)
+    ? parsed.enabledModelIds
+        .map((id: unknown) => (id === "ollama:llama3" ? "ollama:llama3.1-8b" : id))
+        .filter((id: unknown): id is string => typeof id === "string")
+    : DEFAULT_AGENT_SETTINGS.enabledModelIds;
+  return { ...DEFAULT_AGENT_SETTINGS, ...parsed, enabledModelIds: [...new Set(enabled)] };
+}
 
 function settingsFilePath(): string {
   return path.join(app.getPath("userData"), "agent-settings.json");
@@ -899,8 +911,7 @@ function settingsFilePath(): string {
 ipcMain.handle("settings:get", async (): Promise<AgentSettings> => {
   try {
     const raw = await fs.readFile(settingsFilePath(), "utf-8");
-    const parsed = JSON.parse(raw);
-    return { ...DEFAULT_AGENT_SETTINGS, ...parsed };
+    return normalizeAgentSettings(JSON.parse(raw));
   } catch {
     return DEFAULT_AGENT_SETTINGS;
   }
@@ -911,7 +922,7 @@ ipcMain.handle(
   async (_evt, settings: AgentSettings): Promise<boolean> => {
     const target = settingsFilePath();
     await fs.mkdir(path.dirname(target), { recursive: true });
-    await fs.writeFile(target, JSON.stringify(settings, null, 2), "utf-8");
+    await fs.writeFile(target, JSON.stringify(normalizeAgentSettings(settings), null, 2), "utf-8");
     return true;
   },
 );

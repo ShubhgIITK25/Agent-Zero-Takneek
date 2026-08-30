@@ -54,7 +54,7 @@ export default function SettingsPanel({ onClose }: SettingsPanelProps) {
     (async () => {
       const s = await window.electronAPI?.settingsGet();
       setSettings(
-        s ?? { envVars: {}, enabledModelIds: [], maxCostUsd: 0.5, maxSeconds: 2700 }
+        s ?? { envVars: {}, enabledModelIds: ['ollama:llama3.1-8b'], maxCostUsd: 0.5, maxSeconds: 2700 }
       );
     })();
   }, []);
