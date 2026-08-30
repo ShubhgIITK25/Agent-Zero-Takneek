@@ -11,6 +11,24 @@ npm run dev
 
 `npm run dev` starts the Next.js renderer (`http://localhost:3210`) and, once it's up, compiles and launches the Electron shell. The orchestrator is spawned by Electron's main process as a separate child process the first time you send a task — you don't start it manually.
 
+### Building desktop installers
+
+The packaging targets are native to each desktop OS: NSIS on Windows, DMG and
+ZIP on macOS, and AppImage and DEB on Linux. Run the matching command on that
+platform so native dependencies such as `node-pty` are rebuilt correctly:
+
+```bash
+npm run dist:win
+npm run dist:mac
+npm run dist:linux
+```
+
+The installers are written to `release/`. The repository's GitHub Actions
+workflow runs the same build on native Windows, macOS, and Linux runners and
+uploads each platform's artifacts from every `main` push or manual run. CI
+artifacts are unsigned; production signing and macOS notarization require
+platform certificates and secrets.
+
 ### Required API keys
 
 Open **Settings** in the app and enter keys for whichever providers you want available:
