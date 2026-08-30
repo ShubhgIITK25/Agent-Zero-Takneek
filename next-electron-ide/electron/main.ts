@@ -738,6 +738,7 @@ async function buildTaskConfig() {
         : null,
     env: settings.envVars,
     enabledModelIds: settings.enabledModelIds,
+    modelHealth: freshHealth(),
     maxCostUsd: settings.maxCostUsd,
     maxSeconds: settings.maxSeconds,
   };
@@ -891,11 +892,37 @@ ipcMain.handle(
  * Never throws: a settings screen that cannot render because a health check
  * failed is strictly worse than one showing "offline".
  */
+/**
+ * Last health probe, cached so the ROUTER can use it too.
+ *
+ * The Settings screen runs a probe whenever it opens or the keys change. That
+ * result used to be rendered and thrown away, which is why a model visibly
+ * marked "unavailable" was still routable. Caching it here — rather than
+ * probing at task start — keeps task startup instant, at the cost of the data
+ * being a snapshot; the orchestrator treats it as a hint that runtime evidence
+ * overrides in both directions.
+ */
+let lastModelHealth: Record<string, { state: string; detail: string; checkedAt: number }> = {};
+
+/** Older than this and we would rather route and find out than trust it. */
+const HEALTH_TTL_MS = 30 * 60 * 1000;
+
+function freshHealth(): Record<string, { state: string; detail: string; checkedAt: number }> {
+  const now = Date.now();
+  const out: Record<string, { state: string; detail: string; checkedAt: number }> = {};
+  for (const [id, h] of Object.entries(lastModelHealth)) {
+    if (now - h.checkedAt <= HEALTH_TTL_MS) out[id] = h;
+  }
+  return out;
+}
+
 ipcMain.handle(
   "models:checkHealth",
   async (_evt, req: HealthCheckRequest) => {
     try {
-      return await checkModelHealth(req);
+      const result = await checkModelHealth(req);
+      lastModelHealth = { ...lastModelHealth, ...result };
+      return result;
     } catch (err) {
       const detail = err instanceof Error ? err.message : String(err);
       const out: Record<string, { state: string; detail: string; checkedAt: number }> = {};

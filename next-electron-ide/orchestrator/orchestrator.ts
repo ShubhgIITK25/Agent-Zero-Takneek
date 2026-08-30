@@ -37,7 +37,7 @@ import {
   TaskConfig,
 } from './protocol';
 import { Budget } from './budget';
-import { Router, RateLimitTracker } from './router';
+import { Router, RateLimitTracker, HealthRegistry } from './router';
 import { ModelEntry, findModel, eligibleModels } from './models';
 import { callModel, ChatMessage, estimateMessageTokens, estimateTokens, ProviderError, ToolCall } from './providers';
 import { TaskStore, TaskSnapshot } from './store';
@@ -94,6 +94,8 @@ export class TaskRunner {
   private budget: Budget;
   private router: Router;
   private rateLimits = new RateLimitTracker();
+  /** Seeded from the Settings probe, then corrected by what actually happens. */
+  private health: HealthRegistry;
   private cancelled = false;
   private pendingApprovals = new Map<string, (d: ApprovalDecision) => void>();
   private snapshot: TaskSnapshot;
@@ -163,7 +165,8 @@ export class TaskRunner {
       // dollars already spent are spent.
       0
     );
-    this.router = new Router(config.enabledModelIds, this.rateLimits);
+    this.health = new HealthRegistry(config.modelHealth ?? {});
+    this.router = new Router(config.enabledModelIds, this.rateLimits, this.health);
 
     const agentsMd = loadAgentsMd(config.rootPath);
     this.ignore = loadIgnoreMatcher(config.rootPath);
@@ -463,6 +466,8 @@ export class TaskRunner {
         // same parent, which is exactly right ("tried A, then B") — but it
         // caused nothing, so nothing should hang off it.
         if (opts.subtaskId) this.lastNodeBySubtask.set(opts.subtaskId, nodeId);
+        // Proof this model works — outranks any stale health snapshot.
+        this.health.recordSuccess(route.model.id, route.model.provider);
 
         return { nodeId, text: result.text, toolCalls: result.toolCalls, model: route.model };
       } catch (err) {
@@ -470,15 +475,40 @@ export class TaskRunner {
         this.emit({ type: 'agent_call_end', nodeId, promptTokens: 0, completionTokens: 0, costUsd: 0, latencyMs: 0, output: '', error: pe.message });
 
         tried.push(route.model.id);
+
+        // A permanent failure is evidence about the MODEL or the KEY, not a
+        // reason to abandon the step. Recording it takes the offender out of
+        // the running for the rest of the task, and then we re-route — a
+        // retired model id on Groq must not stop a task when OpenRouter can
+        // serve the same request. Only when nothing healthy is left does the
+        // step fail, and by then the loop above has said why.
+        const scope = this.health.recordFailure(route.model.id, route.model.provider, {
+          status: pe.status,
+          retryable: pe.retryable,
+          message: pe.message,
+        });
+        if (scope) {
+          this.emit({
+            type: 'intervention',
+            subtaskId: opts.subtaskId,
+            cause: 'model_unhealthy',
+            detail: `${route.model.label} (${route.model.provider}): ${pe.message}`,
+            action:
+              scope === 'provider'
+                ? `Excluding every ${route.model.provider} model for the rest of this task — the key is being rejected, so retrying it just burns time.`
+                : `Excluding ${route.model.id} for the rest of this task — the provider does not serve that id, so no retry can succeed.`,
+          });
+        }
+
         if (!pe.retryable) {
           this.emit({
             type: 'intervention',
             subtaskId: opts.subtaskId,
             cause: 'provider_failover',
             detail: pe.message,
-            action: 'Not retryable (bad request or bad key) — failing this step rather than burning budget.',
+            action: 'Not retryable on this model — re-routing the same context to another one.',
           });
-          return null;
+          continue;
         }
 
         this.rateLimits.penalise(route.model.provider, pe.rateLimited);
