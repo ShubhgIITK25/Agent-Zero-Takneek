@@ -10,6 +10,7 @@ import {
   OrchestratorBridge,
   orchestratorScriptPath,
 } from "./orchestrator-bridge";
+import { checkModelHealth, HealthCheckRequest } from "./model-health";
 import type { IPty } from "node-pty";
 
 const isDev = process.env.NODE_ENV === "development";
@@ -869,6 +870,33 @@ ipcMain.handle(
     await fs.mkdir(path.dirname(target), { recursive: true });
     await fs.writeFile(target, JSON.stringify(settings, null, 2), "utf-8");
     return true;
+  },
+);
+
+/**
+ * Probe the providers behind the given models and report each one's health.
+ *
+ * The renderer supplies the models to check rather than this process reading
+ * the registry, because electron/tsconfig.json pins `rootDir` to this folder
+ * and so cannot import orchestrator/models.ts. The renderer already holds the
+ * registry, and the payload is inert data.
+ *
+ * Never throws: a settings screen that cannot render because a health check
+ * failed is strictly worse than one showing "offline".
+ */
+ipcMain.handle(
+  "models:checkHealth",
+  async (_evt, req: HealthCheckRequest) => {
+    try {
+      return await checkModelHealth(req);
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      const out: Record<string, { state: string; detail: string; checkedAt: number }> = {};
+      for (const m of req?.models ?? []) {
+        out[m.id] = { state: "offline", detail: `Health check failed: ${detail}`, checkedAt: Date.now() };
+      }
+      return out;
+    }
   },
 );
 

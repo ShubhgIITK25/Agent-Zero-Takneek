@@ -116,6 +116,14 @@ const api = {
   settingsGet: (): Promise<AgentSettings> => ipcRenderer.invoke("settings:get"),
   settingsSet: (settings: AgentSettings): Promise<boolean> =>
     ipcRenderer.invoke("settings:set", settings),
+  // Probe each model's provider and report whether it is actually callable.
+  // Keys are passed through from settings the renderer already holds; they do
+  // not leave the app.
+  modelsCheckHealth: (req: {
+    models: { id: string; apiId: string; provider: string }[];
+    envVars: Record<string, string>;
+  }): Promise<Record<string, { state: string; detail: string; checkedAt: number }>> =>
+    ipcRenderer.invoke("models:checkHealth", req),
   onChatToggle: (cb: () => void) => {
     const listener = () => cb();
     ipcRenderer.on("chat:toggle", listener);

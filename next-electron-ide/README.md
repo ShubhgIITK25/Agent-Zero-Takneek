@@ -95,7 +95,10 @@ The one entry it can't check is the Gemini route, because listing `generativelan
 ## Settings
 
 - **API keys** per provider, with inline validation.
-- **Model roster**, showing every registry entry with its parameter count, context window, pricing, and eligibility — including the two blocked models above, with the reason shown rather than hidden.
+- **Model roster**, showing every registry entry with its parameter count, context window, pricing, and eligibility — including the blocked models above, with the reason shown rather than hidden.
+- **Live health pill** on every eligible model, checked on open and on demand: `working`, `invalid key`, `rate-limited`, `unavailable`, `offline`. This is a *different question* from eligibility — a model can be perfectly eligible and completely dead — so the two badges sit side by side rather than being merged. Hovering a pill gives what was actually observed plus the fix (`ollama pull qwen2.5-coder:7b`, `ollama serve`, the provider's own error text).
+
+  It costs **one catalogue request per provider**, not one per model: each provider's `/models` listing answers all five questions at once — network up, key valid, quota intact, id still served — for every model of that provider simultaneously. Probing 23 models individually would burn free-tier quota to render a settings screen and would be likelier to trip the rate limit it's meant to report. Deliberately *not* a real completion call: that would be the most faithful test and it's what the orchestrator actually does, but it costs tokens every time someone opens Settings. A model that lists but errors on inference isn't caught here — it surfaces at run time as the `provider_failover` intervention that already exists. The probe runs in the main process (renderer `fetch` to provider APIs is CORS-blocked, and the keys live there), and it reads the keys **currently typed into the form**, so you can paste one and press *Re-check* before saving.
 - **Budget ceiling**, checked *before* dispatch (not after) with a reserve margin, so a task can't blow past the limit mid-run.
 - **Approval mode** for the diff/command gate (always ask, or auto-approve below a size threshold).
 
@@ -129,7 +132,7 @@ Every task is persisted as an append-only JSONL event log plus an atomically-wri
 npm test
 ```
 
-Runs, in order: `unit.js` (router scoring, budget math, diff/compaction unit tests), `ignore.js`, `review-buffer.js`, `task-completion.js` (an end-to-end regression test through the real `TaskRunner`, with the model boundary mocked, proving a task with any non-`done` subtask ends `failed` — not `done` — and emits `task_failed` with the specific subtask(s) named), `backtrack.js` (same harness over a real temp project: every attempt fails verification, and the workspace must end byte-identical to how it started — an overwritten file restored, a created file deleted), `protocol.js` (JSON-RPC message round-trip tests), and `resume.js` (crash recovery from a hand-crafted checkpoint).
+Runs, in order: `model-health.js` (the settings-screen provider probe, with `fetch` stubbed so all five health states are pinned deterministically and offline), `unit.js` (router scoring, budget math, diff/compaction unit tests), `ignore.js`, `review-buffer.js`, `task-completion.js` (an end-to-end regression test through the real `TaskRunner`, with the model boundary mocked, proving a task with any non-`done` subtask ends `failed` — not `done` — and emits `task_failed` with the specific subtask(s) named), `backtrack.js` (same harness over a real temp project: every attempt fails verification, and the workspace must end byte-identical to how it started — an overwritten file restored, a created file deleted), `protocol.js` (JSON-RPC message round-trip tests), and `resume.js` (crash recovery from a hand-crafted checkpoint).
 
 `npm run typecheck` runs all three `tsconfig.json`s (root, `electron/`, `orchestrator/`) with `--noEmit`.
 

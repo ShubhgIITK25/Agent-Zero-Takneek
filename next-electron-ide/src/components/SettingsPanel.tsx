@@ -11,11 +11,25 @@
  * nothing about why it cannot be used.
  */
 
-import { useEffect, useMemo, useState } from 'react';
-import type { AgentSettings } from '../lib/electron-api';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import type { AgentSettings, ModelHealth, ModelHealthState } from '../lib/electron-api';
 import { MODEL_REGISTRY, checkEligibility, PROVIDER_CONFIG, ProviderId } from '../../orchestrator/models';
 
 type SettingsPanelProps = { onClose: () => void };
+
+/**
+ * Pill label + the fix, per health state. The label says what is wrong; the
+ * tooltip carries what was actually observed plus the action that resolves it,
+ * because "unavailable" on its own tells the user nothing they can act on.
+ */
+const HEALTH_LABEL: Record<ModelHealthState, string> = {
+  working: 'working',
+  'invalid-key': 'invalid key',
+  'rate-limited': 'rate-limited',
+  unavailable: 'unavailable',
+  offline: 'offline',
+  unknown: 'not checked',
+};
 
 const PROVIDER_HELP: Record<ProviderId, { url: string; hint: string }> = {
   groq: { url: 'console.groq.com/keys', hint: 'Free tier, no card. Fastest of the three.' },
@@ -28,6 +42,9 @@ export default function SettingsPanel({ onClose }: SettingsPanelProps) {
   const [settings, setSettings] = useState<AgentSettings | null>(null);
   const [saved, setSaved] = useState(false);
   const [tab, setTab] = useState<'models' | 'keys'>('models');
+  const [health, setHealth] = useState<Record<string, ModelHealth>>({});
+  const [checking, setChecking] = useState(false);
+  const [lastChecked, setLastChecked] = useState<number | null>(null);
 
   useEffect(() => {
     (async () => {
@@ -43,6 +60,44 @@ export default function SettingsPanel({ onClose }: SettingsPanelProps) {
     for (const m of MODEL_REGISTRY) (groups[m.provider] ??= []).push(m);
     return groups;
   }, []);
+
+  /**
+   * Only eligible models are probed. An ineligible one can never be routed to,
+   * so its liveness is not a fact worth spending a request on.
+   *
+   * `envVars` is passed rather than read in the main process on purpose: it
+   * checks the keys currently TYPED IN THE FORM, not the last saved ones, so
+   * you can paste a key and verify it before committing it to disk.
+   */
+  const runHealthCheck = useCallback(async (envVars: Record<string, string>) => {
+    if (!window.electronAPI?.modelsCheckHealth) return;
+    setChecking(true);
+    try {
+      const models = MODEL_REGISTRY.filter((m) => checkEligibility(m).eligible).map((m) => ({
+        id: m.id,
+        apiId: m.apiId,
+        provider: m.provider,
+      }));
+      setHealth(await window.electronAPI.modelsCheckHealth({ models, envVars }));
+      setLastChecked(Date.now());
+    } finally {
+      setChecking(false);
+    }
+  }, []);
+
+  // Check once as soon as settings load. Opening this screen is exactly the
+  // moment the user wants to know whether their roster works, and making them
+  // press a button first would mean the common case is a screen full of
+  // "not checked".
+  const envVarsKey = settings ? JSON.stringify(settings.envVars) : null;
+  useEffect(() => {
+    if (envVarsKey === null) return;
+    void runHealthCheck(JSON.parse(envVarsKey));
+    // Re-probing on every keystroke in a key field would hammer the providers,
+    // so this deliberately depends on the initial load only; the Re-check
+    // button covers the "I just pasted a key" case.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [envVarsKey === null]);
 
   if (!settings) {
     return (
@@ -120,6 +175,36 @@ export default function SettingsPanel({ onClose }: SettingsPanelProps) {
                 why some MoE models below are blocked despite a small active size.
               </p>
 
+              <div className="health-bar">
+                <span className="health-bar-summary">
+                  {checking ? (
+                    'Checking providers…'
+                  ) : lastChecked ? (
+                    <>
+                      {(['working', 'invalid-key', 'rate-limited', 'unavailable', 'offline'] as const)
+                        .map((s) => ({ s, n: Object.values(health).filter((h) => h.state === s).length }))
+                        .filter(({ n }) => n > 0)
+                        .map(({ s, n }) => (
+                          <span key={s} className={`health-count health-count-${s}`}>
+                            {n} {HEALTH_LABEL[s]}
+                          </span>
+                        ))}
+                    </>
+                  ) : (
+                    'Model health not checked yet.'
+                  )}
+                </span>
+                <button
+                  type="button"
+                  className="health-recheck"
+                  disabled={checking}
+                  onClick={() => void runHealthCheck(settings.envVars)}
+                  title="Probe each provider's catalogue with the keys currently in the form"
+                >
+                  {checking ? 'Checking…' : 'Re-check'}
+                </button>
+              </div>
+
               {(Object.keys(byProvider) as ProviderId[]).map((provider) => {
                 const visibleModels = byProvider[provider].filter((m) => checkEligibility(m).eligible);
                 if (visibleModels.length === 0) return null;
@@ -166,6 +251,20 @@ export default function SettingsPanel({ onClose }: SettingsPanelProps) {
                             <span className={`model-status${el.eligible ? ' model-status-ok' : ' model-status-bad'}`}>
                               {el.eligible ? 'eligible' : 'blocked'}
                             </span>
+                            {el.eligible && (
+                              <span
+                                className={`model-health model-health-${health[m.id]?.state ?? 'unknown'}`}
+                                title={
+                                  health[m.id]?.detail ??
+                                  'Not checked yet — press "Re-check" to probe this provider.'
+                                }
+                              >
+                                <span className="model-health-dot" aria-hidden="true" />
+                                {checking && !health[m.id]
+                                  ? 'checking…'
+                                  : HEALTH_LABEL[health[m.id]?.state ?? 'unknown']}
+                              </span>
+                            )}
                             {!el.eligible && <span className="model-block-reason">{el.reason}</span>}
                             {el.eligible && m.notes && <span className="model-note">{m.notes}</span>}
                           </label>

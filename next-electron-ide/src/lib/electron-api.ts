@@ -12,6 +12,27 @@ export type AgentSettings = {
   maxSeconds: number;
 };
 
+/**
+ * Whether a model is actually callable right now — a different question from
+ * whether it is *eligible* (≤80B total params), which is what the roster
+ * already showed. Computed in the main process; see electron/model-health.ts,
+ * which holds the authoritative copy of this union (electron/ pins `rootDir`
+ * and so cannot import from here). Keep the two in step.
+ */
+export type ModelHealthState =
+  | 'working'
+  | 'invalid-key'
+  | 'rate-limited'
+  | 'unavailable'
+  | 'offline'
+  | 'unknown';
+
+export type ModelHealth = {
+  state: ModelHealthState;
+  detail: string;
+  checkedAt: number;
+};
+
 export type OrchestratorStatus = {
   state: 'ready' | 'restarting' | 'unavailable';
   message?: string;
@@ -90,6 +111,10 @@ export interface ElectronAPI {
   // ---- agent settings (API keys / env vars) ----
   settingsGet: () => Promise<AgentSettings>;
   settingsSet: (settings: AgentSettings) => Promise<boolean>;
+  modelsCheckHealth: (req: {
+    models: { id: string; apiId: string; provider: string }[];
+    envVars: Record<string, string>;
+  }) => Promise<Record<string, ModelHealth>>;
   onChatToggle: (cb: () => void) => () => void;
   onSettingsToggle: (cb: () => void) => () => void;
   onFilesRefresh: (cb: () => void) => () => void;

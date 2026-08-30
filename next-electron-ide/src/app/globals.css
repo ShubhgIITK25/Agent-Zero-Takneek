@@ -2071,8 +2071,8 @@ button:hover {
 
 .model-row {
   display: grid;
-  grid-template-columns: auto 1fr auto auto;
-  grid-template-areas: "check main meta status" ". reason reason reason";
+  grid-template-columns: auto 1fr auto auto auto;
+  grid-template-areas: "check main meta status health" ". reason reason reason reason";
   gap: 4px 10px;
   align-items: center;
   padding: 7px 10px;
@@ -2163,6 +2163,134 @@ button:hover {
   grid-area: reason;
   font-size: 11px;
   color: var(--nx-muted);
+}
+
+/* --- live model health: is this model actually callable right now? --------
+   Distinct from `.model-status`, which answers the static question "is this
+   model allowed under the 80B rule". They sit side by side because a model can
+   easily be eligible AND dead, and conflating the two would hide that. */
+
+.model-health {
+  grid-area: health;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 10px;
+  font-weight: 600;
+  white-space: nowrap;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  cursor: help;
+}
+
+.model-health-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  flex: none;
+}
+
+.model-health-working {
+  color: var(--nx-ok);
+  background: rgba(78, 201, 176, 0.12);
+  border-color: rgba(78, 201, 176, 0.35);
+}
+
+/* A bad key and an exhausted quota are both "you must act", but the action is
+   different, so they are deliberately different colours rather than one
+   generic warning. */
+.model-health-invalid-key {
+  color: var(--nx-danger);
+  background: rgba(241, 76, 76, 0.12);
+  border-color: rgba(241, 76, 76, 0.35);
+}
+
+.model-health-rate-limited {
+  color: var(--nx-warn);
+  background: rgba(215, 186, 125, 0.12);
+  border-color: rgba(215, 186, 125, 0.35);
+}
+
+.model-health-unavailable {
+  color: #d19a66;
+  background: rgba(209, 154, 102, 0.12);
+  border-color: rgba(209, 154, 102, 0.35);
+}
+
+.model-health-offline {
+  color: var(--nx-muted);
+  background: rgba(133, 133, 133, 0.12);
+  border-color: rgba(133, 133, 133, 0.3);
+}
+
+.model-health-unknown {
+  color: var(--nx-muted);
+  background: transparent;
+  border-color: var(--nx-border);
+}
+
+/* --- the roster-wide health summary + manual re-check --------------------- */
+
+.health-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0 0 12px;
+  padding: 7px 10px;
+  border: 1px solid var(--nx-border);
+  border-radius: 3px;
+  background: var(--nx-surface);
+  font-size: 11px;
+}
+
+.health-bar-summary {
+  flex: 1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  align-items: center;
+  color: var(--nx-muted);
+}
+
+.health-count {
+  font-weight: 600;
+}
+
+.health-count-working {
+  color: var(--nx-ok);
+}
+.health-count-invalid-key {
+  color: var(--nx-danger);
+}
+.health-count-rate-limited {
+  color: var(--nx-warn);
+}
+.health-count-unavailable {
+  color: #d19a66;
+}
+.health-count-offline {
+  color: var(--nx-muted);
+}
+
+.health-recheck {
+  font-size: 11px;
+  padding: 3px 12px;
+  border-radius: 3px;
+  border: 1px solid var(--nx-border);
+  background: var(--nx-surface-2);
+  color: #e0e0e0;
+  cursor: pointer;
+}
+
+.health-recheck:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+.health-recheck:disabled {
+  opacity: 0.55;
+  cursor: default;
 }
 
 .settings-key-row {
