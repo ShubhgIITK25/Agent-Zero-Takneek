@@ -1,166 +1,217 @@
 /**
  * ============================================================================
- *  DIFFS — real hunks, block-level acceptance, partial application
+ *  DIFFS — Git-generated hunks with block-level acceptance
  * ============================================================================
- * The HITL requirement has three parts and the third is the one that is easy
- * to fake: (a) real git diffs, (b) block-by-block accept/reject plus
- * accept-all/reject-all, (c) when the user accepts only SOME blocks, the agent
- * must continue correctly around the rejected ones.
+ * The HITL requirement has three parts:
+ *   (a) a real Git unified diff,
+ *   (b) block-by-block accept/reject plus accept-all/reject-all, and
+ *   (c) partial approval must leave a coherent file for the next agent step.
  *
- * (c) is why acceptance is applied by rebuilding the file from the hunks the
- * user kept rather than by writing the model's proposed content and then
- * trying to undo parts of it. We reconstruct: walk the original file, and at
- * each hunk either apply it (accepted) or copy the original lines through
- * (rejected). The result is a file that is exactly the original plus the
- * accepted hunks — which is a state the agent can then be truthfully told
- * about, so its next step reasons about what is really on disk.
+ * The proposed content exists only in memory before approval. We therefore
+ * compare two temporary files with `git diff --no-index`; neither temporary
+ * file is inside the project and the real project file is not touched until
+ * the user approves. `--no-index` works both inside and outside a Git repo.
  *
- * We compute hunks ourselves with an LCS diff rather than shelling out to
- * `git diff`, for one concrete reason: `git diff` only sees committed or
- * staged content, and the agent's proposal exists only in memory before
- * approval. Writing the proposal to disk to get git to diff it would mean
- * touching the user's files BEFORE they approved the touch, which inverts the
- * whole approval gate. Git is still used for repository operations (status,
- * branch, commit, real committed-history diffs) in tools.ts.
- *
- * ONE SOURCE OF TRUTH FOR HUNK BOUNDARIES. buildFileDiff (which mints the
- * block ids the UI renders) and applyAcceptedBlocks (which decides which
- * lines a given block id owns) BOTH route through hunkRanges(). They used to
- * carry independent copies of the grouping logic; any drift between them meant
- * an "accepted" block id matched no lines on the apply side, the file was
- * written unchanged, and the agent re-proposed the same edit in a loop.
- * Keeping the boundary decision in exactly one place removes that class of bug.
+ * Git hunks are parsed into the protocol's DiffBlock shape for the existing
+ * renderer. Partial application uses those same Git hunk headers rather than
+ * recomputing a second diff algorithm, so the block the user approves is the
+ * block that gets applied.
  */
 
+import { execFileSync } from 'child_process';
+import { mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import { DiffBlock, FileDiff } from './protocol';
 
-/** Standard LCS table. Files here are source files; O(n*m) is fine. */
-function lcsMatrix(a: string[], b: string[]): number[][] {
-  const m = a.length;
-  const n = b.length;
-  const dp: number[][] = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0));
-  for (let i = m - 1; i >= 0; i--) {
-    for (let j = n - 1; j >= 0; j--) {
-      dp[i][j] = a[i] === b[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
-    }
-  }
-  return dp;
-}
-
-type Op = { type: 'context' | 'add' | 'del'; text: string; aIdx: number; bIdx: number };
-
-function diffOps(a: string[], b: string[]): Op[] {
-  const dp = lcsMatrix(a, b);
-  const ops: Op[] = [];
-  let i = 0;
-  let j = 0;
-  while (i < a.length && j < b.length) {
-    if (a[i] === b[j]) {
-      ops.push({ type: 'context', text: a[i], aIdx: i, bIdx: j });
-      i++;
-      j++;
-    } else if (dp[i + 1][j] >= dp[i][j + 1]) {
-      ops.push({ type: 'del', text: a[i], aIdx: i, bIdx: j });
-      i++;
-    } else {
-      ops.push({ type: 'add', text: b[j], aIdx: i, bIdx: j });
-      j++;
-    }
-  }
-  while (i < a.length) ops.push({ type: 'del', text: a[i], aIdx: i++, bIdx: j });
-  while (j < b.length) ops.push({ type: 'add', text: b[j], aIdx: i, bIdx: j++ });
-  return ops;
-}
-
 const CONTEXT_LINES = 3;
+const GIT_HUNK = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(?:.*)$/;
+const NO_NEWLINE = '\\ No newline at end of file';
 
-/** Line split that keeps "a\nb\n" and "a\nb" distinguishable: the trailing
- *  empty element the naive split produces is what encodes the final newline,
- *  and join('\n') puts it back, so reconstruction round-trips exactly. */
-function toLines(text: string | null): string[] {
-  return text == null ? [] : text.split('\n');
+type HunkHeader = {
+  oldStart: number;
+  oldCount: number;
+  newStart: number;
+  newCount: number;
+};
+
+type ParsedHunk = HunkHeader & {
+  header: string;
+  lines: DiffBlock['lines'];
+  /** Git emitted an EOF marker for one side of this hunk. */
+  newlineChanged: boolean;
+};
+
+/** A logical line list that does not use a fake trailing empty line. */
+function contentLines(text: string | null): { lines: string[]; trailingNewline: boolean } {
+  if (text == null || text.length === 0) return { lines: [], trailingNewline: false };
+  const trailingNewline = text.endsWith('\n');
+  const body = trailingNewline ? text.slice(0, -1) : text;
+  // "\n" is one empty, newline-terminated line; an empty file has no lines.
+  const lines = body.length === 0 && trailingNewline ? [''] : body.split('\n');
+  return { lines, trailingNewline };
 }
 
-/**
- * THE one place hunk boundaries are decided. Returns, for the given op stream,
- * the [start,end] op-index span of each hunk — changed ops merged when they
- * sit within 2*CONTEXT_LINES of each other, so two edits a few lines apart
- * read as one reviewable block. Both buildFileDiff and applyAcceptedBlocks
- * call this, so "block N" covers the same ops on both sides.
- */
-function hunkRanges(ops: Op[]): { start: number; end: number }[] {
-  const changedIdx: number[] = [];
-  ops.forEach((op, idx) => {
-    if (op.type !== 'context') changedIdx.push(idx);
-  });
-  if (changedIdx.length === 0) return [];
+function controlLine(raw: string): string {
+  // Git writes LF output, but a CRLF source line keeps its CR as content. Only
+  // remove CR for control-line matching; hunk body text must retain it.
+  return raw.endsWith('\r') ? raw.slice(0, -1) : raw;
+}
 
-  const ranges: { start: number; end: number }[] = [];
-  let start = changedIdx[0];
-  let end = changedIdx[0];
-  for (const idx of changedIdx.slice(1)) {
-    if (idx - end <= CONTEXT_LINES * 2) {
-      end = idx;
-    } else {
-      ranges.push({ start, end });
-      start = idx;
-      end = idx;
+function parseHunkHeader(line: string): HunkHeader | null {
+  const m = GIT_HUNK.exec(controlLine(line));
+  if (!m) return null;
+  return {
+    oldStart: Number(m[1]),
+    oldCount: m[2] == null ? 1 : Number(m[2]),
+    newStart: Number(m[3]),
+    newCount: m[4] == null ? 1 : Number(m[4]),
+  };
+}
+
+function gitDiffOutput(oldContent: string | null, newContent: string): string {
+  const dir = mkdtempSync(join(tmpdir(), 'nexide-git-diff-'));
+  const before = join(dir, 'before');
+  const after = join(dir, 'after');
+  try {
+    // These are deliberately outside the project. The approval gate remains
+    // meaningful because the user's real file is untouched at this point.
+    writeFileSync(before, oldContent ?? '', 'utf8');
+    writeFileSync(after, newContent, 'utf8');
+
+    try {
+      return execFileSync(
+        'git',
+        [
+          'diff',
+          '--no-index',
+          '--no-color',
+          '--no-ext-diff',
+          '--no-textconv',
+          `--unified=${CONTEXT_LINES}`,
+          '--',
+          before,
+          after,
+        ],
+        { encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 },
+      );
+    } catch (err) {
+      const failure = err as { status?: number; stdout?: string; stderr?: string; message?: string };
+      // `git diff` returns 1 when differences exist. That is the successful
+      // result we want; 0 means the files are identical.
+      if (failure.status === 1) return String(failure.stdout ?? '');
+      const detail = String(failure.stderr ?? failure.message ?? 'unknown Git error').trim();
+      throw new Error(`Could not generate a Git diff: ${detail}`);
     }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
-  ranges.push({ start, end });
-  return ranges;
 }
 
-/** Stable id for hunk N of a file. Opaque everywhere it is used — React key,
- *  Set membership, and the UI/orchestrator match are all plain string
- *  equality, so the only requirement is that both sides mint it identically. */
+function parseGitHunks(output: string, filePath: string): ParsedHunk[] {
+  // Split only on LF so a CR belonging to a CRLF source line remains part of
+  // the hunk text and can be applied without silently changing line endings.
+  const lines = output.split('\n');
+  const hunks: ParsedHunk[] = [];
+
+  for (let i = 0; i < lines.length; i++) {
+    const header = parseHunkHeader(lines[i]);
+    if (!header) continue;
+    const headerText = controlLine(lines[i]);
+
+    const body: DiffBlock['lines'] = [];
+    let newlineChanged = false;
+    for (i += 1; i < lines.length; i++) {
+      const raw = lines[i];
+      if (parseHunkHeader(raw)) {
+        i -= 1;
+        break;
+      }
+
+      const line = controlLine(raw);
+      if (line === NO_NEWLINE) {
+        newlineChanged = true;
+        continue;
+      }
+      if (raw.startsWith('+')) body.push({ type: 'add', text: raw.slice(1) });
+      else if (raw.startsWith('-')) body.push({ type: 'del', text: raw.slice(1) });
+      else if (raw.startsWith(' ')) body.push({ type: 'context', text: raw.slice(1) });
+      // Ignore diff metadata after the final hunk. A valid Git hunk has only
+      // the three prefixed line kinds above plus the EOF marker.
+    }
+
+    const oldLines = body.filter((line) => line.type !== 'add').length;
+    const newLines = body.filter((line) => line.type !== 'del').length;
+    if (oldLines !== header.oldCount || newLines !== header.newCount) {
+      throw new Error(
+        `Git hunk for ${filePath} was malformed: expected ${header.oldCount}/${header.newCount} ` +
+          `lines, parsed ${oldLines}/${newLines}`,
+      );
+    }
+
+    hunks.push({
+      ...header,
+      header: headerText,
+      lines: body,
+      newlineChanged,
+    });
+  }
+
+  return hunks;
+}
+
+/** Stable id for hunk N of a file. */
 export function blockId(filePath: string, n: number): string {
   return filePath + '#' + n;
 }
 
 /**
- * Group changed ops into hunks with surrounding context, in the shape a
- * unified diff uses — so the UI can render something a developer recognises
- * rather than a bespoke format.
+ * Generate the review diff with Git's own unified-diff engine.
+ *
+ * A text diff with no hunks is impossible unless the inputs are equal or Git
+ * considers the file binary. The latter is not representable by our text
+ * approval protocol, so fail clearly instead of showing "no change" and
+ * silently skipping a proposed edit.
  */
 export function buildFileDiff(filePath: string, oldContent: string | null, newContent: string): FileDiff {
-  const a = toLines(oldContent);
-  const b = toLines(newContent);
-  const ops = diffOps(a, b);
-  const ranges = hunkRanges(ops);
+  if ((oldContent ?? '') === newContent) return { path: filePath, oldContent, newContent, blocks: [] };
 
-  const blocks: DiffBlock[] = ranges.map((r, n) => {
-    const from = Math.max(0, r.start - CONTEXT_LINES);
-    const to = Math.min(ops.length - 1, r.end + CONTEXT_LINES);
-    const slice = ops.slice(from, to + 1);
+  const output = gitDiffOutput(oldContent, newContent);
+  const hunks = parseGitHunks(output, filePath);
+  if (hunks.length === 0) {
+    throw new Error(
+      `Git could not produce a text diff for ${filePath}. Binary files are not supported by propose_edit.`,
+    );
+  }
 
-    const aStart = slice.find((o) => o.type !== 'add')?.aIdx ?? slice[0].aIdx;
-    const bStart = slice.find((o) => o.type !== 'del')?.bIdx ?? slice[0].bIdx;
-    const aCount = slice.filter((o) => o.type !== 'add').length;
-    const bCount = slice.filter((o) => o.type !== 'del').length;
-
-    return {
-      id: blockId(filePath, n),
-      header: `@@ -${aStart + 1},${aCount} +${bStart + 1},${bCount} @@`,
-      lines: slice.map((o) => ({ type: o.type, text: o.text })),
-    };
-  });
+  const blocks: DiffBlock[] = hunks.map((hunk, n) => ({
+    id: blockId(filePath, n),
+    header: hunk.header,
+    lines: hunk.lines,
+    ...(hunk.newlineChanged ? { newlineChanged: true } : {}),
+  }));
 
   return { path: filePath, oldContent, newContent, blocks };
 }
 
+function headerForBlock(block: DiffBlock): HunkHeader {
+  const parsed = parseHunkHeader(block.header);
+  if (!parsed) throw new Error(`Invalid Git hunk header for ${block.id}: ${block.header}`);
+  return parsed;
+}
+
+function assertOldLine(oldLines: string[], index: number, expected: string, block: DiffBlock): void {
+  if (oldLines[index] !== expected) {
+    throw new Error(
+      `File changed while diff ${block.id} was awaiting approval; expected the original line at ${index + 1}.`,
+    );
+  }
+}
+
 /**
- * Rebuild file content from the original plus ONLY the accepted hunks.
- * Rejected hunks contribute their original lines unchanged, which is what
- * makes partial approval produce a coherent file rather than a merge artifact.
- *
- * Guarantees, given a diff `d` from buildFileDiff:
- *   applyAcceptedBlocks(d, <every block id>) === d.newContent
- *   applyAcceptedBlocks(d, [])               === d.oldContent ?? ''
- * Unknown ids are ignored rather than throwing, and an id set that (after
- * ignoring unknowns) covers every real block is treated as accept-all — so a
- * UI or serialisation hiccup degrades to "apply the change" instead of
- * "silently write nothing and make the agent loop".
+ * Rebuild the file from the original plus only the Git hunks the user kept.
+ * The hunk headers and line prefixes come from Git, and this function uses
+ * those exact ranges instead of rerunning a separate diff algorithm.
  */
 export function applyAcceptedBlocks(diff: FileDiff, acceptedBlockIds: string[]): string {
   const realIds = new Set(diff.blocks.map((b) => b.id));
@@ -170,32 +221,43 @@ export function applyAcceptedBlocks(diff: FileDiff, acceptedBlockIds: string[]):
   if (diff.blocks.every((b) => accepted.has(b.id))) return diff.newContent;
   if (accepted.size === 0) return diff.oldContent ?? '';
 
-  const a = toLines(diff.oldContent);
-  const b = toLines(diff.newContent);
-  const ops = diffOps(a, b);
-
-  // Same grouping call buildFileDiff used, so "op index -> owning block id"
-  // here is exactly the mapping the ids in `accepted` were minted against.
-  const ownerOf = new Map<number, string>();
-  hunkRanges(ops).forEach((r, n) => {
-    for (let i = r.start; i <= r.end; i++) ownerOf.set(i, blockId(diff.path, n));
-  });
-
+  const old = contentLines(diff.oldContent);
   const out: string[] = [];
-  ops.forEach((op, idx) => {
-    const owner = ownerOf.get(idx);
-    const isAccepted = owner != null && accepted.has(owner);
-    if (op.type === 'context') {
-      out.push(op.text);
-    } else if (op.type === 'add') {
-      if (isAccepted) out.push(op.text); // keep the addition only if accepted
-    } else {
-      // deletion: accepted means actually delete, rejected means keep the line
-      if (!isAccepted) out.push(op.text);
-    }
-  });
+  let cursor = 0;
+  let trailingNewline = old.trailingNewline;
 
-  return out.join('\n');
+  for (const block of diff.blocks) {
+    const hunk = headerForBlock(block);
+    const start = Math.max(0, hunk.oldStart - 1);
+    const end = start + hunk.oldCount;
+    if (start < cursor || start > old.lines.length || end > old.lines.length) {
+      throw new Error(`Git hunk ${block.id} falls outside the original file.`);
+    }
+    out.push(...old.lines.slice(cursor, start));
+
+    if (accepted.has(block.id)) {
+      let oldIndex = start;
+      for (const line of block.lines) {
+        if (line.type === 'add') {
+          out.push(line.text);
+        } else {
+          assertOldLine(old.lines, oldIndex, line.text, block);
+          if (line.type === 'context') out.push(line.text);
+          oldIndex++;
+        }
+      }
+      if (oldIndex !== end) throw new Error(`Git hunk ${block.id} did not consume its declared old range.`);
+      if (block.newlineChanged) {
+        trailingNewline = contentLines(diff.newContent).trailingNewline;
+      }
+    } else {
+      out.push(...old.lines.slice(start, end));
+    }
+    cursor = end;
+  }
+
+  out.push(...old.lines.slice(cursor));
+  return out.join('\n') + (trailingNewline ? '\n' : '');
 }
 
 /** Human-readable unified diff, used for the log and for agent feedback. */

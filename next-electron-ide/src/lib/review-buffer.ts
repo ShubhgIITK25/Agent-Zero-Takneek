@@ -11,8 +11,8 @@
  * the hunk boundaries on screen would be the RENDERER's, while the block ids
  * the user's Keep/Deny decisions travel under are the ORCHESTRATOR's (minted
  * by orchestrator/diff.ts). Any drift between the two — a different context
- * window, a different tie-break in the LCS walk — means the user keeps the
- * hunk they can see and the orchestrator applies a different set of lines.
+ * window, or a different diff implementation — means the user keeps the hunk
+ * they can see and the orchestrator applies a different set of lines.
  *
  * So instead this walks the blocks the orchestrator actually sent, using each
  * hunk header's `-aStart,aCount` to know precisely which original lines that
@@ -33,6 +33,10 @@ export type ReviewRow = {
   text: string;
   /** The hunk this row belongs to; null for untouched lines outside any hunk. */
   blockId: string | null;
+  /** Metadata carried on the first row so folding can preserve EOF newlines. */
+  oldTrailingNewline?: boolean;
+  newTrailingNewline?: boolean;
+  newlineBlockId?: string;
 };
 
 /** Structurally what DiffReview's FileDiffView / the protocol's FileDiff give us. */
@@ -40,7 +44,12 @@ export type ReviewDiff = {
   path: string;
   oldContent: string | null;
   newContent: string;
-  blocks: { id: string; header: string; lines: { type: ReviewRowKind; text: string }[] }[];
+  blocks: {
+    id: string;
+    header: string;
+    lines: { type: ReviewRowKind; text: string }[];
+    newlineChanged?: boolean;
+  }[];
 };
 
 /**
@@ -48,14 +57,17 @@ export type ReviewDiff = {
  * many ORIGINAL lines this hunk's slice covers (its context plus its deletions).
  */
 function parseHunkHeader(header: string): { aStart: number; aCount: number } | null {
-  const m = /^@@ -(\d+),(\d+) \+(\d+),(\d+) @@/.exec(header);
+  const m = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/.exec(header);
   if (!m) return null;
-  return { aStart: Number(m[1]) - 1, aCount: Number(m[2]) };
+  return { aStart: Math.max(0, Number(m[1]) - 1), aCount: m[2] == null ? 1 : Number(m[2]) };
 }
 
-/** Same line split orchestrator/diff.ts uses, so a trailing newline round-trips. */
+/** Same logical line split as orchestrator/diff.ts. */
 function toLines(text: string | null): string[] {
-  return text == null ? [] : text.split('\n');
+  if (text == null || text.length === 0) return [];
+  const trailing = text.endsWith('\n');
+  const body = trailing ? text.slice(0, -1) : text;
+  return body.length === 0 && trailing ? [''] : body.split('\n');
 }
 
 export function buildReviewRows(diff: ReviewDiff): ReviewRow[] {
@@ -82,6 +94,15 @@ export function buildReviewRows(diff: ReviewDiff): ReviewRow[] {
   for (let i = cursor; i < original.length; i++) {
     rows.push({ kind: 'context', text: original[i], blockId: null });
   }
+
+  if (rows.length > 0) {
+    const oldTrailingNewline = diff.oldContent?.endsWith('\n') ?? false;
+    const newTrailingNewline = diff.newContent.endsWith('\n');
+    const newlineBlockId =
+      diff.blocks.find((b) => b.newlineChanged)?.id ??
+      (oldTrailingNewline !== newTrailingNewline ? diff.blocks.at(-1)?.id : undefined);
+    rows[0] = { ...rows[0], oldTrailingNewline, newTrailingNewline, newlineBlockId };
+  }
   return rows;
 }
 
@@ -95,6 +116,8 @@ export function buildReviewRows(diff: ReviewDiff): ReviewRow[] {
  */
 export function applyDecisionsToRows(rows: ReviewRow[], denied: Set<string>): string {
   const out: string[] = [];
+  const metadata = rows.find((row) => row.oldTrailingNewline !== undefined);
+  let trailingNewline = metadata?.oldTrailingNewline ?? false;
   for (const row of rows) {
     const isDenied = row.blockId != null && denied.has(row.blockId);
     if (row.kind === 'context') out.push(row.text);
@@ -103,8 +126,11 @@ export function applyDecisionsToRows(rows: ReviewRow[], denied: Set<string>): st
     } else if (isDenied) {
       out.push(row.text);
     }
+    if (metadata?.newlineBlockId && !denied.has(metadata.newlineBlockId)) {
+      trailingNewline = metadata.newTrailingNewline ?? trailingNewline;
+    }
   }
-  return out.join('\n');
+  return out.join('\n') + (trailingNewline ? '\n' : '');
 }
 
 /** Per-hunk +/- counts, for the label on each Keep/Deny toolbar. */

@@ -218,7 +218,7 @@ The one entry it can't check is the Gemini route, because listing `generativelan
 
 ## Diff review
 
-File edits are presented as block-level diffs (LCS-based) with **partial approval**: you can accept individual hunks and reject others in the same diff, and only the accepted hunks are applied — rejected ones are dropped and the hunk set is rebuilt from the original plus whatever you accepted. Shell commands go through the same approval gate as a single yes/no.
+File edits are presented as Git-generated unified diffs with **partial approval**: you can accept individual hunks and reject others in the same diff, and only the accepted hunks are applied — rejected ones are dropped and the file is rebuilt from the original plus whatever you accepted. The proposal is compared with `git diff --no-index` against temporary files outside the project, so the real file is untouched until approval. Shell commands go through the same approval gate as a single yes/no.
 
 ## Observability dashboard
 

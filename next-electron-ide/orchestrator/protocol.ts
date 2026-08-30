@@ -101,6 +101,8 @@ export type DiffBlock = {
   /** unified-diff hunk header, e.g. "@@ -14,7 +14,9 @@" */
   header: string;
   lines: { type: 'context' | 'add' | 'del'; text: string }[];
+  /** Git emitted an EOF marker for this hunk; used to preserve newline state. */
+  newlineChanged?: boolean;
 };
 
 export type FileDiff = {
