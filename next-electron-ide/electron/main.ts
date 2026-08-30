@@ -285,6 +285,41 @@ function watchFolder(folderPath: string) {
         recursive: true,
         signal: controller.signal,
       });
+
+      // Recursive watching is emulated on Linux: Node walks the tree with
+      // readdirSync and attaches one watcher per directory. If a directory
+      // disappears while that walk is in flight — git's transient
+      // `.git/.gitstatus.XXXXXX` dirs, a build wiping its output, an npm
+      // install — readdirSync throws ENOENT and the watcher reports it by
+      // calling `emit("error", …)`.
+      //
+      // `for await` installs NO "error" listener (verified: listenerCount is
+      // 0 while iterating), and an EventEmitter with no "error" listener
+      // rethrows, which surfaces as an uncaught exception and a fatal Electron
+      // dialog. The try/catch around this loop cannot intercept that — the
+      // throw comes out of a libuv callback, not this promise chain — so this
+      // listener is the only thing that can. Aborting still rejects the
+      // for-await with AbortError and does not come through here.
+      // The typings for the AbortSignal overload describe only an
+      // AsyncIterable, but the object fs.watch actually returns is an
+      // FSWatcher — an EventEmitter — and it is the same object iterated
+      // below. Narrow on the real shape instead of asserting the type, so that
+      // if a future Node ever does return a plain async iterable this quietly
+      // skips the listener rather than throwing on a missing `.on`.
+      const events = watcher as Partial<NodeJS.EventEmitter>;
+      events.on?.("error", (err: NodeJS.ErrnoException) => {
+        if (err?.code === "ENOENT") {
+          // Benign churn. That subtree is simply no longer watched; a refresh
+          // re-reads the tree as it actually is now.
+          scheduleRefresh();
+          return;
+        }
+        // Anything else is real — on Linux, ENOSPC (the inotify watch limit,
+        // which large repos do hit) is the one that matters. Watching is
+        // best-effort, so log it and let the manual refresh carry on.
+        console.log(`[watchFolder] watch error on ${folderPath}:`, err);
+      });
+
       for await (const event of watcher) {
         if (!event.filename) continue;
         const segments = event.filename.split(/[/\\]/);
