@@ -131,6 +131,13 @@ export type TaskConfig = {
   env: Record<string, string>;
   /** model ids (from models.ts) the user enabled, in preference order */
   enabledModelIds: string[];
+  /**
+   * Last known health per model id, from the Settings screen's probe (see
+   * electron/model-health.ts). Optional: a task started before any check ever
+   * ran, or resumed from an older snapshot, simply has none — and "not
+   * checked" must never be read as "broken".
+   */
+  modelHealth?: Record<string, { state: string; detail: string; checkedAt: number }>;
   /** hard ceilings from the PS; exceeding either fails the task outright */
   maxCostUsd: number;
   maxSeconds: number;
@@ -182,7 +189,7 @@ export type EventBody =
   | { type: 'compaction'; nodeId: string | null; beforeTokens: number; afterTokens: number; summarized: number; preserved: string[] }
   | { type: 'budget_update'; costUsd: number; elapsedSeconds: number; maxCostUsd: number; maxSeconds: number; promptTokens: number; completionTokens: number }
   /** A cap fired or two agents disagreed. Always surfaced, never silent. */
-  | { type: 'intervention'; subtaskId: string | null; cause: 'retry_cap' | 'step_cap' | 'token_cap' | 'cost_ceiling' | 'time_ceiling' | 'identical_repeat' | 'disagreement' | 'provider_failover' | 'resume_rollback' | 'dependency_deadlock' | 'workspace_restored' | 'replan' | 'replan_declined' | 'retrieval_weak'; detail: string; action: string }
+  | { type: 'intervention'; subtaskId: string | null; cause: 'retry_cap' | 'step_cap' | 'token_cap' | 'cost_ceiling' | 'time_ceiling' | 'identical_repeat' | 'disagreement' | 'provider_failover' | 'resume_rollback' | 'dependency_deadlock' | 'workspace_restored' | 'replan' | 'replan_declined' | 'retrieval_weak' | 'model_unhealthy'; detail: string; action: string }
   | { type: 'checkpoint'; step: number; subtaskStates: { id: string; status: SubtaskStatus }[] }
   | { type: 'resumed'; fromStep: number; note: string }
   | { type: 'isolated_answer'; requestId: string; answer: string }

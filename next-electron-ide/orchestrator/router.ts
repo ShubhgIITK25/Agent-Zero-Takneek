@@ -37,6 +37,121 @@ export type RouteResult = {
   signals: RoutingSignals;
 };
 
+/**
+ * ============================================================================
+ *  HEALTH REGISTRY — what we know, and what we have just learned, about models
+ * ============================================================================
+ * The Settings screen probes every provider's catalogue and labels each model
+ * working / invalid-key / rate-limited / unavailable / offline. Until now that
+ * verdict lived and died in the renderer: the router never saw it, so a model
+ * the user could plainly see marked "unavailable" was still a routing
+ * candidate, and every subtask rediscovered the same 404 at full price.
+ *
+ * This merges two sources of truth, and the ORDER matters:
+ *
+ *   1. RUNTIME EVIDENCE beats everything. A call that just returned 404 for a
+ *      model id proves that id is not served, whatever a probe said earlier;
+ *      and a call that just SUCCEEDED proves the model works, whatever a stale
+ *      probe said. Runtime evidence is therefore checked first, in both
+ *      directions.
+ *   2. THE HEALTH SNAPSHOT fills the gap before any call has been made — which
+ *      is exactly the window where the old behaviour wasted the most money,
+ *      because nothing had failed yet to teach the router anything.
+ *
+ * WHAT IS DELIBERATELY *NOT* BLOCKED:
+ *   - `rate-limited`: a quota resets. The provider cooldown in
+ *     RateLimitTracker is the right tool — it expires; a health block does not.
+ *   - `unknown` / missing: "never probed" is not evidence of breakage. Blocking
+ *     on absent data would mean a user who never opened Settings can route
+ *     nowhere at all.
+ * Both of those would trade a wasted call for a task that cannot run, which is
+ * the worse failure.
+ */
+export type HealthSnapshot = { state: string; detail: string; checkedAt: number };
+
+/** Runtime scope of a failure: the model id itself, or the whole provider. */
+export type HealthBlockScope = 'model' | 'provider' | null;
+
+export class HealthRegistry {
+  private snapshot: Record<string, HealthSnapshot>;
+  /** modelId -> why, learned this task. */
+  private modelBlocks = new Map<string, string>();
+  /** provider -> why, learned this task. */
+  private providerBlocks = new Map<string, string>();
+  /** Models that have actually answered us. Overrides any snapshot claim. */
+  private provenGood = new Set<string>();
+
+  constructor(snapshot: Record<string, HealthSnapshot> = {}) {
+    this.snapshot = snapshot ?? {};
+  }
+
+  /** Why this model must not be routed to right now, or null if it may be. */
+  blockReason(modelId: string, provider: string): string | null {
+    const runtimeModel = this.modelBlocks.get(modelId);
+    if (runtimeModel) return runtimeModel;
+    const runtimeProvider = this.providerBlocks.get(provider);
+    if (runtimeProvider) return runtimeProvider;
+
+    // A model that has answered us this task is good, whatever the probe said.
+    if (this.provenGood.has(modelId)) return null;
+
+    const state = this.snapshot[modelId]?.state;
+    if (state === 'unavailable') {
+      return `health check: ${provider} does not serve this model id`;
+    }
+    if (state === 'invalid-key') {
+      return `health check: ${provider} rejected the configured API key`;
+    }
+    if (state === 'offline') {
+      return `health check: ${provider} was unreachable or has no key configured`;
+    }
+    // working / rate-limited / unknown / never probed -> routable.
+    return null;
+  }
+
+  /** A call came back. Clears any block; the model demonstrably works. */
+  recordSuccess(modelId: string, provider: string): void {
+    this.provenGood.add(modelId);
+    this.modelBlocks.delete(modelId);
+    this.providerBlocks.delete(provider);
+  }
+
+  /**
+   * A call failed. Returns the scope actually blocked so the caller can say so.
+   *
+   * Only failures that will repeat identically are recorded. A 500, a timeout
+   * or a 429 are moments, not verdicts, and belong to the cooldown. An
+   * ambiguous 400 is not attributed either: it is at least as likely to be our
+   * malformed request as a bad model, and blocking every model in turn for a
+   * bug in our own payload would take the whole roster down.
+   */
+  recordFailure(
+    modelId: string,
+    provider: string,
+    err: { status?: number; retryable: boolean; message: string }
+  ): HealthBlockScope {
+    if (err.retryable) return null;
+
+    if (err.status === 401 || err.status === 403) {
+      this.providerBlocks.set(provider, `${provider} rejected the API key at run time (${err.status})`);
+      return 'provider';
+    }
+    if (err.status === 404 || /model[^.]{0,40}(not found|does not exist|unknown|decommissioned)/i.test(err.message)) {
+      this.modelBlocks.set(modelId, `${provider} does not serve this model id (observed at run time)`);
+      return 'model';
+    }
+    return null;
+  }
+
+  /** Everything currently blocked, for the dashboard and for tests. */
+  blocks(): { scope: 'model' | 'provider'; id: string; why: string }[] {
+    return [
+      ...[...this.modelBlocks].map(([id, why]) => ({ scope: 'model' as const, id, why })),
+      ...[...this.providerBlocks].map(([id, why]) => ({ scope: 'provider' as const, id, why })),
+    ];
+  }
+}
+
 export class RateLimitTracker {
   /** provider -> epoch ms until which it is in backoff */
   private cooldownUntil = new Map<string, number>();
@@ -115,7 +230,9 @@ function capabilityOf(m: ModelEntry): number {
 export class Router {
   constructor(
     private enabledModelIds: string[],
-    private rateLimits: RateLimitTracker
+    private rateLimits: RateLimitTracker,
+    /** Defaulted so existing callers and tests keep working unchanged. */
+    private health: HealthRegistry = new HealthRegistry()
   ) {}
 
   /** Models the user enabled AND that pass the parameter-count gate. */
@@ -137,6 +254,13 @@ export class Router {
       // ---- hard filters: a failure here is disqualifying, not a low score ---
       if (exclude.has(m.id)) {
         rejected.push({ modelId: m.id, why: 'already tried and failed on this subtask' });
+        continue;
+      }
+      // Health first: this is the only filter that can rule a model out
+      // BEFORE it has cost anything, which is the whole point of it.
+      const unhealthy = this.health.blockReason(m.id, m.provider);
+      if (unhealthy) {
+        rejected.push({ modelId: m.id, why: unhealthy });
         continue;
       }
       if (this.rateLimits.inCooldown(m.provider)) {
