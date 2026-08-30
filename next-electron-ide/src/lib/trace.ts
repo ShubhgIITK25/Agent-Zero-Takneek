@@ -95,6 +95,9 @@ export type SubtaskView = {
   note?: string;
   /** Set on a subtask a re-plan created: which subtask it replaced. */
   replacedSubtaskId?: string;
+  /** Event-stream timestamps. Present only once the subtask has actually run. */
+  startedAt?: number;
+  finishedAt?: number;
 };
 
 export type Intervention = {
@@ -153,6 +156,19 @@ export type TraceView = {
   };
   lastCheckpointStep: number;
   logs: { ts: number; level: string; message: string }[];
+  /**
+   * How many subtasks were executing at once, over time. Recorded from the
+   * orchestrator's `concurrency` events rather than inferred from interleaved
+   * start/finish timestamps — inference would quietly turn "these two ran back
+   * to back" into "these two ran together" whenever a clock or an event
+   * ordering was slightly off, which is exactly the claim a parallelism
+   * feature must not fake.
+   */
+  concurrency: { ts: number; running: { subtaskId: string; title: string }[]; maxParallel: number }[];
+  /** Highest simultaneous count actually observed. 1 means it never parallelised. */
+  peakParallel: number;
+  /** The configured ceiling, as reported by the orchestrator. */
+  maxParallel: number;
 };
 
 export function emptyTrace(): TraceView {
@@ -183,6 +199,9 @@ export function emptyTrace(): TraceView {
     },
     lastCheckpointStep: 0,
     logs: [],
+    concurrency: [],
+    peakParallel: 0,
+    maxParallel: 1,
   };
 }
 
@@ -336,7 +355,15 @@ export function applyEvent(view: TraceView, e: TraceEvent): TraceView {
       const s = v.subtasks.find((x) => x.id === e.subtaskId);
       if (s) {
         const i = v.subtasks.indexOf(s);
-        v.subtasks[i] = { ...s, status: "running", attempts: e.attempt };
+        // Keep the FIRST start: a retry restarts the same subtask, and the bar
+        // on the timeline should span the whole time it occupied a slot.
+        v.subtasks[i] = {
+          ...s,
+          status: "running",
+          attempts: e.attempt,
+          startedAt: s.startedAt ?? e.ts,
+          finishedAt: undefined,
+        };
       }
       break;
     }
@@ -345,8 +372,16 @@ export function applyEvent(view: TraceView, e: TraceEvent): TraceView {
       const s = v.subtasks.find((x) => x.id === e.subtaskId);
       if (s) {
         const i = v.subtasks.indexOf(s);
-        v.subtasks[i] = { ...s, status: e.status, note: e.note };
+        v.subtasks[i] = { ...s, status: e.status, note: e.note, finishedAt: e.ts };
       }
+      break;
+    }
+
+    case "concurrency": {
+      const running = Array.isArray(e.running) ? e.running : [];
+      v.concurrency = [...v.concurrency, { ts: e.ts, running, maxParallel: e.maxParallel ?? 1 }];
+      v.peakParallel = Math.max(v.peakParallel, running.length);
+      v.maxParallel = Math.max(v.maxParallel, e.maxParallel ?? 1);
       break;
     }
 

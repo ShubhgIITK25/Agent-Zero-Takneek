@@ -10,6 +10,8 @@ export type AgentSettings = {
   enabledModelIds: string[];
   maxCostUsd: number;
   maxSeconds: number;
+  /** Independent subtasks to run at once. 1 = strictly sequential. */
+  maxParallelSubtasks: number;
 };
 
 /**

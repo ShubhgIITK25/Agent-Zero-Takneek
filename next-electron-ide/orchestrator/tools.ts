@@ -47,7 +47,14 @@ export type ToolContext = {
   proposeDiff: (
     diffs: FileDiff[],
     summary: string
-  ) => Promise<{ approved: boolean; written: string[]; fullyApplied: boolean; rejectedBlocks: number }>;
+  ) => Promise<{
+    approved: boolean;
+    written: string[];
+    fullyApplied: boolean;
+    rejectedBlocks: number;
+    /** Paths refused because the file changed after the diff was built. */
+    stale: string[];
+  }>;
 };
 
 export type ToolResult = {
@@ -328,6 +335,16 @@ export const TOOLS: Tool[] = [
         // Telling the model precisely what happened is what lets it work
         // around a rejection instead of blindly re-proposing the same edit.
         return { content: `The user REJECTED all changes to ${rel}. The file is unchanged on disk. Do not re-propose the same edit — either take a different approach or ask what they want instead.` };
+      }
+      // Refused as stale: someone else changed the file between this proposal
+      // being built and it being approved. Re-proposing the same content would
+      // silently revert their change, so the model is told to look again.
+      if (outcome.stale.includes(rel)) {
+        return {
+          content:
+            `${rel} was NOT written: it changed on disk after you proposed this edit (another subtask or the user edited it). ` +
+            `Your diff was computed against a stale version. Re-read ${rel} with read_file and propose again against its current content.`,
+        };
       }
       if (outcome.written.length === 0) {
         return { content: `No blocks were accepted for ${rel}; the file is unchanged on disk. Do not re-propose the same edit.` };

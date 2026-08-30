@@ -140,6 +140,12 @@ export type TaskConfig = {
    * checked" must never be read as "broken".
    */
   modelHealth?: Record<string, { state: string; detail: string; checkedAt: number }>;
+  /**
+   * How many independent subtasks may run at once. 1 reproduces the strictly
+   * sequential behaviour exactly, and is the escape hatch if parallelism ever
+   * misbehaves in front of a judge. Clamped to [1, 6] by the scheduler.
+   */
+  maxParallelSubtasks?: number;
   /** hard ceilings from the PS; exceeding either fails the task outright */
   maxCostUsd: number;
   maxSeconds: number;
@@ -195,7 +201,13 @@ export type EventBody =
   | { type: 'compaction'; nodeId: string | null; beforeTokens: number; afterTokens: number; summarized: number; preserved: string[] }
   | { type: 'budget_update'; costUsd: number; elapsedSeconds: number; maxCostUsd: number; maxSeconds: number; promptTokens: number; completionTokens: number }
   /** A cap fired or two agents disagreed. Always surfaced, never silent. */
-  | { type: 'intervention'; subtaskId: string | null; cause: 'retry_cap' | 'step_cap' | 'token_cap' | 'cost_ceiling' | 'time_ceiling' | 'identical_repeat' | 'disagreement' | 'provider_failover' | 'resume_rollback' | 'dependency_deadlock' | 'workspace_restored' | 'replan' | 'replan_declined' | 'retrieval_weak' | 'model_unhealthy'; detail: string; action: string }
+  | { type: 'intervention'; subtaskId: string | null; cause: 'retry_cap' | 'step_cap' | 'token_cap' | 'cost_ceiling' | 'time_ceiling' | 'identical_repeat' | 'disagreement' | 'provider_failover' | 'resume_rollback' | 'dependency_deadlock' | 'workspace_restored' | 'replan' | 'replan_declined' | 'retrieval_weak' | 'model_unhealthy' | 'stale_proposal'; detail: string; action: string }
+  /**
+   * Which subtasks are executing right now. Emitted only when the set changes,
+   * so the dashboard can draw real overlap rather than inferring it from
+   * interleaved timestamps.
+   */
+  | { type: 'concurrency'; running: { subtaskId: string; title: string }[]; maxParallel: number }
   | { type: 'checkpoint'; step: number; subtaskStates: { id: string; status: SubtaskStatus }[] }
   | { type: 'resumed'; fromStep: number; note: string }
   | { type: 'isolated_answer'; requestId: string; answer: string }

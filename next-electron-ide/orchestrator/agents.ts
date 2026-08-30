@@ -94,7 +94,14 @@ export function plannerMessages(prompt: string, repoOverview: string, agentsMd: 
         'explanation), return EXACTLY ONE subtask and set "trivial": true. Do not manufacture steps.\n' +
         '- Otherwise produce 2-6 subtasks. Fewer, well-scoped subtasks beat many tiny ones: each subtask ' +
         'costs a full model round-trip.\n' +
-        '- Order them and declare dependencies. A subtask may only depend on earlier ones.\n' +
+        '- DEPENDENCIES ARE A COST, NOT DOCUMENTATION. "dependsOn" defaults to EMPTY. List B as depending ' +
+        'on A only if B literally cannot start until A finishes — because B reads a file A writes, or B ' +
+        'builds on a decision A makes. Two subtasks that touch different files, or that are merely both ' +
+        'part of the same request, are INDEPENDENT and must BOTH have "dependsOn": []. Independent ' +
+        'subtasks are handed to separate agents and run at the same time, so a dependency you did not ' +
+        'need makes the whole job slower for no benefit. Before you write a dependency, ask: "would this ' +
+        'subtask fail if the other one had not run yet?" If no, leave dependsOn empty.\n' +
+        '- A subtask may only depend on EARLIER ones — never forward, never circular.\n' +
         '- Each subtask must be independently checkable — state what "done" looks like.\n' +
         '- category: "analysis" (read/understand), "codegen" (write substantial code), "simple_edit" ' +
         '(small mechanical change), "verification" (run tests/checks).\n\n' +

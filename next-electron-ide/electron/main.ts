@@ -774,6 +774,7 @@ async function buildTaskConfig() {
     env: settings.envVars,
     enabledModelIds: settings.enabledModelIds,
     modelHealth: freshHealth(),
+    maxParallelSubtasks: settings.maxParallelSubtasks,
     maxCostUsd: settings.maxCostUsd,
     maxSeconds: settings.maxSeconds,
   };
@@ -883,6 +884,8 @@ type AgentSettings = {
   /** Per-task hard ceilings. Defaults match the PS's evaluation limits. */
   maxCostUsd: number;
   maxSeconds: number;
+  /** Independent subtasks to run at once. 1 = strictly sequential. */
+  maxParallelSubtasks: number;
 };
 
 const DEFAULT_AGENT_SETTINGS: AgentSettings = {
@@ -892,6 +895,10 @@ const DEFAULT_AGENT_SETTINGS: AgentSettings = {
   enabledModelIds: ["ollama:llama3.1-8b"],
   maxCostUsd: 0.5,
   maxSeconds: 2700,
+  // 3 is a deliberate middle: enough to overlap a typical plan's independent
+  // subtasks, low enough that a free-tier provider is not instantly rate
+  // limited by our own fan-out. Set to 1 for the exact sequential behaviour.
+  maxParallelSubtasks: 3,
 };
 
 /** Migrate IDs used by the earlier local-model setup to the agent-capable tag. */

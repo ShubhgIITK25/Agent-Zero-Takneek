@@ -72,6 +72,13 @@ const MAX_IDENTICAL_REPEATS = 3;
 // only remaining lever.
 
 /** Whole-task budget. A task gets this many re-plans total, not per subtask. */
+/**
+ * Below this fraction of the cost ceiling, parallelism is switched off. See
+ * the scheduler: concurrent dispatches can each pass the affordability check
+ * and still breach together.
+ */
+const PARALLEL_BUDGET_FLOOR = 0.25;
+
 const MAX_REPLANS_PER_TASK = 2;
 /** Only original (depth-0) subtasks may be re-planned, so replacements that
  *  fail are simply failed — no recursive tree of re-plans. */
@@ -118,11 +125,34 @@ export class TaskRunner {
    * index or stash to undo its own mistake is a far worse failure mode than the
    * one it is fixing. This state is entirely our own.
    */
-  private backtrack = new Map<string, { content: string | null; wasTracked: boolean }>();
-  /** Which subtask `backtrack` currently belongs to. */
-  private backtrackOwner: string | null = null;
-  /** Controlled writes made by the active subtask, for durable rollback history. */
-  private activeFileChanges: { changeId: string; path: string }[] = [];
+  /**
+   * KEYED BY SUBTASK. With subtasks running in parallel there is no single
+   * "current" backtrack point: two subtasks editing at once would otherwise
+   * share one undo map, and rolling back a failed subtask would revert the
+   * other one's approved edits along with its own.
+   */
+  private backtrack = new Map<string, Map<string, { content: string | null; wasTracked: boolean }>>();
+  /** Controlled writes per subtask, for durable rollback history. */
+  private activeFileChanges = new Map<string, { changeId: string; path: string }[]>();
+  /**
+   * Files each subtask changed. The verifier is told what to check, and under
+   * parallelism the global set would hand it another subtask's files and
+   * invite it to fail work it was never asked to judge.
+   */
+  private changedBySubtask = new Map<string, Set<string>>();
+  /**
+   * ONE approval outstanding at a time, across every parallel subtask.
+   *
+   * This is not a nicety. The review UI holds exactly one pending diff, so a
+   * second concurrent approval_request would replace the first in the
+   * renderer — and the first request's promise, which an agent is blocked on,
+   * would never resolve. That is a permanent hang, not a glitch. Serialising
+   * here also makes propose -> approve -> write a critical section, which is
+   * half of what keeps two subtasks from interleaving writes to one file.
+   */
+  private approvalGate: Promise<void> = Promise.resolve();
+  /** Last concurrency set emitted, so the event fires on change rather than per tick. */
+  private lastConcurrencyKey = '';
   /** Re-plans spent on this task. Bounded by MAX_REPLANS_PER_TASK. */
   private replansUsed = 0;
   /** .nexideignore / .ignore — loaded once per task, not re-read on every tool call. */
@@ -216,6 +246,25 @@ export class TaskRunner {
 
   // -------------------------------------------------------------- helpers ---
 
+  /**
+   * Announce which subtasks are executing right now, but only when the SET
+   * changes — a per-tick heartbeat would bury the dashboard in noise and still
+   * not say anything a changed set does not.
+   */
+  private emitConcurrency(runningIds: string[], maxParallel: number): void {
+    const key = [...runningIds].sort().join('|');
+    if (key === this.lastConcurrencyKey) return;
+    this.lastConcurrencyKey = key;
+    this.emit({
+      type: 'concurrency',
+      running: runningIds.map((id) => ({
+        subtaskId: id,
+        title: this.snapshot.subtasks.find((s) => s.id === id)?.title ?? id,
+      })),
+      maxParallel,
+    });
+  }
+
   private checkpoint(): void {
     this.step += 1;
     this.snapshot.step = this.step;
@@ -274,12 +323,40 @@ export class TaskRunner {
    * Raise an approval request and BLOCK until the UI answers. This is the
    * blocking round-trip: the orchestrator genuinely stops here.
    */
-  private async requestDiffApproval(
+  /** Serialises whatever it wraps against every other approval in the task. */
+  private async withApprovalGate<T>(fn: () => Promise<T>): Promise<T> {
+    const prior = this.approvalGate;
+    let release!: () => void;
+    this.approvalGate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await prior;
+    try {
+      return await fn();
+    } finally {
+      release();
+    }
+  }
+
+  private requestDiffApproval(
     subtaskId: string,
     nodeId: string,
     diffs: FileDiff[],
     summary: string
-  ): Promise<{ approved: boolean; written: string[]; fullyApplied: boolean; rejectedBlocks: number }> {
+  ): Promise<{ approved: boolean; written: string[]; fullyApplied: boolean; rejectedBlocks: number; stale: string[] }> {
+    return this.withApprovalGate(() => this.requestDiffApprovalLocked(subtaskId, nodeId, diffs, summary));
+  }
+
+  private requestCommandApproval(subtaskId: string, command: string): Promise<boolean> {
+    return this.withApprovalGate(() => this.requestCommandApprovalLocked(subtaskId, command));
+  }
+
+  private async requestDiffApprovalLocked(
+    subtaskId: string,
+    nodeId: string,
+    diffs: FileDiff[],
+    summary: string
+  ): Promise<{ approved: boolean; written: string[]; fullyApplied: boolean; rejectedBlocks: number; stale: string[] }> {
     const requestId = `ap_${this.taskId}_${++nodeCounter}`;
     const request: PendingApproval = { requestId, taskId: this.taskId, kind: 'diff', subtaskId, summary, diff: diffs };
 
@@ -295,13 +372,14 @@ export class TaskRunner {
       acceptedBlockIds: decision.acceptedBlockIds ?? [],
     });
 
-    if (!decision.approved) return { approved: false, written: [], fullyApplied: false, rejectedBlocks: 0 };
+    if (!decision.approved) return { approved: false, written: [], fullyApplied: false, rejectedBlocks: 0, stale: [] };
 
     // An explicit list means block-level review; its absence means a plain
     // accept-all. `null`, not a pre-expanded list, so the per-file fallback
     // below can tell "user reviewed and picked none here" from "no list sent".
     const explicit = Array.isArray(decision.acceptedBlockIds) ? decision.acceptedBlockIds : null;
     const written: string[] = [];
+    const stale: string[] = [];
     let fullyApplied = true;
     let rejectedBlocks = 0;
 
@@ -332,6 +410,25 @@ export class TaskRunner {
       } catch {
         // New file: the safe revert state is "does not exist".
       }
+      // THE READ-MODIFY-WRITE RACE. The diff was computed against the file as
+      // it looked when the agent proposed it. If the bytes on disk have moved
+      // since — a parallel subtask's approved edit, or the user typing in the
+      // editor while the review sat open — then these hunks describe a file
+      // that no longer exists, and writing them would silently revert whoever
+      // got there first. Serialising approvals is not enough to prevent this;
+      // only comparing against what was actually read is.
+      if ((beforeContent ?? null) !== (d.oldContent ?? null)) {
+        stale.push(d.path);
+        fullyApplied = false;
+        this.emit({
+          type: 'intervention',
+          subtaskId,
+          cause: 'stale_proposal',
+          detail: `${d.path} changed on disk after this edit was proposed, so the approved hunks no longer match the file.`,
+          action: 'Refusing the write and telling the agent to re-read the file and propose again — applying it would silently undo the other change.',
+        });
+        continue;
+      }
       // Stash what is there now, BEFORE overwriting it, so a failed
       // verification can put it back. Must happen on the write path — this is
       // the only point at which the pre-edit content still exists.
@@ -350,7 +447,14 @@ export class TaskRunner {
       await fs.writeFile(full, finalContent, 'utf8');
       written.push(d.path);
       this.changedFiles.add(d.path);
-      this.activeFileChanges.push({ changeId, path: d.path });
+      let mine = this.changedBySubtask.get(subtaskId);
+      if (!mine) {
+        mine = new Set<string>();
+        this.changedBySubtask.set(subtaskId, mine);
+      }
+      mine.add(d.path);
+      const log = this.activeFileChanges.get(subtaskId);
+      if (log) log.push({ changeId, path: d.path });
       this.emit({ type: 'file_change', nodeId, subtaskId, ...fileChange });
 
       if (acceptedHere.length < blockIds.length) {
@@ -361,10 +465,10 @@ export class TaskRunner {
         );
       }
     }
-    return { approved: true, written, fullyApplied, rejectedBlocks };
+    return { approved: true, written, fullyApplied, rejectedBlocks, stale };
   }
 
-  private async requestCommandApproval(subtaskId: string, command: string): Promise<boolean> {
+  private async requestCommandApprovalLocked(subtaskId: string, command: string): Promise<boolean> {
     const requestId = `ap_${this.taskId}_${++nodeCounter}`;
     const request: PendingApproval = {
       requestId,
@@ -553,36 +657,95 @@ export class TaskRunner {
         this.checkpoint();
       }
 
-      // Schedule: run any subtask whose dependencies are all done.
-      for (;;) {
-        if (this.cancelled) return this.cancelledOut();
-        if (this.ceilingBreached()) return this.fail('Hard ceiling reached.');
+      // ---- scheduling: run every ready subtask, up to the parallel limit ----
+      //
+      // "Ready" is unchanged from the sequential version — all dependencies
+      // done — so the plan's dependency graph is still the only thing that
+      // decides what may run. The single change is that more than one ready
+      // subtask may be in flight at a time. Everything that made sequential
+      // execution safe (the undo point, the approval prompt, the file write)
+      // was made concurrency-safe first; see the fields on this class.
+      const configuredParallel = Math.max(1, Math.min(6, this.config.maxParallelSubtasks ?? 1));
+      const running = new Map<string, Promise<void>>();
 
-        const next = this.snapshot.subtasks.find(
+      const readyNow = (): Subtask[] =>
+        this.snapshot.subtasks.filter(
           (s) =>
             (s.status === 'pending' || s.status === 'blocked') &&
+            !running.has(s.id) &&
             s.dependsOn.every((d) => this.snapshot.subtasks.find((x) => x.id === d)?.status === 'done')
         );
-        if (!next) {
-          // The scheduler has run dry but some subtasks never reached a
-          // terminal state. That is a dependency deadlock — a cycle, a
-          // dependency that failed/skipped without its dependents being
-          // marked, or a stale in-flight state from a crash. Surface it and
-          // skip the stranded work rather than "finishing" with silent holes.
+
+      const drain = async (): Promise<void> => {
+        await Promise.allSettled([...running.values()]);
+      };
+
+      for (;;) {
+        if (this.cancelled) {
+          await drain();
+          return this.cancelledOut();
+        }
+        if (this.ceilingBreached()) {
+          await drain();
+          return this.fail('Hard ceiling reached.');
+        }
+
+        // Near the ceiling, collapse to one at a time. Each dispatch checks
+        // affordability before it fires, but N checks can each pass and still
+        // overshoot together — and a breach scores zero, so the last stretch
+        // of the budget is not where to spend concurrency.
+        const tight = this.budget.fractionRemaining.cost < PARALLEL_BUDGET_FLOOR;
+        const limit = tight ? 1 : configuredParallel;
+
+        for (const next of readyNow().slice(0, Math.max(0, limit - running.size))) {
+          // A dependency failed permanently — this subtask can never run.
+          if (next.status === 'blocked') {
+            next.status = 'skipped';
+            this.emit({ type: 'subtask_finished', subtaskId: next.id, status: 'skipped', note: 'dependency failed' });
+            continue;
+          }
+          const id = next.id;
+          const inFlight = this.runSubtask(next)
+            .catch((err) => {
+              // A throw out of runSubtask must not take the whole task with it,
+              // and must not leave its siblings orphaned mid-flight.
+              next.status = 'failed';
+              next.lastError = err instanceof Error ? err.message : String(err);
+              this.emit({
+                type: 'subtask_finished',
+                subtaskId: id,
+                status: 'failed',
+                note: `Unexpected error: ${next.lastError}`,
+              });
+              this.blockDependents(id);
+            })
+            .finally(() => {
+              running.delete(id);
+              this.checkpoint();
+            });
+          running.set(id, inFlight);
+        }
+
+        this.emitConcurrency([...running.keys()], configuredParallel);
+
+        if (running.size === 0) {
+          // Nothing in flight. If skipping a blocked subtask above freed
+          // something, go round again; otherwise the queue is genuinely dry.
+          if (readyNow().length > 0) continue;
+          // Some subtasks never reached a terminal state: a dependency
+          // deadlock — a cycle, a dependency that failed without its
+          // dependents being marked, or a stale in-flight state from a crash.
+          // Surface it and skip the stranded work rather than "finishing"
+          // with silent holes.
           this.resolveDeadlockedSubtasks();
           break;
         }
 
-        // A dependency failed permanently — this subtask can never run.
-        if (next.status === 'blocked') {
-          next.status = 'skipped';
-          this.emit({ type: 'subtask_finished', subtaskId: next.id, status: 'skipped', note: 'dependency failed' });
-          continue;
-        }
-
-        await this.runSubtask(next);
-        this.checkpoint();
+        // Wake as soon as ANY subtask finishes, so a freed slot is refilled
+        // immediately rather than waiting for the slowest of the batch.
+        await Promise.race([...running.values()]);
       }
+      this.emitConcurrency([], configuredParallel);
 
       // Terminal by construction: the scheduling loop above only exits once
       // every subtask is 'done', 'failed', 'skipped' or 'replaced' (a 'blocked'
@@ -707,21 +870,27 @@ export class TaskRunner {
    * the previous failed attempt left it.
    */
   private beginBacktrackPoint(subtaskId: string): void {
-    this.backtrack = new Map();
-    this.backtrackOwner = subtaskId;
-    this.activeFileChanges = [];
+    this.backtrack.set(subtaskId, new Map());
+    this.activeFileChanges.set(subtaskId, []);
+  }
+
+  /** Commit this subtask's work: drop its undo point so nothing can revert it later. */
+  private dropBacktrackPoint(subtaskId: string): void {
+    this.backtrack.delete(subtaskId);
+    this.activeFileChanges.delete(subtaskId);
   }
 
   /** Stash a file's current content the first time this subtask writes to it. */
   private async captureBacktrackPoint(subtaskId: string, rel: string, full: string): Promise<void> {
-    if (this.backtrackOwner !== subtaskId) return;
-    if (this.backtrack.has(rel)) return; // already have the pre-subtask state
+    const own = this.backtrack.get(subtaskId);
+    if (!own) return;
+    if (own.has(rel)) return; // already have the pre-subtask state
     const wasTracked = this.changedFiles.has(rel);
     try {
-      this.backtrack.set(rel, { content: await fs.readFile(full, 'utf8'), wasTracked });
+      own.set(rel, { content: await fs.readFile(full, 'utf8'), wasTracked });
     } catch {
       // Unreadable means it does not exist yet: undoing a create is a delete.
-      this.backtrack.set(rel, { content: null, wasTracked });
+      own.set(rel, { content: null, wasTracked });
     }
   }
 
@@ -736,16 +905,18 @@ export class TaskRunner {
    * on disk with the subtask marked `failed` and nobody cleaning up.
    */
   private async restoreBacktrackPoint(subtask: Subtask, why: string): Promise<number> {
-    if (!this.backtrack.size) return 0;
+    const own = this.backtrack.get(subtask.id);
+    if (!own || !own.size) return 0;
+    const changeLog = this.activeFileChanges.get(subtask.id) ?? [];
 
     const restored: string[] = [];
     const failures: string[] = [];
     // Some of these edits may have been approved by the user by hand. Undoing
     // a human's approved change is never allowed to be silent, which is why
     // this reports through `intervention` and names every file.
-    const approvedByHand = [...this.backtrack.keys()];
+    const approvedByHand = [...own.keys()];
 
-    for (const [rel, prior] of this.backtrack) {
+    for (const [rel, prior] of own) {
       const full = path.resolve(this.config.rootPath, rel);
       try {
         if (prior.content === null) {
@@ -759,6 +930,7 @@ export class TaskRunner {
         // merely edited may still be changed by an EARLIER subtask, and its
         // stashed content already includes that earlier change — so leave it.
         if (!prior.wasTracked) this.changedFiles.delete(rel);
+        this.changedBySubtask.get(subtask.id)?.delete(rel);
       } catch (err) {
         failures.push(`${rel} (${err instanceof Error ? err.message : String(err)})`);
       }
@@ -766,7 +938,7 @@ export class TaskRunner {
 
     // Mark only this subtask's writes as automatically reverted. Earlier
     // successful changes remain eligible for an explicit user revert.
-    for (const change of this.activeFileChanges) {
+    for (const change of changeLog) {
       if (restored.includes(change.path)) {
         this.emit({
           type: 'workspace_reverted',
@@ -776,7 +948,7 @@ export class TaskRunner {
         });
       }
     }
-    this.activeFileChanges = this.activeFileChanges.filter((change) => !restored.includes(change.path));
+    this.activeFileChanges.set(subtask.id, changeLog.filter((change) => !restored.includes(change.path)));
 
     this.emit({
       type: 'intervention',
@@ -858,7 +1030,7 @@ export class TaskRunner {
       // real money to confirm that nothing happened.
       const worthVerifying = subtask.category !== 'analysis' || this.changedFiles.size > 0;
       if (!worthVerifying) {
-        this.backtrack = new Map();
+        this.dropBacktrackPoint(subtask.id);
         subtask.status = 'done';
         this.notes.push(`${subtask.title}: ${outcome.claim}`);
         this.emit({ type: 'subtask_finished', subtaskId: subtask.id, status: 'done', note: 'analysis-only, no verification needed' });
@@ -874,7 +1046,7 @@ export class TaskRunner {
       if (verdict.verdict === 'pass') {
         // Verified work is committed: drop the undo point so no later failure
         // can reach back and revert a subtask that passed.
-        this.backtrack = new Map();
+        this.dropBacktrackPoint(subtask.id);
         subtask.status = 'done';
         this.notes.push(`${subtask.title}: ${outcome.claim}`);
         this.emit({ type: 'subtask_finished', subtaskId: subtask.id, status: 'done', note: verdict.reason });
@@ -904,7 +1076,7 @@ export class TaskRunner {
       if (finalVerdict === 'pass') {
         // The tie-break overrode the verifier's fail — so this work stands and
         // must not be rolled back either.
-        this.backtrack = new Map();
+        this.dropBacktrackPoint(subtask.id);
         subtask.status = 'done';
         this.emit({ type: 'subtask_finished', subtaskId: subtask.id, status: 'done', note: 'passed on tie-break' });
         return;
@@ -1391,7 +1563,10 @@ export class TaskRunner {
       this.snapshot.pinnedFacts[0] ?? this.prompt,
       subtask,
       claim,
-      [...this.changedFiles]
+      // Only this subtask's files. Under parallelism the global set contains
+      // another subtask's work, and a verifier shown files its subtask never
+      // touched will fail work it was not asked to judge.
+      [...(this.changedBySubtask.get(subtask.id) ?? [])]
     );
     const signals: RoutingSignals = {
       category: 'verification',

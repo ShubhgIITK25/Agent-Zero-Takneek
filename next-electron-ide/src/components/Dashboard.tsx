@@ -312,6 +312,89 @@ function ExecutionGraph({
  * edge. Collapsing a branch reports the calls and cost it is hiding, so a
  * folded subtree can never quietly account for most of the bill.
  */
+/**
+ * SWIMLANES — one bar per subtask on a shared time axis.
+ *
+ * A list of subtasks with statuses cannot answer "did these actually run at
+ * the same time"; only a shared axis can, because overlap is a geometric fact
+ * rather than a claim. Bars that start at the same x and run side by side ARE
+ * the evidence of parallelism, which is why this is drawn from recorded
+ * start/finish timestamps rather than from the concurrency counter alone.
+ *
+ * Everything is laid out in percentages of the task's own wall-clock span, so
+ * it needs no measurement pass and reflows with the panel.
+ */
+function ParallelTimeline({ view }: { view: TraceView }) {
+  const ran = view.subtasks.filter((s) => s.startedAt != null);
+  if (ran.length === 0) return null;
+
+  const starts = ran.map((s) => s.startedAt as number);
+  const ends = ran.map((s) => s.finishedAt ?? Date.now());
+  const t0 = Math.min(...starts);
+  const t1 = Math.max(...ends, t0 + 1);
+  const span = Math.max(1, t1 - t0);
+
+  const live = view.concurrency.length
+    ? view.concurrency[view.concurrency.length - 1].running.length
+    : 0;
+
+  return (
+    <section className="dash-section">
+      <div className="dash-section-head">
+        <h3>Parallel execution</h3>
+        <div className="dash-viewtoggle">
+          {live > 0 && (
+            <span className="dash-par-live">
+              {live} agent{live === 1 ? '' : 's'} running now
+            </span>
+          )}
+          <span className="dash-muted">
+            peak {view.peakParallel} of {view.maxParallel} slot{view.maxParallel === 1 ? '' : 's'}
+          </span>
+        </div>
+      </div>
+
+      {view.peakParallel <= 1 ? (
+        <p className="dash-muted dash-pad">
+          {view.maxParallel <= 1
+            ? 'Running one subtask at a time (parallelism is set to 1 in Settings).'
+            : 'No two subtasks were ready at the same time, so nothing overlapped — the plan is a dependency chain.'}
+        </p>
+      ) : (
+        <p className="dash-muted dash-pad">
+          {view.peakParallel} subtasks ran at the same time. Bars that overlap horizontally ran concurrently.
+        </p>
+      )}
+
+      <div className="dash-lanes">
+        {ran.map((s) => {
+          const start = s.startedAt as number;
+          const end = s.finishedAt ?? Date.now();
+          const left = ((start - t0) / span) * 100;
+          const width = Math.max(1.5, ((end - start) / span) * 100);
+          const secs = Math.round((end - start) / 100) / 10;
+          return (
+            <div key={s.id} className="dash-lane">
+              <span className="dash-lane-label" title={s.title}>
+                {s.title}
+              </span>
+              <div className="dash-lane-track">
+                <div
+                  className={`dash-lane-bar dash-lane-${s.status}`}
+                  style={{ left: `${left}%`, width: `${width}%` }}
+                  title={`${s.title} — ${s.status}, ${secs}s`}
+                >
+                  <span className="dash-lane-bar-text">{secs}s</span>
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
 function CallTreeBranch({
   item,
   subtaskTitleById,
@@ -587,6 +670,8 @@ export default function Dashboard({ live, onClose, onWorkspaceChanged }: Dashboa
                 ))}
               </section>
             )}
+
+            <ParallelTimeline view={view} />
 
             {/* ---- call hierarchy ---- */}
             <section className="dash-section">

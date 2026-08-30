@@ -54,7 +54,7 @@ export default function SettingsPanel({ onClose }: SettingsPanelProps) {
     (async () => {
       const s = await window.electronAPI?.settingsGet();
       setSettings(
-        s ?? { envVars: {}, enabledModelIds: ['ollama:llama3.1-8b'], maxCostUsd: 0.5, maxSeconds: 2700 }
+        s ?? { envVars: {}, enabledModelIds: ['ollama:llama3.1-8b'], maxCostUsd: 0.5, maxSeconds: 2700, maxParallelSubtasks: 3 }
       );
     })();
   }, []);
@@ -178,6 +178,29 @@ export default function SettingsPanel({ onClose }: SettingsPanelProps) {
                 <strong>total</strong> parameter count of 80B or less — active/expert count does not apply, so an
                 MoE model counts as its full size, not the fraction that activates per token.
               </p>
+
+              <div className="parallel-setting">
+                <label htmlFor="max-parallel">Run independent subtasks in parallel</label>
+                <select
+                  id="max-parallel"
+                  value={settings.maxParallelSubtasks ?? 3}
+                  onChange={(e) =>
+                    setSettings({ ...settings, maxParallelSubtasks: Number(e.target.value) })
+                  }
+                >
+                  <option value={1}>1 — one at a time (sequential)</option>
+                  <option value={2}>2 agents</option>
+                  <option value={3}>3 agents</option>
+                  <option value={4}>4 agents</option>
+                  <option value={6}>6 agents</option>
+                </select>
+                <p className="settings-hint">
+                  Only subtasks whose dependencies are already done run together, so the plan&apos;s
+                  ordering is unchanged. Higher values finish a wide plan sooner but hit free-tier rate
+                  limits faster; the scheduler drops back to one automatically once the cost ceiling is
+                  close. Set 1 for the strictly sequential behaviour.
+                </p>
+              </div>
 
               <div className="health-bar">
                 <span className="health-bar-summary">
