@@ -125,6 +125,24 @@ export class TaskRunner {
   private replansUsed = 0;
   /** .nexideignore / .ignore — loaded once per task, not re-read on every tool call. */
   private ignore: ReturnType<typeof loadIgnoreMatcher>;
+  /**
+   * CALL HIERARCHY. Every node the dashboard draws hangs off one of these two.
+   *
+   * The tree is CAUSAL, not chronological: a node's parent is the call that
+   * caused it to happen. The planner is the root because it produced the
+   * subtasks; a verifier hangs off the implementer whose claim it is judging;
+   * a retry hangs off the verifier that rejected the previous attempt. Read
+   * top-down that spells out *why* the task did what it did, which a flat list
+   * ordered by time cannot express — in a flat list, attempt 2 and the verifier
+   * that forced it are just two adjacent rows.
+   *
+   * Steps within one attempt stay SIBLINGS rather than chaining into each
+   * other. They are sequential turns in one conversation, not nested calls, and
+   * chaining them would bury a 12-step loop twelve levels deep for no gain.
+   */
+  private planNodeId: string | null = null;
+  /** Most recent successful node per subtask — the anchor the next call hangs off. */
+  private lastNodeBySubtask = new Map<string, string>();
 
   constructor(
     readonly taskId: string,
@@ -440,6 +458,12 @@ export class TaskRunner {
         if (result.text.trim()) this.emit({ type: 'thought', nodeId, text: result.text.slice(0, 4000) });
         this.emitBudget();
 
+        // Only a call that actually returned becomes an anchor. A failover
+        // attempt that threw is still a node in the tree — a sibling under the
+        // same parent, which is exactly right ("tried A, then B") — but it
+        // caused nothing, so nothing should hang off it.
+        if (opts.subtaskId) this.lastNodeBySubtask.set(opts.subtaskId, nodeId);
+
         return { nodeId, text: result.text, toolCalls: result.toolCalls, model: route.model };
       } catch (err) {
         const pe = err instanceof ProviderError ? err : new ProviderError(String(err), { retryable: true, rateLimited: false });
@@ -604,6 +628,9 @@ export class TaskRunner {
       contextItems: [{ path: '(repository overview)', tokens: estimateTokens(overview), source: 'plan' }],
     });
     if (!res) return null;
+    // The root of the call hierarchy: everything else in the task exists
+    // because this call decided it should.
+    this.planNodeId = res.nodeId;
     const plan = agents.parsePlan(res.text, this.prompt);
     if (plan.subtasks.length === 1 && plan.subtasks[0].detail === this.prompt) {
       this.emit({
@@ -749,6 +776,10 @@ export class TaskRunner {
     // cannot deliver.
     this.beginBacktrackPoint(subtask.id);
 
+    // Attempt 1 hangs off the planner. Every later attempt hangs off whatever
+    // rejected the previous one, which is re-read from the anchor map below.
+    let attemptParent: string | null = this.planNodeId;
+
     for (let attempt = subtask.attempts + 1; attempt <= MAX_RETRIES_PER_SUBTASK; attempt++) {
       if (this.cancelled || this.ceilingBreached()) return;
 
@@ -756,7 +787,7 @@ export class TaskRunner {
       subtask.status = 'running';
       this.emit({ type: 'subtask_started', subtaskId: subtask.id, title: subtask.title, attempt });
 
-      const outcome = await this.executeSubtask(subtask, attempt);
+      const outcome = await this.executeSubtask(subtask, attempt, attemptParent);
       if (!outcome) {
         await this.restoreBacktrackPoint(subtask, 'No model was available to finish this subtask.');
         subtask.status = 'failed';
@@ -776,6 +807,9 @@ export class TaskRunner {
             detail: `Agent reported BLOCKED: ${outcome.claim}`,
             action: `Retrying (attempt ${attempt + 1}/${MAX_RETRIES_PER_SUBTASK}) with a more capable model.`,
           });
+          // The agent blocked itself, so the next attempt hangs off its own
+          // last call rather than off a verifier that never ran.
+          attemptParent = this.lastNodeBySubtask.get(subtask.id) ?? attemptParent;
           continue;
         }
         await this.restoreBacktrackPoint(subtask, 'The agent reported it was blocked and retries are exhausted.');
@@ -802,7 +836,10 @@ export class TaskRunner {
       }
 
       subtask.status = 'verifying';
-      const verdict = await this.verify(subtask, outcome.claim);
+      // The verifier is judging the implementer's final claim, so it hangs off
+      // the implementer call that made it.
+      const implementerLast = this.lastNodeBySubtask.get(subtask.id) ?? attemptParent;
+      const verdict = await this.verify(subtask, outcome.claim, implementerLast);
 
       if (verdict.verdict === 'pass') {
         // Verified work is committed: drop the undo point so no later failure
@@ -826,7 +863,8 @@ export class TaskRunner {
           detail: `Implementer claims done; verifier says fail at confidence ${verdict.confidence.toFixed(2)}.`,
           action: 'Neither side wins by default — spending one call on a third model to break the tie.',
         });
-        const tie = await this.tiebreak(subtask, outcome.claim, verdict);
+        const verifierLast = this.lastNodeBySubtask.get(subtask.id) ?? implementerLast;
+        const tie = await this.tiebreak(subtask, outcome.claim, verdict, verifierLast);
         if (tie) {
           finalVerdict = tie.verdict;
           this.notes.push(`Tie-break on "${subtask.title}": ${tie.verdict} — ${tie.reason}`);
@@ -854,6 +892,10 @@ export class TaskRunner {
         // BACKTRACK, then retry. The rejected edits come off disk first, so the
         // next attempt re-solves the original problem rather than trying to
         // patch a tree the verifier already refused.
+        // Whatever spoke last on this subtask — the verifier, or the tie-break
+        // that upheld it — is what forced the retry, so the next attempt hangs
+        // off it.
+        attemptParent = this.lastNodeBySubtask.get(subtask.id) ?? implementerLast;
         const reverted = await this.restoreBacktrackPoint(
           subtask,
           `Verification failed on attempt ${attempt}.`
@@ -967,7 +1009,9 @@ export class TaskRunner {
     const res = await this.dispatch({
       role: 'planner',
       subtaskId: subtask.id,
-      parentId: null,
+      // Hangs off the call that produced the failure being re-planned around,
+      // so the tree reads "this verifier rejected it, so we re-planned".
+      parentId: this.lastNodeBySubtask.get(subtask.id) ?? this.planNodeId,
       messages,
       tools: [],
       signals: {
@@ -1122,7 +1166,9 @@ export class TaskRunner {
   /** The implementer's tool-calling loop for one subtask. */
   private async executeSubtask(
     subtask: Subtask,
-    attempt: number
+    attempt: number,
+    /** What caused this attempt: the planner, or the verifier that rejected the last one. */
+    parentId: string | null
   ): Promise<{ claim: string; blocked: boolean } | null> {
     const system = agents.implementerSystemPrompt(
       this.snapshot.pinnedFacts[0] ?? this.prompt,
@@ -1177,7 +1223,10 @@ export class TaskRunner {
           messages = outcome.messages;
           this.emit({
             type: 'compaction',
-            nodeId: null,
+            // Attributed to the last call on this subtask — that is the context
+            // that grew too large, so that is where the compaction belongs in
+            // the tree rather than floating free at task level.
+            nodeId: this.lastNodeBySubtask.get(subtask.id) ?? null,
             beforeTokens: outcome.beforeTokens,
             afterTokens: outcome.afterTokens,
             summarized: outcome.summarizedCount,
@@ -1190,7 +1239,7 @@ export class TaskRunner {
       const res = await this.dispatch({
         role: 'implementer',
         subtaskId: subtask.id,
-        parentId: null,
+        parentId,
         messages,
         tools: TOOL_SCHEMAS,
         signals,
@@ -1307,7 +1356,7 @@ export class TaskRunner {
     return enabled.reduce((a, b) => (a.pricing.inputPerM + a.pricing.outputPerM <= b.pricing.inputPerM + b.pricing.outputPerM ? a : b));
   }
 
-  private async verify(subtask: Subtask, claim: string): Promise<agents.Verdict> {
+  private async verify(subtask: Subtask, claim: string, parentId: string | null): Promise<agents.Verdict> {
     const messages = agents.verifierMessages(
       this.snapshot.pinnedFacts[0] ?? this.prompt,
       subtask,
@@ -1330,7 +1379,7 @@ export class TaskRunner {
       const res = await this.dispatch({
         role: 'verifier',
         subtaskId: subtask.id,
-        parentId: null,
+        parentId,
         messages: convo,
         tools: VERIFIER_TOOL_SCHEMAS,
         signals,
@@ -1375,12 +1424,12 @@ export class TaskRunner {
     return { verdict: 'fail', confidence: 0.35, reason: 'Verifier used its tool budget without reaching a verdict.', evidence: '' };
   }
 
-  private async tiebreak(subtask: Subtask, claim: string, verdict: agents.Verdict) {
+  private async tiebreak(subtask: Subtask, claim: string, verdict: agents.Verdict, parentId: string | null) {
     const messages = agents.tiebreakMessages(subtask, claim, verdict);
     const res = await this.dispatch({
       role: 'tiebreak',
       subtaskId: subtask.id,
-      parentId: null,
+      parentId,
       messages,
       tools: [],
       signals: {
@@ -1407,7 +1456,7 @@ export class TaskRunner {
     const res = await this.dispatch({
       role: 'implementer', // the router will pick the compactor/cheapest model based on category
       subtaskId: null,
-      parentId: null,
+      parentId: this.planNodeId,
       messages,
       tools: [],
       signals: {

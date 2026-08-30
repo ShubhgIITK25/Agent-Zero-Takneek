@@ -3001,3 +3001,120 @@ button:hover {
   font-size: 11px;
   color: var(--text-dim);
 }
+
+/* ==========================================================================
+   CALL HIERARCHY — the real tree, not a flat list
+   ========================================================================== */
+
+.dash-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.dash-viewtoggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+}
+
+.dash-viewbtn {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  font-size: 11px;
+  padding: 3px 10px;
+}
+
+.dash-viewbtn:hover {
+  filter: none;
+  background: var(--bg-hover);
+  color: var(--text-main);
+}
+
+.dash-viewbtn.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.dash-tree {
+  margin-top: 8px;
+}
+
+.dash-branch-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 2px;
+}
+
+.dash-branch-node {
+  flex: 1;
+  min-width: 0;
+}
+
+.dash-branch-toggle {
+  flex-shrink: 0;
+  width: 18px;
+  padding: 6px 0 0;
+  background: transparent;
+  border: none;
+  color: var(--text-dim);
+  font-size: 10px;
+  line-height: 1;
+  text-align: center;
+}
+
+.dash-branch-toggle:hover:not(:disabled) {
+  filter: none;
+  color: var(--text-main);
+}
+
+.dash-branch-toggle:disabled {
+  cursor: default;
+  opacity: 0.35;
+}
+
+/* The rail is what carries the nesting. Children indent by a fixed step
+   regardless of depth, so a nine-level chain stays on screen. */
+.dash-branch-children {
+  margin-left: 8px;
+  padding-left: 10px;
+  border-left: 1px solid var(--border);
+}
+
+.dash-branch-folded {
+  padding-top: 2px;
+  padding-bottom: 2px;
+}
+
+.dash-branch-foldnote {
+  background: transparent;
+  border: 1px dashed var(--border);
+  color: var(--text-dim);
+  font-size: 11px;
+  padding: 3px 10px;
+  width: 100%;
+  text-align: left;
+}
+
+.dash-branch-foldnote:hover {
+  filter: none;
+  background: var(--bg-hover);
+  color: var(--text-main);
+}
+
+.dash-node-subtask {
+  font-size: 10px;
+  color: var(--text-dim);
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 3px;
+  padding: 1px 6px;
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

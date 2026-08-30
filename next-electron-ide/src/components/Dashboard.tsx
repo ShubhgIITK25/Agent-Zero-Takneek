@@ -14,7 +14,11 @@ import { useEffect, useMemo, useState } from 'react';
 import {
   TraceView,
   TraceNode,
+  CallTreeNode,
   groupNodesBySubtask,
+  buildCallTree,
+  subtreeTotals,
+  treeDepth,
   formatUsd,
   formatMs,
   buildTrace,
@@ -58,7 +62,7 @@ function Meter({ label, value, max, unit }: { label: string; value: number; max:
   );
 }
 
-function NodeCard({ node }: { node: TraceNode }) {
+function NodeCard({ node, subtaskTitle }: { node: TraceNode; subtaskTitle?: string }) {
   const [open, setOpen] = useState(false);
   const [tab, setTab] = useState<'io' | 'context' | 'routing' | 'tools'>('io');
   const running = !node.finishedAt;
@@ -68,6 +72,13 @@ function NodeCard({ node }: { node: TraceNode }) {
       <button type="button" className="dash-node-head" onClick={() => setOpen((o) => !o)}>
         <span className="dash-node-caret">{open ? '▾' : '▸'}</span>
         <span className={`dash-role dash-role-${node.role}`}>{ROLE_LABEL[node.role] ?? node.role}</span>
+        {/* In the full tree a call's subtask is no longer implied by the group
+            it sits in, so it has to be stated on the row itself. */}
+        {subtaskTitle && (
+          <span className="dash-node-subtask" title={subtaskTitle}>
+            {subtaskTitle}
+          </span>
+        )}
         <span className="dash-node-model" title={`${node.provider} / ${node.modelId}`}>
           {node.modelId}
         </span>
@@ -294,12 +305,83 @@ function ExecutionGraph({
 }
 
 export default function Dashboard({ live, onClose, onWorkspaceChanged }: DashboardProps) {
+/**
+ * One node and everything it caused. Children nest inside a bordered rail
+ * rather than being indented by a computed depth*N padding: the rail draws
+ * itself, and a deep chain (three attempts, each with a verifier and a
+ * tie-break, is ~9 levels) stays readable instead of marching off the right
+ * edge. Collapsing a branch reports the calls and cost it is hiding, so a
+ * folded subtree can never quietly account for most of the bill.
+ */
+function CallTreeBranch({
+  item,
+  subtaskTitleById,
+}: {
+  item: CallTreeNode;
+  subtaskTitleById: Map<string, string>;
+}) {
+  const [collapsed, setCollapsed] = useState(false);
+  const kids = item.children;
+  const totals = kids.length > 0 ? subtreeTotals(item) : null;
+  const hiddenCalls = totals ? totals.calls - 1 : 0;
+  const hiddenCost = totals ? totals.costUsd - item.node.costUsd : 0;
+
+  return (
+    <div className="dash-branch">
+      <div className="dash-branch-row">
+        <button
+          type="button"
+          className={`dash-branch-toggle${kids.length === 0 ? ' dash-branch-leaf' : ''}`}
+          onClick={() => kids.length > 0 && setCollapsed((c) => !c)}
+          disabled={kids.length === 0}
+          title={
+            kids.length === 0
+              ? 'This call caused no further calls'
+              : collapsed
+                ? `Show ${hiddenCalls} call(s) this one caused`
+                : 'Collapse'
+          }
+          aria-label={kids.length === 0 ? 'Leaf call' : collapsed ? 'Expand branch' : 'Collapse branch'}
+        >
+          {kids.length === 0 ? '·' : collapsed ? '▸' : '▾'}
+        </button>
+        <div className="dash-branch-node">
+          <NodeCard
+            node={item.node}
+            subtaskTitle={item.node.subtaskId ? subtaskTitleById.get(item.node.subtaskId) : undefined}
+          />
+        </div>
+      </div>
+
+      {kids.length > 0 &&
+        (collapsed ? (
+          <div className="dash-branch-children dash-branch-folded">
+            <button type="button" className="dash-branch-foldnote" onClick={() => setCollapsed(false)}>
+              {hiddenCalls} nested call{hiddenCalls === 1 ? '' : 's'} hidden · {formatUsd(hiddenCost)}
+            </button>
+          </div>
+        ) : (
+          <div className="dash-branch-children">
+            {kids.map((child) => (
+              <CallTreeBranch key={child.node.nodeId} item={child} subtaskTitleById={subtaskTitleById} />
+            ))}
+          </div>
+        ))}
+    </div>
+  );
+}
+
+export default function Dashboard({ live, onClose }: DashboardProps) {
   const [mode, setMode] = useState<'live' | 'history'>('live');
   const [tasks, setTasks] = useState<TaskSummary[]>([]);
   const [historyTrace, setHistoryTrace] = useState<TraceView | null>(null);
   const [loadingHistory, setLoadingHistory] = useState(false);
   const [reverting, setReverting] = useState(false);
   const [revertMessage, setRevertMessage] = useState<string | null>(null);
+  // 'tree' is the default: it is the only view that shows the whole causal
+  // chain, including the planner -> subtask and verifier -> retry edges that
+  // cross subtask boundaries and are therefore invisible when grouping.
+  const [hierarchyView, setHierarchyView] = useState<'tree' | 'subtask'>('tree');
 
   useEffect(() => {
     if (mode !== 'history') return;
@@ -327,6 +409,12 @@ export default function Dashboard({ live, onClose, onWorkspaceChanged }: Dashboa
 
   const view = mode === 'live' ? live : historyTrace;
   const groups = useMemo(() => (view ? groupNodesBySubtask(view) : []), [view]);
+  const fullTree = useMemo(() => (view ? buildCallTree(view.nodes) : []), [view]);
+  const maxDepth = useMemo(() => treeDepth(fullTree), [fullTree]);
+  const subtaskTitleById = useMemo(
+    () => new Map((view?.subtasks ?? []).map((s) => [s.id, s.title])),
+    [view]
+  );
 
   const totals = useMemo(() => {
     if (!view) return { calls: 0, tokens: 0, cost: 0 };
@@ -503,8 +591,42 @@ export default function Dashboard({ live, onClose, onWorkspaceChanged }: Dashboa
 
             {/* ---- call hierarchy ---- */}
             <section className="dash-section">
-              <h3>Call hierarchy</h3>
-              {groups.map((g, i) => (
+              <div className="dash-section-head">
+                <h3>Call hierarchy</h3>
+                <div className="dash-viewtoggle">
+                  <span className="dash-muted">
+                    {fullTree.length} root{fullTree.length === 1 ? '' : 's'} · {maxDepth} level
+                    {maxDepth === 1 ? '' : 's'} deep
+                  </span>
+                  <button
+                    type="button"
+                    className={`dash-viewbtn${hierarchyView === 'tree' ? ' active' : ''}`}
+                    onClick={() => setHierarchyView('tree')}
+                  >
+                    Full tree
+                  </button>
+                  <button
+                    type="button"
+                    className={`dash-viewbtn${hierarchyView === 'subtask' ? ' active' : ''}`}
+                    onClick={() => setHierarchyView('subtask')}
+                  >
+                    By subtask
+                  </button>
+                </div>
+              </div>
+
+              {hierarchyView === 'tree' ? (
+                <div className="dash-tree">
+                  {fullTree.length === 0 ? (
+                    <p className="dash-muted dash-pad">No model calls yet.</p>
+                  ) : (
+                    fullTree.map((t) => (
+                      <CallTreeBranch key={t.node.nodeId} item={t} subtaskTitleById={subtaskTitleById} />
+                    ))
+                  )}
+                </div>
+              ) : (
+              groups.map((g, i) => (
                 <div key={g.subtask?.id ?? `orphan-${i}`} className="dash-group">
                   <div className="dash-group-head">
                     {g.subtask ? (
@@ -536,11 +658,18 @@ export default function Dashboard({ live, onClose, onWorkspaceChanged }: Dashboa
                     {g.nodes.length === 0 ? (
                       <p className="dash-muted dash-pad">Not started.</p>
                     ) : (
-                      g.nodes.map((n) => <NodeCard key={n.nodeId} node={n} />)
+                      // Within a group the parent of the first call usually
+                      // lives in ANOTHER group (the planner), so those nodes
+                      // surface as roots here. That is the point of the group
+                      // view; the cross-subtask edges are what 'Full tree' is for.
+                      buildCallTree(g.nodes).map((t) => (
+                        <CallTreeBranch key={t.node.nodeId} item={t} subtaskTitleById={subtaskTitleById} />
+                      ))
                     )}
                   </div>
                 </div>
-              ))}
+              ))
+              )}
             </section>
 
             {/* ---- approvals ---- */}
