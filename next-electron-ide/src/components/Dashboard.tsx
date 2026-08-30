@@ -19,11 +19,14 @@ import {
   formatMs,
   buildTrace,
   TraceEvent,
+  ExecutionGraphNode,
+  FileChangeView,
 } from '../lib/trace';
 
 type DashboardProps = {
   live: TraceView;
   onClose: () => void;
+  onWorkspaceChanged?: () => void;
 };
 
 type TaskSummary = { taskId: string; prompt: string; status: string; updatedAt: number; step: number };
@@ -218,11 +221,85 @@ function NodeCard({ node }: { node: TraceNode }) {
   );
 }
 
-export default function Dashboard({ live, onClose }: DashboardProps) {
+function ExecutionGraph({
+  nodes,
+  fileChanges,
+  onRevertLatest,
+  reverting,
+  revertMessage,
+}: {
+  nodes: ExecutionGraphNode[];
+  fileChanges: FileChangeView[];
+  onRevertLatest: () => void;
+  reverting: boolean;
+  revertMessage: string | null;
+}) {
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const visible = nodes.slice(-180);
+  const selected = nodes.find((node) => node.id === selectedId) ?? null;
+  const latestChange = [...fileChanges].reverse().find((change) => !change.revertedAt);
+
+  return (
+    <section className="dash-section">
+      <div className="dash-graph-heading">
+        <div>
+          <h3>Execution graph ({nodes.length} events)</h3>
+          <p className="dash-muted dash-section-note">
+            Every thought, model call, tool call, approval, checkpoint, and controlled file change is kept in causal order.
+          </p>
+        </div>
+        {latestChange && (
+          <button type="button" className="dash-revert" onClick={onRevertLatest} disabled={reverting}>
+            {reverting ? 'Reverting…' : `Revert latest · ${latestChange.path}`}
+          </button>
+        )}
+      </div>
+      {revertMessage && <p className="dash-graph-message" role="status">{revertMessage}</p>}
+      {nodes.length === 0 ? (
+        <p className="dash-muted">No execution events yet.</p>
+      ) : (
+        <>
+          <div className="dash-graph-scroll">
+            <div className="dash-graph-track">
+              {visible.map((node, index) => (
+                <div className="dash-graph-entry" key={node.id}>
+                  <button
+                    type="button"
+                    className={`dash-graph-node dash-graph-node-${node.kind}${selectedId === node.id ? ' active' : ''}`}
+                    onClick={() => setSelectedId((current) => current === node.id ? null : node.id)}
+                    title={node.detail}
+                  >
+                    <span className="dash-graph-seq">#{node.seq}</span>
+                    <strong>{node.label}</strong>
+                    <span className="dash-graph-time">{new Date(node.ts).toLocaleTimeString()}</span>
+                  </button>
+                  {index < visible.length - 1 && <span className="dash-graph-edge" aria-hidden="true">→</span>}
+                </div>
+              ))}
+            </div>
+          </div>
+          {visible.length < nodes.length && (
+            <p className="dash-muted dash-graph-truncated">Showing the latest {visible.length} events; the full trace remains available in Past tasks.</p>
+          )}
+          {selected && (
+            <div className="dash-graph-detail">
+              <div className="dash-io-label">Event #{selected.seq} · {selected.type}</div>
+              <pre className="dash-pre dash-pre-sm">{selected.detail || '(no detail)'}</pre>
+            </div>
+          )}
+        </>
+      )}
+    </section>
+  );
+}
+
+export default function Dashboard({ live, onClose, onWorkspaceChanged }: DashboardProps) {
   const [mode, setMode] = useState<'live' | 'history'>('live');
   const [tasks, setTasks] = useState<TaskSummary[]>([]);
   const [historyTrace, setHistoryTrace] = useState<TraceView | null>(null);
   const [loadingHistory, setLoadingHistory] = useState(false);
+  const [reverting, setReverting] = useState(false);
+  const [revertMessage, setRevertMessage] = useState<string | null>(null);
 
   useEffect(() => {
     if (mode !== 'history') return;
@@ -242,6 +319,7 @@ export default function Dashboard({ live, onClose }: DashboardProps) {
 
   const loadTask = async (taskId: string) => {
     setLoadingHistory(true);
+    setRevertMessage(null);
     const events: TraceEvent[] = (await window.electronAPI?.orchestratorReadTaskEvents(taskId)) ?? [];
     setHistoryTrace(buildTrace(events));
     setLoadingHistory(false);
@@ -258,6 +336,27 @@ export default function Dashboard({ live, onClose }: DashboardProps) {
       cost: view.nodes.reduce((a, n) => a + n.costUsd, 0),
     };
   }, [view]);
+
+  const revertLatest = async () => {
+    if (!view?.taskId || reverting) return;
+    const latest = [...view.fileChanges].reverse().find((change) => !change.revertedAt);
+    if (!latest) return;
+    if (!window.confirm(`Revert the latest tracked change to ${latest.path}?`)) return;
+
+    setReverting(true);
+    setRevertMessage(null);
+    try {
+      const result = await window.electronAPI?.orchestratorRevertLatest(view.taskId);
+      if (!result) throw new Error('The workspace could not be reverted.');
+      onWorkspaceChanged?.();
+      if (mode === 'history') await loadTask(view.taskId);
+      setRevertMessage(`Reverted ${result.path}.`);
+    } catch (err) {
+      setRevertMessage(err instanceof Error ? err.message : 'The workspace could not be reverted.');
+    } finally {
+      setReverting(false);
+    }
+  };
 
   return (
     <div className="dashboard-overlay" role="dialog" aria-label="Observability dashboard">
@@ -348,6 +447,14 @@ export default function Dashboard({ live, onClose }: DashboardProps) {
                 </div>
               </div>
             </section>
+
+            <ExecutionGraph
+              nodes={view.executionGraph}
+              fileChanges={view.fileChanges}
+              onRevertLatest={() => void revertLatest()}
+              reverting={reverting}
+              revertMessage={revertMessage}
+            />
 
             {/* ---- interventions ---- */}
             {view.interventions.length > 0 && (

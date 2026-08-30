@@ -759,6 +759,13 @@ ipcMain.handle("orchestrator:resumeTask", async (_evt, taskId: string) => {
   return orchestrator.resumeTask(taskId, await buildTaskConfig());
 });
 
+ipcMain.handle("orchestrator:revertLatest", async (_evt, taskId: string) => {
+  if (!orchestrator?.isReady()) throw new Error("Orchestrator is not running.");
+  if (!openFolderPath) throw new Error("Open a project folder first (File -> Open Folder).");
+  if (!/^[A-Za-z0-9._-]+$/.test(taskId)) throw new Error("Invalid task id.");
+  return orchestrator.revertLatest(taskId, codebaseIdFor(openFolderPath));
+});
+
 ipcMain.handle("orchestrator:cancelTask", async (_evt, taskId: string) => {
   return orchestrator?.cancelTask(taskId);
 });

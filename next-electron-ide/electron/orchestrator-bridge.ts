@@ -166,6 +166,9 @@ export class OrchestratorBridge {
   resumeTask(taskId: string, config: unknown) {
     return this.command('resume_task', { taskId, config });
   }
+  revertLatest(taskId: string, codebaseId: string) {
+    return this.command('revert_latest', { taskId, codebaseId });
+  }
   cancelTask(taskId: string) {
     return this.command('cancel_task', { taskId });
   }

@@ -1685,6 +1685,134 @@ button:hover {
   font-size: 11px;
 }
 
+.dash-graph-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.dash-revert {
+  flex: 0 0 auto;
+  background: transparent;
+  border: 1px solid var(--nx-warn);
+  color: var(--nx-warn);
+  border-radius: 3px;
+  padding: 5px 8px;
+  cursor: pointer;
+  font-size: 11px;
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dash-revert:hover {
+  background: rgba(215, 186, 125, 0.12);
+}
+
+.dash-revert:disabled {
+  opacity: 0.6;
+  cursor: wait;
+}
+
+.dash-graph-scroll {
+  overflow-x: auto;
+  border: 1px solid var(--nx-border);
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.14);
+}
+
+.dash-graph-track {
+  display: flex;
+  align-items: center;
+  width: max-content;
+  min-width: 100%;
+  padding: 10px;
+}
+
+.dash-graph-entry {
+  display: flex;
+  align-items: center;
+}
+
+.dash-graph-node {
+  width: 190px;
+  min-height: 66px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  padding: 8px;
+  border: 1px solid var(--nx-border);
+  border-radius: 4px;
+  background: var(--nx-surface);
+  color: #ccc;
+  cursor: pointer;
+  text-align: left;
+}
+
+.dash-graph-node:hover,
+.dash-graph-node.active {
+  border-color: var(--nx-accent);
+  background: rgba(86, 156, 214, 0.1);
+}
+
+.dash-graph-node-agent {
+  border-top: 2px solid var(--nx-accent);
+}
+
+.dash-graph-node-tool {
+  border-top: 2px solid #c586c0;
+}
+
+.dash-graph-node-change {
+  border-top: 2px solid var(--nx-warn);
+}
+
+.dash-graph-node-control {
+  border-top: 2px solid var(--nx-muted);
+}
+
+.dash-graph-seq,
+.dash-graph-time {
+  color: var(--nx-muted);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.dash-graph-node strong {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+}
+
+.dash-graph-edge {
+  padding: 0 7px;
+  color: var(--nx-muted);
+  font-size: 16px;
+}
+
+.dash-graph-truncated,
+.dash-graph-message {
+  margin: 6px 0 0;
+  font-size: 11px;
+}
+
+.dash-graph-message {
+  color: var(--nx-warn);
+}
+
+.dash-graph-detail {
+  margin-top: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--nx-border);
+  border-radius: 4px;
+  background: var(--nx-surface);
+}
+
 .dash-intervention {
   border-left: 3px solid var(--nx-warn);
   background: rgba(215, 186, 125, 0.06);

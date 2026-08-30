@@ -139,6 +139,7 @@ export type TaskConfig = {
 export type Command =
   | { kind: 'command'; type: 'start_task'; id: string; taskId: string; prompt: string; config: TaskConfig }
   | { kind: 'command'; type: 'resume_task'; id: string; taskId: string; config: TaskConfig }
+  | { kind: 'command'; type: 'revert_latest'; id: string; taskId: string; codebaseId: string }
   | { kind: 'command'; type: 'cancel_task'; id: string; taskId: string }
   | { kind: 'command'; type: 'approval_response'; id: string; decision: ApprovalDecision }
   | { kind: 'command'; type: 'isolated_query'; id: string; question: string; config: TaskConfig }
@@ -179,6 +180,9 @@ export type EventBody =
   | { type: 'context_snapshot'; nodeId: string; subtaskId: string | null; items: { path: string; lines?: string; tokens: number; source: 'retrieval' | 'manual' | 'agents_md' | 'plan' | 'history' }[]; totalTokens: number }
   | { type: 'approval_request'; request: PendingApproval }
   | { type: 'approval_resolved'; requestId: string; approved: boolean; acceptedBlockIds: string[] }
+  /** A controlled file write, with hashes for safe post-run revert. */
+  | { type: 'file_change'; changeId: string; nodeId: string; subtaskId: string; path: string; beforeExists: boolean; afterExists: boolean; beforeHash: string | null; afterHash: string }
+  | { type: 'workspace_reverted'; changeId: string; path: string; automatic?: boolean }
   | { type: 'compaction'; nodeId: string | null; beforeTokens: number; afterTokens: number; summarized: number; preserved: string[] }
   | { type: 'budget_update'; costUsd: number; elapsedSeconds: number; maxCostUsd: number; maxSeconds: number; promptTokens: number; completionTokens: number }
   /** A cap fired or two agents disagreed. Always surfaced, never silent. */

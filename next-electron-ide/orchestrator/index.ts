@@ -132,6 +132,32 @@ async function handle(cmd: Command): Promise<void> {
       return;
     }
 
+    case 'revert_latest': {
+      if (current) {
+        reply(cmd.id, false, 'Stop or finish the running task before reverting a workspace change.');
+        return;
+      }
+      const store = new TaskStore(DATA_DIR, cmd.codebaseId, cmd.taskId);
+      const snapshot = store.loadSnapshot();
+      if (!snapshot) {
+        reply(cmd.id, false, `No checkpoint found for task ${cmd.taskId}.`);
+        return;
+      }
+      try {
+        const change = store.revertLatestFileChange(snapshot.rootPath);
+        if (!change) {
+          reply(cmd.id, false, 'No tracked file change is available to revert.');
+          return;
+        }
+        const emit = makeEmitter(cmd.taskId, store);
+        emit({ type: 'workspace_reverted', changeId: change.changeId, path: change.path });
+        reply(cmd.id, true, undefined, { changeId: change.changeId, path: change.path });
+      } catch (err) {
+        reply(cmd.id, false, err instanceof Error ? err.message : String(err));
+      }
+      return;
+    }
+
     case 'cancel_task':
       if (current?.taskId === cmd.taskId) {
         current.runner.cancel();

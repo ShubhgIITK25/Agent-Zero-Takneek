@@ -143,12 +143,14 @@ async function main() {
   };
 
   const restores = events.filter((e) => e.type === 'intervention' && e.cause === 'workspace_restored');
+  const graphReverts = events.filter((e) => e.type === 'workspace_reverted' && e.automatic);
   const goodExists = fs.existsSync(path.join(rootPath, 'good.txt'));
   const goodNow = goodExists ? fs.readFileSync(path.join(rootPath, 'good.txt'), 'utf8') : '<missing>';
   const newExists = fs.existsSync(path.join(rootPath, 'new.txt'));
 
   console.log(`\n  implementer attempts: ${Math.ceil(implementerCalls / 2)}`);
   console.log(`  workspace_restored interventions: ${restores.length}`);
+  console.log(`  graph rollback events: ${graphReverts.length}`);
   console.log(`  good.txt: ${JSON.stringify(goodNow)}`);
   console.log(`  new.txt exists: ${newExists}`);
 
@@ -166,6 +168,9 @@ async function main() {
   t('the intervention names the files it reverted', () => {
     assert.ok(/good\.txt/.test(restores[0].detail), restores[0].detail);
     assert.ok(/new\.txt/.test(restores[0].detail), restores[0].detail);
+  });
+  t('automatic rollbacks are recorded in the execution graph', () => {
+    assert.ok(graphReverts.length >= 2, 'expected controlled file rollbacks in the durable event stream');
   });
   t('every failed attempt rolls back, not just the last one', () => {
     // 3 retries => 2 mid-loop rollbacks + 1 final rollback.
