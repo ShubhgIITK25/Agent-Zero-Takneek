@@ -50,7 +50,16 @@ export type ToolContext = {
   ) => Promise<{ approved: boolean; written: string[]; fullyApplied: boolean; rejectedBlocks: number }>;
 };
 
-export type ToolResult = { content: string; contextItems?: { path: string; lines?: string; tokens: number }[] };
+export type ToolResult = {
+  content: string;
+  contextItems?: { path: string; lines?: string; tokens: number }[];
+  /** Raised by the orchestrator as an `intervention` event. Tools cannot emit
+   *  directly — they stay pure functions of (args, ctx) so they are trivially
+   *  testable — so anything a tool needs the dashboard to show travels back
+   *  through here. Currently used by retrieve_context to report that a first
+   *  retrieval was weak and what it did about it. */
+  intervention?: { cause: 'retrieval_weak'; detail: string; action: string };
+};
 
 export type Tool = {
   schema: ToolSchema;
@@ -153,23 +162,76 @@ export const TOOLS: Tool[] = [
       if (!res.ok) return { content: `Retrieval failed (${res.status}).` };
       const data: any = await res.json();
       if (data.error) return { content: `Retrieval unavailable: ${data.error}` };
+
       const raw: any[] = data.results ?? [];
       const results = raw.filter((r) => !ctx.ignore.isIgnored(String(r.file ?? '')));
-      if (!raw.length) return { content: 'No relevant code found.' };
+      const attempts: any[] = Array.isArray(data.attempts) ? data.attempts : [];
+      const escalated = attempts.length > 1;
+      const reasons: string[] = Array.isArray(data.weak_reasons) ? data.weak_reasons : [];
+
+      // The service already detected a weak first attempt and retried it,
+      // widened and reformulated, at zero model cost. Report that here so the
+      // escalation is visible in the dashboard rather than being an invisible
+      // "it worked the second time".
+      const intervention = escalated
+        ? {
+            cause: 'retrieval_weak' as const,
+            detail:
+              `Retrieval for "${query}" scored ${attempts[0]?.confidence ?? '?'} confidence` +
+              (attempts[0]?.reasons?.length ? ` (${attempts[0].reasons.join('; ')})` : '') + '.',
+            action:
+              `Re-ran it widened and reformulated as "${data.query_used}" — ` +
+              (data.weak
+                ? `still weak (${data.confidence}). Handing the result up with guidance so the agent can rephrase.`
+                : `confidence improved to ${data.confidence}.`),
+          }
+        : undefined;
+
+      if (!raw.length) {
+        // An empty result is a fact the agent must act on, not a dead end. Tell
+        // it what was already tried automatically, so its next move is a
+        // genuinely different one rather than the same query again.
+        const tried = attempts.map((a) => `"${a.query}"`).join(', ') || `"${query}"`;
+        return {
+          content:
+            `No relevant code found. Already tried automatically (widened and reformulated): ${tried}.\n` +
+            'Do NOT repeat those. Either search for a concrete symbol name you expect to exist, or use ' +
+            'list_dir to see the project layout and read_file on a likely file.',
+          intervention,
+        };
+      }
       if (!results.length) {
         return {
           content: `${raw.length} match(es) found, but every one is excluded by ${ctx.ignore.sourceFile}. Nothing to show.`,
+          intervention,
         };
       }
+
+      const body = results
+        .map((r) => `${r.file}:${r.line_start}-${r.line_end} (${r.kind} ${r.symbol}) — ${r.why_relevant}\n${r.snippet}`)
+        .join('\n\n---\n\n');
+
+      // A weak result set is handed over WITH its weakness stated. Silently
+      // returning low-confidence snippets is how an agent ends up confidently
+      // editing the wrong file; saying so lets it decide to look further, and
+      // it is already a model in a loop, so that costs no extra call.
+      const header =
+        data.weak && reasons.length
+          ? `[retrieval confidence ${data.confidence} — LOW] ${reasons.join('; ')}.\n` +
+            `Tried: ${attempts.map((a) => `"${a.query}"`).join(', ')}. These results may not answer the question. ` +
+            'If they look unrelated, search for a specific symbol name instead of a description, or use list_dir.\n\n'
+          : escalated
+            ? `[retrieval confidence ${data.confidence} — recovered by reformulating to "${data.query_used}"]\n\n`
+            : '';
+
       return {
-        content: results
-          .map((r) => `${r.file}:${r.line_start}-${r.line_end} (${r.kind} ${r.symbol}) — ${r.why_relevant}\n${r.snippet}`)
-          .join('\n\n---\n\n'),
+        content: header + body,
         contextItems: results.map((r) => ({
           path: r.file,
           lines: `${r.line_start}-${r.line_end}`,
           tokens: Math.ceil(String(r.snippet ?? '').length / 3.6),
         })),
+        intervention,
       };
     },
   },

@@ -2189,8 +2189,8 @@ button:hover {
 
 .model-row {
   display: grid;
-  grid-template-columns: auto 1fr auto auto auto;
-  grid-template-areas: "check main meta status health" ". reason reason reason reason";
+  grid-template-columns: auto 1fr auto auto;
+  grid-template-areas: "check main meta health" ". reason reason reason";
   gap: 4px 10px;
   align-items: center;
   padding: 7px 10px;
@@ -2201,19 +2201,13 @@ button:hover {
   font-size: 12px;
 }
 
-.model-row:hover:not(.model-row-blocked) {
+.model-row:hover {
   border-color: var(--nx-accent);
 }
 
 .model-row-on {
   background: rgba(86, 156, 214, 0.07);
   border-color: var(--nx-accent);
-}
-
-.model-row-blocked {
-  opacity: 0.55;
-  cursor: not-allowed;
-  background: rgba(241, 76, 76, 0.04);
 }
 
 .model-row input {
@@ -2247,36 +2241,6 @@ button:hover {
   white-space: nowrap;
 }
 
-.model-params-bad {
-  color: var(--nx-danger);
-  font-weight: 600;
-}
-
-.model-status {
-  grid-area: status;
-  font-size: 10px;
-  text-transform: uppercase;
-  font-weight: 700;
-  padding: 1px 6px;
-  border-radius: 3px;
-}
-
-.model-status-ok {
-  background: rgba(78, 201, 176, 0.15);
-  color: var(--nx-ok);
-}
-
-.model-status-bad {
-  background: rgba(241, 76, 76, 0.15);
-  color: var(--nx-danger);
-}
-
-.model-block-reason {
-  grid-area: reason;
-  font-size: 11px;
-  color: var(--nx-danger);
-}
-
 .model-note {
   grid-area: reason;
   font-size: 11px;
@@ -2284,9 +2248,9 @@ button:hover {
 }
 
 /* --- live model health: is this model actually callable right now? --------
-   Distinct from `.model-status`, which answers the static question "is this
-   model allowed under the 80B rule". They sit side by side because a model can
-   easily be eligible AND dead, and conflating the two would hide that. */
+   The roster only lists models that already pass the 80B rule, so there is no
+   static eligibility badge to sit beside — this pill is the only per-model
+   status shown, and it answers the live question: can this be called now? */
 
 .model-health {
   grid-area: health;

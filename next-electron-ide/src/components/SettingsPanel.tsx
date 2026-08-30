@@ -6,9 +6,13 @@
  * The roster half is not decoration: the router can only ever pick from what
  * is enabled here, and `checkEligibility` (orchestrator/models.ts) is the same
  * function the router calls, so an ineligible model cannot be enabled from
- * this screen even by accident. Ineligible entries are SHOWN, greyed, with the
- * reason — a model that silently vanished from the list would teach the user
- * nothing about why it cannot be used.
+ * this screen even by accident.
+ *
+ * The list is FILTERED to eligible models, so every row here is selectable and
+ * none carries an "eligible" badge — a badge that reads the same on every row
+ * is noise, not information. The 80B rule and the models it blocks are
+ * documented in the README and enforced in models.ts; this screen is for
+ * choosing among the models you can actually use.
  */
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
@@ -170,9 +174,9 @@ export default function SettingsPanel({ onClose }: SettingsPanelProps) {
           {tab === 'models' && (
             <>
               <p className="settings-intro">
-                The router picks from the models you enable here. Every model must have a published{' '}
-                <strong>total</strong> parameter count of 80B or less — active/expert count does not apply, which is
-                why some MoE models below are blocked despite a small active size.
+                The router picks from the models you enable here. Every model listed has a published{' '}
+                <strong>total</strong> parameter count of 80B or less — active/expert count does not apply, so an
+                MoE model counts as its full size, not the fraction that activates per token.
               </p>
 
               <div className="health-bar">
@@ -217,17 +221,15 @@ export default function SettingsPanel({ onClose }: SettingsPanelProps) {
                     </h3>
                     <div className="model-list">
                       {visibleModels.map((m) => {
-                        const el = checkEligibility(m);
                         const enabled = settings.enabledModelIds.includes(m.id);
                         return (
                           <label
                             key={m.id}
-                            className={`model-row${el.eligible ? '' : ' model-row-blocked'}${enabled ? ' model-row-on' : ''}`}
+                            className={`model-row${enabled ? ' model-row-on' : ''}`}
                           >
                             <input
                               type="checkbox"
                               checked={enabled}
-                              disabled={!el.eligible}
                               onChange={() => toggleModel(m.id)}
                             />
                             <span className="model-main">
@@ -235,7 +237,7 @@ export default function SettingsPanel({ onClose }: SettingsPanelProps) {
                               <span className="model-api-id">{m.apiId}</span>
                             </span>
                             <span className="model-meta">
-                              <span className={`model-params${el.eligible ? '' : ' model-params-bad'}`}>
+                              <span className="model-params">
                                 {m.paramsBTotal == null ? 'unpublished' : `${m.paramsBTotal}B total`}
                                 {m.paramsBActive != null && ` / ${m.paramsBActive}B active`}
                               </span>
@@ -248,25 +250,19 @@ export default function SettingsPanel({ onClose }: SettingsPanelProps) {
                                   : `$${m.pricing.inputPerM}/$${m.pricing.outputPerM} per M`}
                               </span>
                             </span>
-                            <span className={`model-status${el.eligible ? ' model-status-ok' : ' model-status-bad'}`}>
-                              {el.eligible ? 'eligible' : 'blocked'}
+                            <span
+                              className={`model-health model-health-${health[m.id]?.state ?? 'unknown'}`}
+                              title={
+                                health[m.id]?.detail ??
+                                'Not checked yet — press "Re-check" to probe this provider.'
+                              }
+                            >
+                              <span className="model-health-dot" aria-hidden="true" />
+                              {checking && !health[m.id]
+                                ? 'checking…'
+                                : HEALTH_LABEL[health[m.id]?.state ?? 'unknown']}
                             </span>
-                            {el.eligible && (
-                              <span
-                                className={`model-health model-health-${health[m.id]?.state ?? 'unknown'}`}
-                                title={
-                                  health[m.id]?.detail ??
-                                  'Not checked yet — press "Re-check" to probe this provider.'
-                                }
-                              >
-                                <span className="model-health-dot" aria-hidden="true" />
-                                {checking && !health[m.id]
-                                  ? 'checking…'
-                                  : HEALTH_LABEL[health[m.id]?.state ?? 'unknown']}
-                              </span>
-                            )}
-                            {!el.eligible && <span className="model-block-reason">{el.reason}</span>}
-                            {el.eligible && m.notes && <span className="model-note">{m.notes}</span>}
+                            {m.notes && <span className="model-note">{m.notes}</span>}
                           </label>
                         );
                       })}

@@ -20,6 +20,15 @@ import re
 import sqlite3
 import hashlib
 
+import identifiers
+
+# Bump when the on-disk schema or the way text is indexed changes in a way that
+# makes an existing index wrong rather than merely stale. get_db() rebuilds any
+# index older than this. History:
+#   1  original: chunks + FTS(symbol,docstring,code) + vec + edges
+#   2  FTS gains a `tokens` column of pre-split identifiers (identifiers.py)
+INDEX_FORMAT_VERSION = 2
+
 _connections = {}  # codebase_id -> sqlite3.Connection
 _vec_enabled = {}  # id(db) -> bool — sqlite3.Connection does not support arbitrary attrs
 
@@ -49,7 +58,12 @@ CREATE INDEX IF NOT EXISTS idx_chunks_file ON chunks(file_path);
 CREATE INDEX IF NOT EXISTS idx_chunks_symbol ON chunks(symbol);
 
 CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
-    chunk_id UNINDEXED, symbol, docstring, code
+    chunk_id UNINDEXED, symbol, docstring, code,
+    -- Every identifier in `symbol`/`code`, pre-split into sub-words. FTS5's
+    -- tokeniser treats `computeUserBalance` as one atomic token, so a natural
+    -- query ("user balance") can never match it via BM25 without this. See
+    -- identifiers.py.
+    tokens
 );
 
 CREATE TABLE IF NOT EXISTS edges (
@@ -76,6 +90,7 @@ def get_db(data_dir: str, codebase_id: str, vec_enabled_hint=True) -> sqlite3.Co
         return _connections[codebase_id]
 
     path = _db_path(data_dir, codebase_id)
+    fresh = not os.path.exists(path)
     db = sqlite3.connect(path, check_same_thread=False)
     db.row_factory = sqlite3.Row
     db.execute("PRAGMA journal_mode=WAL")
@@ -94,7 +109,35 @@ def get_db(data_dir: str, codebase_id: str, vec_enabled_hint=True) -> sqlite3.Co
         except Exception as e:
             print(f"[store] sqlite-vec unavailable for {codebase_id}, vector search disabled: {e}")
 
+    # An index written by an older format is not migrated in place — the
+    # cheapest correct thing is to drop its tables and let the next index pass
+    # rebuild from source, which is fast and cannot leave a half-migrated file.
+    #
+    # This runs AFTER the sqlite-vec block above on purpose: `chunks_vec` is a
+    # vec0 VIRTUAL TABLE, and DROP TABLE on it fails with "no such module: vec0"
+    # unless the extension is loaded first.
+    if not fresh:
+        have = db.execute("PRAGMA user_version").fetchone()[0]
+        if have and have < INDEX_FORMAT_VERSION:
+            print(f"[store] index for {codebase_id} is format v{have}, rebuilding at v{INDEX_FORMAT_VERSION}")
+            for tbl in ("chunks_fts", "chunks_vec", "edges", "chunks", "files"):
+                try:
+                    db.execute(f"DROP TABLE IF EXISTS {tbl}")
+                except sqlite3.OperationalError as e:
+                    # e.g. vec0 unavailable in this process — the table is then
+                    # unusable anyway and _SCHEMA will not recreate it.
+                    print(f"[store] could not drop {tbl} during rebuild: {e}")
+            # _SCHEMA below recreates the plain tables, but chunks_vec is a
+            # virtual table created in the sqlite-vec block above, which has
+            # already run — so it has to be put back explicitly here.
+            if vec_ok:
+                db.execute(
+                    f"CREATE VIRTUAL TABLE IF NOT EXISTS chunks_vec USING vec0(embedding float[{VEC_DIM}])"
+                )
+            db.commit()
+
     db.executescript(_SCHEMA)
+    db.execute(f"PRAGMA user_version = {INDEX_FORMAT_VERSION}")
     db.commit()
     _vec_enabled[id(db)] = vec_ok
     _connections[codebase_id] = db
@@ -144,10 +187,14 @@ _WORD_RE = re.compile(r"[A-Za-z0-9_]+")
 
 
 def sanitize_fts_query(text: str) -> str:
-    words = _WORD_RE.findall(text)[:12]
-    if not words:
+    words = _WORD_RE.findall(text)
+    # Sub-words of any multi-part identifier in the query match the `tokens`
+    # column; the raw words still match `symbol`/`code` verbatim. Both are ORed.
+    expanded = identifiers.expand_text(text)
+    terms = list(dict.fromkeys(words + expanded.split()))[:20]
+    if not terms:
         return '""'
-    return " OR ".join(f'"{w}"' for w in words)
+    return " OR ".join(f'"{w}"' for w in terms)
 
 
 def insert_file_chunks(db, path: str, text: str, chunks: list, embeddings, mtime: float):
@@ -172,8 +219,11 @@ def insert_file_chunks(db, path: str, text: str, chunks: list, embeddings, mtime
         chunk_ids.append(cid)
 
         db.execute(
-            "INSERT INTO chunks_fts(chunk_id, symbol, docstring, code) VALUES (?,?,?,?)",
-            (cid, ch["symbol"], ch.get("docstring", ""), ch["code"]),
+            "INSERT INTO chunks_fts(chunk_id, symbol, docstring, code, tokens) VALUES (?,?,?,?,?)",
+            (
+                cid, ch["symbol"], ch.get("docstring", ""), ch["code"],
+                identifiers.expand_text(ch["symbol"] + " " + ch["code"]),
+            ),
         )
 
         for callee in ch.get("calls") or []:

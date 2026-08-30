@@ -1226,6 +1226,11 @@ export class TaskRunner {
         const started = Date.now();
         try {
           const result = await tool.run(call.arguments, this.toolContext(subtask.id, res.nodeId));
+          // Tools are pure functions of (args, ctx) and cannot emit; anything
+          // one needs surfaced travels back on the result. See ToolResult.
+          if (result.intervention) {
+            this.emit({ type: 'intervention', subtaskId: subtask.id, ...result.intervention });
+          }
           messages.push({ role: 'tool', toolCallId: call.id, name: call.name, content: result.content });
           if (result.contextItems) {
             contextItems = result.contextItems.map((c) => ({ ...c, source: 'retrieval' as const }));
@@ -1318,6 +1323,11 @@ export class TaskRunner {
         }
         try {
           const result = await tool.run(call.arguments, this.toolContext(subtask.id, res.nodeId));
+          // Tools are pure functions of (args, ctx) and cannot emit; anything
+          // one needs surfaced travels back on the result. See ToolResult.
+          if (result.intervention) {
+            this.emit({ type: 'intervention', subtaskId: subtask.id, ...result.intervention });
+          }
           convo.push({ role: 'tool', toolCallId: call.id, name: call.name, content: result.content });
           this.emit({ type: 'tool_result', nodeId: res.nodeId, callId: call.id, result: result.content.slice(0, 6000), outcome: 'done', ms: 0 });
         } catch (err) {

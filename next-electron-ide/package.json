@@ -17,7 +17,8 @@
     "build:orchestrator": "tsc -p orchestrator/tsconfig.json",
     "verify:models": "node scripts/verify-models.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p electron/tsconfig.json && tsc --noEmit -p orchestrator/tsconfig.json",
-    "test": "npm run build:orchestrator && npm run build:electron && node tests/model-health.js && node tests/unit.js && node tests/ignore.js && node tests/review-buffer.js && node tests/task-completion.js && node tests/backtrack.js && node tests/replan.js && node tests/protocol.js && node tests/resume.js"
+    "test": "npm run build:orchestrator && npm run build:electron && node tests/model-health.js && node tests/unit.js && node tests/ignore.js && node tests/review-buffer.js && node tests/task-completion.js && node tests/backtrack.js && node tests/replan.js && node tests/protocol.js && node tests/resume.js && npm run test:retrieval",
+    "test:retrieval": "python3 retrieval-service/test_recovery.py || echo '(skipped: python3 unavailable)'"
   },
   "dependencies": {
     "@monaco-editor/react": "^4.6.0",

@@ -11,3 +11,7 @@ __pycache__/
 retrieval-service/.venv/
 .DS_Store
 retrieval-service/__pycache__/
+
+# retrieval service — local venv and test artifacts
+retrieval-service/**/__pycache__/
+retrieval-service/*.db

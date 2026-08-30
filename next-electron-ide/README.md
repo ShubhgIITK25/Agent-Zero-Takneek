@@ -54,13 +54,95 @@ Every task goes through the same pipeline, checkpointed after each step so a tas
    | Time remaining | ≥20% | Same |
 
    The budget gates use `fractionRemaining`, not `canAfford` — `canAfford` answers "can I pay for this one call", which is the wrong question for a decision that commits to a whole extra round of work. Starting a re-plan at 90% spent reliably converts a partial result into a **ceiling breach, which scores zero** — strictly worse than accepting one failed subtask. Every refusal emits a `replan_declined` intervention naming which bound stopped it, so "we could have re-planned but didn't" is never silent.
-6. **Aggregate** — once every subtask has resolved to `done`, `failed`, or `skipped`, results are summarized back to the user.
+7. **Aggregate** — once every subtask has resolved to `done`, `failed`, `skipped`, or `replaced`, results are summarized back to the user.
 
 A task only ends in `done` if **every** subtask ended `done`. Any subtask left `failed` (retries exhausted) or `skipped` (its dependency failed) makes the whole task end `failed`, with the specific subtask(s) and reasons named in the failure message — a partially-successful run is never reported as a plain success.
 
 Long-running context is kept in check by compaction: at 70% of the active model's real context window, older turns are summarized; at 88%, compaction is forced. Anything marked as a pinned fact is re-injected verbatim after compaction rather than being re-summarized, so constraints and decisions from earlier in the task don't drift.
 
 Writes, deletes, and shell commands never execute unmediated — they go through the approval gate described below.
+
+## Code retrieval
+
+A codebase is chunked on **AST boundaries** (tree-sitter): one chunk per function/class/method, with its signature, docstring and body kept together — never a fixed-token window that starts mid-function. Each project gets its own SQLite index keyed by `sha256(absolute path)[:16]`, so retrieval and agent memory cannot leak between projects.
+
+A query runs four stages:
+
+1. **Recall** — BM25 and vector search, unioned. Two independent retrievers over different representations.
+2. **Expand** — 1-hop call/import-graph neighbours of the strongest vector hits, so a structurally-relevant chunk that doesn't *sound* like the query still surfaces.
+3. **Rerank** — a local cross-encoder cuts the pool to the k chunks worth spending the calling model's tokens on. Fused with **Reciprocal Rank Fusion**, which combines *ranks* rather than raw scores: BM25 scores, cosine distances and cross-encoder logits live on incomparable scales, and averaging them directly would be arithmetic on units that don't share a zero.
+4. **Recover** — described below.
+
+### Making natural language match identifiers
+
+SQLite's FTS5 tokeniser treats `computeDelinquencyGraceWindow` as **one atomic token**. So "delinquency grace window" — or any natural-language phrasing — could never match it through BM25, no matter how the query was worded, because the *indexed* form was atomic. Verified directly:
+
+```
+FTS5 MATCH 'computeDelinquencyGraceWindow'  -> 1 hit
+FTS5 MATCH 'delinquency'                    -> 0 hits
+```
+
+So at index time every identifier in a chunk's symbol and code is **also** stored split into sub-words, in a dedicated `tokens` FTS column (`identifiers.py`). Raw code is still indexed verbatim, so exact-identifier search is unchanged; the split column is pure additional recall. The same split runs on the query, so a pasted `getUserById` also searches as `get user by id`.
+
+**Why not a custom FTS5 tokeniser** — the "correct" answer, and it needs a C extension compiled per platform: exactly the dependency this service was built to avoid (it's why `sqlite-vec` was chosen over a standalone vector DB). A pre-split column is pure Python, costs one pass per chunk at index time, and is inspectable in any DB browser.
+
+This is a schema change, so the index carries an `INDEX_FORMAT_VERSION` in `PRAGMA user_version`. An index written by an older format is dropped and rebuilt from source rather than migrated in place — rebuilding is fast and cannot leave a half-migrated file.
+
+### Detecting and recovering from a weak retrieval
+
+Even with that, a first attempt can come back weak. Detection uses signals that are each independently interpretable — **deliberately not the `score` field**, which is an RRF *rank* score whose maximum here is ≈0.074 and whose absolute value carries no semantic meaning. Thresholding on it would look like a confidence measure and be numerology.
+
+The anchor signal is **retriever agreement**. BM25 and vector search are independent — different representation, different algorithm — so a chunk both rank highly is corroborated by two methods that fail differently. Agreement requires a **majority** of the top results, not one: a single lexical coincidence is not evidence.
+
+The cross-encoder gets two thresholds, not one, because its usable range on code is not its nominal range. Measured against this project's own `orchestrator/` (161 chunks):
+
+| | top reranker score | agreement (of top 3) |
+|---|---|---|
+| Answerable queries (6) | **−4.1 … +4.5** | 3/3 every time |
+| Absent queries (5) | **−11.2 … −9.0** | 0–1/3 |
+
+There is a wide empty band between ≈−9 and ≈−4 separating "the model is grumpy about code" from "nothing here is on topic". Both thresholds sit inside it:
+
+| Signal | With agreement | Without agreement |
+|---|---|---|
+| Reranker below **−8** (`RERANK_IRRELEVANT_BELOW`) | **decisive** | **decisive** |
+| Reranker below **−6** (`RERANK_WEAK_BELOW`) | contributing | **decisive** |
+| Candidate pool thin *relative to index size* | contributing | **decisive** |
+| Most results graph-expansion only | contributing | contributing |
+| Fewer results than requested | contributing | contributing |
+
+Three of these came out of testing against a real index and would have been wrong otherwise:
+
+- **The cross-encoder cannot outvote two agreeing retrievers** — `ms-marco-MiniLM` is web-trained and systematically under-scores code, so treating its nominal 0 boundary as decisive flagged *correct* results weak.
+- **…but below −8 it wins anyway.** With agreement as a blanket veto, `kubernetes ingress controller helm values` scored 0.7 and passed as strong against a codebase containing no Kubernetes — a single lexical hit on the word "values" counted as corroboration. Hence the majority rule and the second threshold.
+- **Pool size is relative to index size.** An absolute "fewer than 6 candidates" floor fires on every query in a small repo, where matching most of the index is a *complete* retrieval, not a failed one.
+
+Current accuracy on the real orchestrator source: **10/10 answerable queries not flagged, 5/5 unanswerable queries flagged**. That check runs in `test_recovery_e2e.py` so a regression in the thresholds fails a test rather than quietly degrading.
+
+When a result is weak, retrieval retries itself before the caller ever sees it: recall widens (25 → 60), graph expansion widens (8 → 16), k doubles (capped 16), and the query is **narrowed** — filler words stripped, then optionally reduced to its most distinctive nouns.
+
+Reformulation is deliberately conservative, and that too is a test result. An earlier version synthesised identifier spellings (`userSession`, `user_session`, `usersession`, …) and ORed a dozen guesses into the FTS query. Once the index-level split landed that bought nothing — and it started **manufacturing false agreement**: a query with no real answer would OR enough guesses together to look corroborated, so `terraform kubernetes helm chart` came back "confident". Narrowing only removes terms; it cannot invent matches.
+
+**Why not ask a model to rewrite the query.** It puts a model round-trip inside the most-called tool in the system, on the cost term weighted ~2× time. The deterministic path costs nothing, has no latency variance, and is *reproducible* — the same weak query always escalates identically, which a rewrite model couldn't guarantee and which would make the dashboard trace unrepeatable. If it still comes back weak the tool hands the problem **up** to the agent, which is already a model in a loop and can rephrase semantically — paid for by a call we were making anyway.
+
+Three properties that could have gone wrong:
+
+- **Escalating can never return a worse set.** The best attempt wins on confidence; if widening surfaces only noise, the original results are returned and the low confidence reported honestly.
+- **Bounded** — at most `MAX_VARIANTS_TRIED` (2) retries, exiting at the first that clears the bar.
+- **Never silent** — every attempt (query, k, confidence, reasons) is recorded in `attempts` and surfaced as a `retrieval_weak` intervention. A result that *stays* weak reaches the agent with a `[retrieval confidence 0.15 — LOW]` header naming the queries already tried, so its next move is genuinely different. Silently returning low-confidence snippets is how an agent ends up confidently editing the wrong file.
+
+### Testing retrieval
+
+```bash
+python3 -m venv retrieval-service/.venv
+retrieval-service/.venv/bin/pip install -r retrieval-service/requirements.txt
+
+npm run test:retrieval                                    # fast, stubbed, in npm test
+retrieval-service/.venv/bin/python retrieval-service/test_recovery_e2e.py   # real index
+retrieval-service/.venv/bin/python retrieval-service/verify.py .            # inspect a real run
+```
+
+`test_recovery.py` stubs `store` and `embeddings` to test the escalation control flow cheaply — no model download, no index on disk — and runs inside `npm test`. `test_recovery_e2e.py` builds a **real** index with real tree-sitter chunking, real embeddings and a real cross-encoder, and asserts behaviour a stub cannot: that natural-language queries now match atomic identifiers on the first attempt, that good results are *not* escalated (wasted latency), and that a query with no answer stays weak. It's ~30s on first run, so it isn't in `npm test`.
 
 ## Model roster and eligibility
 
@@ -152,7 +234,7 @@ Routing decisions surface in two places from the one `routing_decision` event: t
 npm test
 ```
 
-Runs, in order: `model-health.js` (the settings-screen provider probe, with `fetch` stubbed so all five health states are pinned deterministically and offline), `unit.js` (router scoring, budget math, diff/compaction unit tests), `ignore.js`, `review-buffer.js`, `task-completion.js` (an end-to-end regression test through the real `TaskRunner`, with the model boundary mocked, proving a task with any non-`done` subtask ends `failed` — not `done` — and emits `task_failed` with the specific subtask(s) named), `backtrack.js` (same harness over a real temp project: every attempt fails verification, and the workspace must end byte-identical to how it started — an overwritten file restored, a created file deleted), `replan.js` (four scenarios through the real scheduler: a decomposed subtask recovers and the task still reports `done`; a failing replacement is *not* re-planned again; an abandoning re-planner leaves the failure standing; dependents are rewired to the replacements instead of deadlocking), `protocol.js` (JSON-RPC message round-trip tests), and `resume.js` (crash recovery from a hand-crafted checkpoint).
+Runs, in order: `model-health.js` (the settings-screen provider probe, with `fetch` stubbed so all five health states are pinned deterministically and offline), `unit.js` (router scoring, budget math, diff/compaction unit tests), `ignore.js`, `review-buffer.js`, `task-completion.js` (an end-to-end regression test through the real `TaskRunner`, with the model boundary mocked, proving a task with any non-`done` subtask ends `failed` — not `done` — and emits `task_failed` with the specific subtask(s) named), `backtrack.js` (same harness over a real temp project: every attempt fails verification, and the workspace must end byte-identical to how it started — an overwritten file restored, a created file deleted), `replan.js` (four scenarios through the real scheduler: a decomposed subtask recovers and the task still reports `done`; a failing replacement is *not* re-planned again; an abandoning re-planner leaves the failure standing; dependents are rewired to the replacements instead of deadlocking), `protocol.js` (JSON-RPC message round-trip tests), and `resume.js` (crash recovery from a hand-crafted checkpoint). `npm run test:retrieval` then runs `retrieval-service/test_recovery.py` — reformulation, the weak-detection signals, and the escalation control flow, with `store` and `embeddings` stubbed so it needs no tree-sitter, no fastembed, no model download and no index on disk. It is skipped with a notice if `python3` is unavailable.
 
 `npm run typecheck` runs all three `tsconfig.json`s (root, `electron/`, `orchestrator/`) with `--noEmit`.
 
