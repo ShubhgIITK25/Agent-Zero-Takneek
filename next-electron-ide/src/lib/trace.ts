@@ -63,6 +63,27 @@ export type TraceNode = {
   };
 };
 
+export type ExecutionGraphNode = {
+  id: string;
+  seq: number;
+  ts: number;
+  type: string;
+  kind: "agent" | "tool" | "change" | "control";
+  label: string;
+  detail: string;
+  parentSeq: number | null;
+  nodeId?: string;
+  subtaskId?: string | null;
+  changeId?: string;
+};
+
+export type FileChangeView = {
+  changeId: string;
+  path: string;
+  ts: number;
+  revertedAt?: number;
+};
+
 export type SubtaskView = {
   id: string;
   title: string;
@@ -116,6 +137,9 @@ export type TraceView = {
   /** One entry per mid-task re-plan: what was dropped and what replaced it. */
   replans: { failedSubtaskId: string; diagnosis: string; replacementIds: string[] }[];
   nodes: TraceNode[];
+  /** Ordered, bounded projection of the durable event stream for the graph UI. */
+  executionGraph: ExecutionGraphNode[];
+  fileChanges: FileChangeView[];
   interventions: Intervention[];
   compactions: CompactionRecord[];
   approvals: ApprovalRecord[];
@@ -144,6 +168,8 @@ export function emptyTrace(): TraceView {
     subtasks: [],
     replans: [],
     nodes: [],
+    executionGraph: [],
+    fileChanges: [],
     interventions: [],
     compactions: [],
     approvals: [],
@@ -160,6 +186,67 @@ export function emptyTrace(): TraceView {
   };
 }
 
+function graphKind(type: string): ExecutionGraphNode["kind"] {
+  if (type === "thought" || type.startsWith("agent_call") || type === "routing_decision") return "agent";
+  if (type.startsWith("tool_") || type.startsWith("approval_")) return "tool";
+  if (type === "file_change" || type === "workspace_reverted") return "change";
+  return "control";
+}
+
+function graphLabel(e: TraceEvent): string {
+  switch (e.type) {
+    case "agent_call_start": return `${e.role ?? "agent"} → ${e.modelId ?? "model"}`;
+    case "agent_call_end": return `Agent returned${e.error ? " (error)" : ""}`;
+    case "routing_decision": return `Route → ${e.modelId ?? "model"}`;
+    case "tool_call": return `Tool · ${e.name ?? "unknown"}`;
+    case "tool_result": return `Tool result · ${e.outcome ?? "unknown"}`;
+    case "file_change": return `Change · ${e.path ?? "file"}`;
+    case "workspace_reverted": return `Reverted · ${e.path ?? "file"}`;
+    case "thought": return "Thought";
+    case "checkpoint": return `Checkpoint · step ${e.step ?? "?"}`;
+    case "intervention": return `Intervention · ${String(e.cause ?? "unknown").replace(/_/g, " ")}`;
+    case "approval_request": return `Approval · ${e.request?.kind ?? "request"}`;
+    case "approval_resolved": return `Approval · ${e.approved ? "approved" : "rejected"}`;
+    case "subtask_started": return `Subtask · ${e.title ?? e.subtaskId ?? "started"}`;
+    case "subtask_finished": return `Subtask · ${e.status ?? "finished"}`;
+    default: return String(e.type).replace(/_/g, " ");
+  }
+}
+
+function graphDetail(e: TraceEvent): string {
+  switch (e.type) {
+    case "thought": return String(e.text ?? "");
+    case "task_started": return String(e.prompt ?? "");
+    case "plan_created": return `${(e.subtasks ?? []).length} subtask(s) planned.`;
+    case "subtask_started": return `${e.subtaskId ?? "unknown"} · attempt ${e.attempt ?? "?"}`;
+    case "subtask_finished": return `${e.subtaskId ?? "unknown"}${e.note ? ` · ${e.note}` : ""}`;
+    case "tool_call": return `${e.name ?? "unknown"}${e.sideEffecting ? " · approval-gated" : " · read-only"}`;
+    case "tool_result": return `${e.outcome ?? "unknown"}${e.ms != null ? ` · ${e.ms}ms` : ""}`;
+    case "agent_call_end": return `${e.promptTokens ?? 0} prompt + ${e.completionTokens ?? 0} completion tokens${e.error ? ` · ${e.error}` : ""}`;
+    case "file_change": return `${e.beforeExists ? "updated" : "created"} · ${String(e.beforeHash ?? "none").slice(0, 8)} → ${String(e.afterHash ?? "").slice(0, 8)}`;
+    case "workspace_reverted": return `${e.automatic ? "Automatically restored" : "Restored"} the before-state for ${e.changeId ?? "the latest change"}.`;
+    case "intervention": return `${e.detail ?? ""}${e.action ? ` · ${e.action}` : ""}`;
+    case "log": return String(e.message ?? "");
+    default: return `${e.type}${e.ts ? ` · ${new Date(e.ts).toLocaleTimeString()}` : ""}`;
+  }
+}
+
+function makeGraphNode(e: TraceEvent, parentSeq: number | null): ExecutionGraphNode {
+  return {
+    id: `event-${e.seq}`,
+    seq: e.seq,
+    ts: e.ts,
+    type: e.type,
+    kind: graphKind(e.type),
+    label: graphLabel(e),
+    detail: graphDetail(e),
+    parentSeq,
+    ...(e.nodeId === undefined ? {} : { nodeId: e.nodeId }),
+    ...(e.subtaskId === undefined ? {} : { subtaskId: e.subtaskId }),
+    ...(e.changeId === undefined ? {} : { changeId: e.changeId }),
+  };
+}
+
 /** Applies one event. Pure — returns a new view, never mutates the input. */
 export function applyEvent(view: TraceView, e: TraceEvent): TraceView {
   const v: TraceView = {
@@ -167,12 +254,16 @@ export function applyEvent(view: TraceView, e: TraceEvent): TraceView {
     subtasks: [...view.subtasks],
     replans: [...(view.replans ?? [])],
     nodes: [...view.nodes],
+    executionGraph: [...(view.executionGraph ?? [])],
+    fileChanges: [...(view.fileChanges ?? [])],
     interventions: [...view.interventions],
     compactions: [...view.compactions],
     approvals: [...view.approvals],
     logs: [...view.logs],
   };
   if (e.taskId) v.taskId = e.taskId;
+  const previousGraph = v.executionGraph.length ? v.executionGraph[v.executionGraph.length - 1] : null;
+  v.executionGraph = [...v.executionGraph, makeGraphNode(e, previousGraph?.seq ?? null)].slice(-500);
 
   const node = (id: string) => v.nodes.find((n) => n.nodeId === id);
 
@@ -377,6 +468,19 @@ export function applyEvent(view: TraceView, e: TraceEvent): TraceView {
               acceptedBlockIds: e.acceptedBlockIds,
             }
           : a,
+      );
+      break;
+
+    case "file_change":
+      v.fileChanges = [
+        ...v.fileChanges,
+        { changeId: e.changeId, path: e.path, ts: e.ts },
+      ];
+      break;
+
+    case "workspace_reverted":
+      v.fileChanges = v.fileChanges.map((change) =>
+        change.changeId === e.changeId ? { ...change, revertedAt: e.ts } : change,
       );
       break;
 

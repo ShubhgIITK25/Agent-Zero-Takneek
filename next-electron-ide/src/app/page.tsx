@@ -393,7 +393,13 @@ export default function Home() {
         />
       )}
       {settingsOpen && <SettingsPanel onClose={() => setSettingsOpen(false)} />}
-      {dashboardOpen && <Dashboard live={trace} onClose={() => setDashboardOpen(false)} />}
+      {dashboardOpen && (
+        <Dashboard
+          live={trace}
+          onClose={() => setDashboardOpen(false)}
+          onWorkspaceChanged={() => { void refreshWorkspace(); }}
+        />
+      )}
     </div>
   );
 }

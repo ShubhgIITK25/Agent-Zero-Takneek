@@ -28,8 +28,28 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import * as crypto from 'crypto';
 import { OrchestratorEvent, Subtask } from './protocol';
 import { ChatMessage } from './providers';
+
+export type FileChangeRecord = {
+  changeId: string;
+  path: string;
+  beforeExists: boolean;
+  afterExists: boolean;
+  beforeHash: string | null;
+  afterHash: string;
+};
+
+type FileChangeSnapshot = FileChangeRecord & {
+  beforeContent: string | null;
+};
+
+function contentHash(content: string | null): string | null {
+  return content === null
+    ? null
+    : crypto.createHash('sha256').update(content, 'utf8').digest('hex');
+}
 
 export type TaskSnapshot = {
   taskId: string;
@@ -55,13 +75,16 @@ export class TaskStore {
   private dir: string;
   private eventsPath: string;
   private statePath: string;
+  private changesDir: string;
   private seq = 0;
 
   constructor(dataDir: string, codebaseId: string, readonly taskId: string) {
     this.dir = path.join(dataDir, 'tasks', codebaseId, taskId);
     this.eventsPath = path.join(this.dir, 'events.jsonl');
     this.statePath = path.join(this.dir, 'state.json');
+    this.changesDir = path.join(this.dir, 'changes');
     fs.mkdirSync(this.dir, { recursive: true });
+    fs.mkdirSync(this.changesDir, { recursive: true });
     // Continue the sequence across a resume so the renderer's gap detection
     // does not see a phantom rewind after a crash.
     this.seq = this.countExistingEvents();
@@ -122,6 +145,89 @@ export class TaskStore {
     } catch {
       return null;
     }
+  }
+
+  /**
+   * Persist the exact before-state before a controlled file write. These
+   * snapshots live beside the trace, never inside the user's repository.
+   */
+  recordFileChange(
+    changeId: string,
+    relPath: string,
+    beforeContent: string | null,
+    afterContent: string,
+  ): FileChangeRecord {
+    const record: FileChangeRecord = {
+      changeId,
+      path: relPath,
+      beforeExists: beforeContent !== null,
+      afterExists: true,
+      beforeHash: contentHash(beforeContent),
+      afterHash: contentHash(afterContent) as string,
+    };
+    const snapshot: FileChangeSnapshot = { ...record, beforeContent };
+    const file = path.join(this.changesDir, `${encodeURIComponent(changeId)}.json`);
+    fs.writeFileSync(file, JSON.stringify(snapshot), 'utf8');
+    return record;
+  }
+
+  /**
+   * Restore the newest tracked change that has not already been reverted.
+   * Refuses to overwrite a file that no longer matches the agent's result.
+   */
+  revertLatestFileChange(rootPath: string): FileChangeRecord | null {
+    const events = this.readEvents();
+    const reverted = new Set(
+      events
+        .filter((event) => event.type === 'workspace_reverted')
+        .map((event) => event.changeId),
+    );
+    const latest = [...events]
+      .reverse()
+      .find((event) => event.type === 'file_change' && !reverted.has(event.changeId));
+    if (!latest || latest.type !== 'file_change') return null;
+
+    const file = path.join(this.changesDir, `${encodeURIComponent(latest.changeId)}.json`);
+    let snapshot: FileChangeSnapshot;
+    try {
+      snapshot = JSON.parse(fs.readFileSync(file, 'utf8')) as FileChangeSnapshot;
+    } catch {
+      throw new Error(`No saved before-state exists for ${latest.path}; refusing to revert.`);
+    }
+    if (snapshot.changeId !== latest.changeId || snapshot.path !== latest.path) {
+      throw new Error(`Saved before-state does not match ${latest.path}; refusing to revert.`);
+    }
+
+    const full = path.resolve(rootPath, snapshot.path);
+    const relative = path.relative(rootPath, full);
+    if (relative.startsWith('..') || path.isAbsolute(relative)) {
+      throw new Error(`Refusing to revert a path outside the open project: ${snapshot.path}.`);
+    }
+
+    let current: string | null = null;
+    try {
+      current = fs.readFileSync(full, 'utf8');
+    } catch {
+      // A missing current file is represented by null for the hash guard.
+    }
+    if (contentHash(current) !== snapshot.afterHash) {
+      throw new Error(`Refusing to overwrite ${snapshot.path}; it changed after the agent's edit.`);
+    }
+
+    if (snapshot.beforeContent === null) {
+      fs.rmSync(full, { force: true });
+    } else {
+      fs.mkdirSync(path.dirname(full), { recursive: true });
+      fs.writeFileSync(full, snapshot.beforeContent, 'utf8');
+    }
+    return {
+      changeId: snapshot.changeId,
+      path: snapshot.path,
+      beforeExists: snapshot.beforeExists,
+      afterExists: snapshot.afterExists,
+      beforeHash: snapshot.beforeHash,
+      afterHash: snapshot.afterHash,
+    };
   }
 
   static listTasks(dataDir: string, codebaseId: string): TaskSnapshot[] {

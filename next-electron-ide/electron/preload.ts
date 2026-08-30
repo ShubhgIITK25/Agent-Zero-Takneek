@@ -148,6 +148,8 @@ const api = {
     ipcRenderer.invoke("orchestrator:startTask", taskId, prompt),
   orchestratorResumeTask: (taskId: string): Promise<unknown> =>
     ipcRenderer.invoke("orchestrator:resumeTask", taskId),
+  orchestratorRevertLatest: (taskId: string): Promise<{ changeId: string; path: string }> =>
+    ipcRenderer.invoke("orchestrator:revertLatest", taskId),
   orchestratorCancelTask: (taskId: string): Promise<unknown> =>
     ipcRenderer.invoke("orchestrator:cancelTask", taskId),
   orchestratorApprove: (decision: unknown): Promise<unknown> =>

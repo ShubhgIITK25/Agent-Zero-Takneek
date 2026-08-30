@@ -122,6 +122,7 @@ export interface ElectronAPI {
   // ---- orchestrator ----
   orchestratorStartTask: (taskId: string, prompt: string) => Promise<unknown>;
   orchestratorResumeTask: (taskId: string) => Promise<unknown>;
+  orchestratorRevertLatest: (taskId: string) => Promise<{ changeId: string; path: string }>;
   orchestratorCancelTask: (taskId: string) => Promise<unknown>;
   orchestratorApprove: (decision: {
     requestId: string;

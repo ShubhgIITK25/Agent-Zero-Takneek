@@ -121,6 +121,8 @@ export class TaskRunner {
   private backtrack = new Map<string, { content: string | null; wasTracked: boolean }>();
   /** Which subtask `backtrack` currently belongs to. */
   private backtrackOwner: string | null = null;
+  /** Controlled writes made by the active subtask, for durable rollback history. */
+  private activeFileChanges: { changeId: string; path: string }[] = [];
   /** Re-plans spent on this task. Bounded by MAX_REPLANS_PER_TASK. */
   private replansUsed = 0;
   /** .nexideignore / .ignore — loaded once per task, not re-read on every tool call. */
@@ -324,14 +326,32 @@ export class TaskRunner {
 
       const finalContent = applyAcceptedBlocks(d, acceptedHere);
       const full = path.resolve(this.config.rootPath, d.path);
+      let beforeContent: string | null = null;
+      try {
+        beforeContent = await fs.readFile(full, 'utf8');
+      } catch {
+        // New file: the safe revert state is "does not exist".
+      }
       // Stash what is there now, BEFORE overwriting it, so a failed
       // verification can put it back. Must happen on the write path — this is
       // the only point at which the pre-edit content still exists.
       await this.captureBacktrackPoint(subtaskId, d.path, full);
+      const changeId = `chg_${this.taskId}_${Date.now()}_${++nodeCounter}`;
+      // Persist the before-state before touching the workspace. If the task
+      // data directory is unavailable, the write is not attempted and the
+      // later revert action cannot promise a safe recovery.
+      const fileChange = this.store.recordFileChange(
+        changeId,
+        d.path,
+        beforeContent,
+        finalContent,
+      );
       await fs.mkdir(path.dirname(full), { recursive: true });
       await fs.writeFile(full, finalContent, 'utf8');
       written.push(d.path);
       this.changedFiles.add(d.path);
+      this.activeFileChanges.push({ changeId, path: d.path });
+      this.emit({ type: 'file_change', nodeId, subtaskId, ...fileChange });
 
       if (acceptedHere.length < blockIds.length) {
         fullyApplied = false;
@@ -689,6 +709,7 @@ export class TaskRunner {
   private beginBacktrackPoint(subtaskId: string): void {
     this.backtrack = new Map();
     this.backtrackOwner = subtaskId;
+    this.activeFileChanges = [];
   }
 
   /** Stash a file's current content the first time this subtask writes to it. */
@@ -742,6 +763,20 @@ export class TaskRunner {
         failures.push(`${rel} (${err instanceof Error ? err.message : String(err)})`);
       }
     }
+
+    // Mark only this subtask's writes as automatically reverted. Earlier
+    // successful changes remain eligible for an explicit user revert.
+    for (const change of this.activeFileChanges) {
+      if (restored.includes(change.path)) {
+        this.emit({
+          type: 'workspace_reverted',
+          changeId: change.changeId,
+          path: change.path,
+          automatic: true,
+        });
+      }
+    }
+    this.activeFileChanges = this.activeFileChanges.filter((change) => !restored.includes(change.path));
 
     this.emit({
       type: 'intervention',
