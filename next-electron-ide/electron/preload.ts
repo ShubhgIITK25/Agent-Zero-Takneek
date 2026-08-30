@@ -142,8 +142,8 @@ const api = {
 
   // ---- orchestrator ----
   // Control commands are request/response; trace events arrive on a
-  // subscription. The renderer holds no process handles and no API keys —
-  // main.ts assembles the task config on every call.
+  // subscription. Main.ts assembles the task config on every call, and the
+  // renderer's settings form is the only place that temporarily holds keys.
   orchestratorStartTask: (taskId: string, prompt: string): Promise<unknown> =>
     ipcRenderer.invoke("orchestrator:startTask", taskId, prompt),
   orchestratorResumeTask: (taskId: string): Promise<unknown> =>

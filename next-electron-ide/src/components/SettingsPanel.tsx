@@ -45,6 +45,7 @@ const PROVIDER_HELP: Record<ProviderId, { url: string; hint: string }> = {
 export default function SettingsPanel({ onClose }: SettingsPanelProps) {
   const [settings, setSettings] = useState<AgentSettings | null>(null);
   const [saved, setSaved] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const [tab, setTab] = useState<'models' | 'keys'>('models');
   const [health, setHealth] = useState<Record<string, ModelHealth>>({});
   const [checking, setChecking] = useState(false);
@@ -52,10 +53,14 @@ export default function SettingsPanel({ onClose }: SettingsPanelProps) {
 
   useEffect(() => {
     (async () => {
-      const s = await window.electronAPI?.settingsGet();
-      setSettings(
-        s ?? { envVars: {}, enabledModelIds: [], maxCostUsd: 0.5, maxSeconds: 2700 }
-      );
+      try {
+        const s = await window.electronAPI?.settingsGet();
+        setSettings(
+          s ?? { envVars: {}, enabledModelIds: [], maxCostUsd: 0.5, maxSeconds: 2700 }
+        );
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Could not load settings.');
+      }
     })();
   }, []);
 
@@ -107,7 +112,19 @@ export default function SettingsPanel({ onClose }: SettingsPanelProps) {
     return (
       <div className="settings-overlay">
         <div className="settings-panel">
-          <p className="settings-loading">Loading settings…</p>
+          {error ? (
+            <>
+              <header className="settings-header">
+                <h2>Agent Settings</h2>
+                <button type="button" className="settings-close" onClick={onClose} aria-label="Close settings">
+                  ×
+                </button>
+              </header>
+              <div className="settings-warning" role="alert">
+                {error}
+              </div>
+            </>
+          ) : <p className="settings-loading">Loading settings…</p>}
         </div>
       </div>
     );
@@ -130,9 +147,15 @@ export default function SettingsPanel({ onClose }: SettingsPanelProps) {
   };
 
   const save = async () => {
-    await window.electronAPI?.settingsSet(settings);
-    setSaved(true);
-    setTimeout(() => setSaved(false), 2000);
+    setError(null);
+    try {
+      const didSave = await window.electronAPI?.settingsSet(settings);
+      if (didSave !== true) throw new Error('Settings could not be saved.');
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2000);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Settings could not be saved.');
+    }
   };
 
   const enabledCount = settings.enabledModelIds.length;
@@ -167,6 +190,12 @@ export default function SettingsPanel({ onClose }: SettingsPanelProps) {
             You have enabled models from {missingKeys.map((p) => PROVIDER_CONFIG[p].label).join(' and ')} but have not
             entered {missingKeys.length > 1 ? 'their keys' : 'its key'} yet. Add {missingKeys.length > 1 ? 'them' : 'it'} on
             the API Keys tab, or those calls will fail.
+          </div>
+        )}
+
+        {error && (
+          <div className="settings-warning" role="alert">
+            {error}
           </div>
         )}
 
@@ -276,8 +305,10 @@ export default function SettingsPanel({ onClose }: SettingsPanelProps) {
           {tab === 'keys' && (
             <>
               <p className="settings-intro">
-                Stored in Electron&apos;s per-user app-data directory, outside this repository — so keys never land in
-                git. Only free-tier and pay-as-you-go providers are supported; no subscription APIs.
+                Stored outside this repository in Electron&apos;s per-user app-data directory and encrypted at rest with
+                the operating system&apos;s secure storage. Existing plaintext settings are migrated automatically when
+                possible, and saving is blocked if secure storage is unavailable. Only free-tier and pay-as-you-go
+                providers are supported; no subscription APIs.
               </p>
               {(Object.keys(PROVIDER_CONFIG) as ProviderId[]).map((p) => {
                 const cfg = PROVIDER_CONFIG[p];
@@ -294,6 +325,7 @@ export default function SettingsPanel({ onClose }: SettingsPanelProps) {
                       placeholder={cfg.defaultValue ?? (cfg.optional ? '' : 'paste your key')}
                       onChange={(e) => setEnv(cfg.keyName, e.target.value)}
                       spellCheck={false}
+                      autoComplete="off"
                     />
                     <span className="settings-key-help">{PROVIDER_HELP[p].url}</span>
                   </div>
@@ -316,7 +348,7 @@ export default function SettingsPanel({ onClose }: SettingsPanelProps) {
                           update({ envVars: { ...rest, [e.target.value]: old } });
                         }}
                       />
-                      <input value={v} onChange={(e) => setEnv(k, e.target.value)} />
+                      <input type="password" value={v} onChange={(e) => setEnv(k, e.target.value)} autoComplete="off" />
                       <button
                         type="button"
                         onClick={() => {

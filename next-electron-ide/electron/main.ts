@@ -1,4 +1,12 @@
-import { app, BrowserWindow, ipcMain, dialog, Menu, shell } from "electron";
+import {
+  app,
+  BrowserWindow,
+  ipcMain,
+  dialog,
+  Menu,
+  shell,
+  safeStorage,
+} from "electron";
 import * as path from "path";
 import * as fs from "fs/promises";
 import { Dirent } from "fs";
@@ -11,6 +19,7 @@ import {
   orchestratorScriptPath,
 } from "./orchestrator-bridge";
 import { checkModelHealth, HealthCheckRequest } from "./model-health";
+import { decryptEnvVars, encryptEnvVars } from "./settings-crypto";
 import type { IPty } from "node-pty";
 
 const isDev = process.env.NODE_ENV === "development";
@@ -703,28 +712,19 @@ ipcMain.handle("terminal:changeDir", (_evt, id: string, dirPath: string) => {
 
 // ---------- IPC: agent settings (API keys / env vars) ----------
 //
-// Frontend-only for now: this just persists whatever the Settings panel
-// collects to a JSON file in Electron's per-user app data directory (NOT
-// inside the project repo, so it's never accidentally committed). The real
-// multi-agent implementation (src/lib/agent.ts) is expected to read these
-// values — see the comment at the top of that file for the intended wiring.
+// Settings live in Electron's per-user app data directory (NOT inside the
+// project repo). Environment-variable values are encrypted with safeStorage;
+// the rest of the file remains ordinary JSON so the format stays inspectable.
 
 // ---------- IPC: orchestrator ----------
 // The renderer never talks to the orchestrator child directly — it has no
 // process access at all. Everything crosses here, which is also where the
 // task's config (project root, retrieval URL, API keys, model roster) is
-// assembled, so the renderer never has to know or hold any of it.
+// assembled. The settings form may hold current key values in memory while
+// editing, but only this process passes them to the orchestrator.
 
 async function readAgentSettings(): Promise<AgentSettings> {
-  try {
-    const raw = await fs.readFile(
-      path.join(app.getPath("userData"), "agent-settings.json"),
-      "utf-8",
-    );
-    return { ...DEFAULT_AGENT_SETTINGS, ...JSON.parse(raw) };
-  } catch {
-    return DEFAULT_AGENT_SETTINGS;
-  }
+  return loadAgentSettings();
 }
 
 async function buildTaskConfig() {
@@ -842,6 +842,11 @@ type AgentSettings = {
   maxSeconds: number;
 };
 
+type StoredAgentSettings = Omit<AgentSettings, "envVars"> & {
+  envVars: Record<string, string>;
+  envVarsEncrypted?: boolean;
+};
+
 const DEFAULT_AGENT_SETTINGS: AgentSettings = {
   envVars: {},
   enabledModelIds: [],
@@ -853,22 +858,112 @@ function settingsFilePath(): string {
   return path.join(app.getPath("userData"), "agent-settings.json");
 }
 
-ipcMain.handle("settings:get", async (): Promise<AgentSettings> => {
-  try {
-    const raw = await fs.readFile(settingsFilePath(), "utf-8");
-    const parsed = JSON.parse(raw);
-    return { ...DEFAULT_AGENT_SETTINGS, ...parsed };
-  } catch {
-    return DEFAULT_AGENT_SETTINGS;
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function stringRecord(value: unknown): Record<string, string> {
+  if (!isRecord(value)) return {};
+  return Object.fromEntries(
+    Object.entries(value).filter(([, item]) => typeof item === "string"),
+  ) as Record<string, string>;
+}
+
+function encryptedStringRecord(value: unknown): Record<string, string> {
+  if (!isRecord(value)) {
+    throw new Error("Saved API keys have an invalid secure-storage format.");
   }
-});
+  for (const item of Object.values(value)) {
+    if (typeof item !== "string" || item.length === 0) {
+      throw new Error("Saved API keys have an invalid secure-storage format.");
+    }
+  }
+  return Object.fromEntries(Object.entries(value)) as Record<string, string>;
+}
+
+function normalizeAgentSettings(value: unknown): AgentSettings {
+  const data = isRecord(value) ? value : {};
+  const enabledModelIds = Array.isArray(data.enabledModelIds)
+    ? data.enabledModelIds.filter((item): item is string => typeof item === "string")
+    : DEFAULT_AGENT_SETTINGS.enabledModelIds;
+  const maxCostUsd =
+    typeof data.maxCostUsd === "number" && Number.isFinite(data.maxCostUsd)
+      ? data.maxCostUsd
+      : DEFAULT_AGENT_SETTINGS.maxCostUsd;
+  const maxSeconds =
+    typeof data.maxSeconds === "number" && Number.isFinite(data.maxSeconds)
+      ? data.maxSeconds
+      : DEFAULT_AGENT_SETTINGS.maxSeconds;
+
+  return {
+    envVars: stringRecord(data.envVars),
+    enabledModelIds: [...enabledModelIds],
+    maxCostUsd,
+    maxSeconds,
+  };
+}
+
+async function persistAgentSettings(settings: AgentSettings): Promise<void> {
+  const stored: StoredAgentSettings = {
+    envVars: encryptEnvVars(settings.envVars, safeStorage),
+    envVarsEncrypted: true,
+    enabledModelIds: settings.enabledModelIds,
+    maxCostUsd: settings.maxCostUsd,
+    maxSeconds: settings.maxSeconds,
+  };
+  const target = settingsFilePath();
+  await fs.mkdir(path.dirname(target), { recursive: true });
+  await fs.writeFile(target, JSON.stringify(stored, null, 2), "utf-8");
+}
+
+async function loadAgentSettings(): Promise<AgentSettings> {
+  let raw: string;
+  try {
+    raw = await fs.readFile(settingsFilePath(), "utf-8");
+  } catch {
+    return { ...DEFAULT_AGENT_SETTINGS, enabledModelIds: [] };
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return { ...DEFAULT_AGENT_SETTINGS, enabledModelIds: [] };
+  }
+
+  const data = isRecord(parsed) ? parsed : {};
+  const settings = normalizeAgentSettings(data);
+  if (data.envVarsEncrypted === true) {
+    return {
+      ...settings,
+      envVars: decryptEnvVars(
+        encryptedStringRecord(data.envVars),
+        safeStorage,
+      ),
+    };
+  }
+
+  // Older releases wrote plaintext values. Keep them usable for this read,
+  // then transparently migrate them when the OS keychain is available.
+  if (safeStorage.isEncryptionAvailable()) {
+    try {
+      await persistAgentSettings(settings);
+    } catch (err) {
+      console.warn(
+        "[settings] Could not migrate legacy plaintext settings to secure storage.",
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+  }
+  return settings;
+}
+
+ipcMain.handle("settings:get", async (): Promise<AgentSettings> => loadAgentSettings());
 
 ipcMain.handle(
   "settings:set",
   async (_evt, settings: AgentSettings): Promise<boolean> => {
-    const target = settingsFilePath();
-    await fs.mkdir(path.dirname(target), { recursive: true });
-    await fs.writeFile(target, JSON.stringify(settings, null, 2), "utf-8");
+    await persistAgentSettings(normalizeAgentSettings(settings));
     return true;
   },
 );
