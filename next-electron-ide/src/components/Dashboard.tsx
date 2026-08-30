@@ -303,8 +303,6 @@ function ExecutionGraph({
     </section>
   );
 }
-
-export default function Dashboard({ live, onClose, onWorkspaceChanged }: DashboardProps) {
 /**
  * One node and everything it caused. Children nest inside a bordered rail
  * rather than being indented by a computed depth*N padding: the rail draws
@@ -371,7 +369,7 @@ function CallTreeBranch({
   );
 }
 
-export default function Dashboard({ live, onClose }: DashboardProps) {
+export default function Dashboard({ live, onClose, onWorkspaceChanged }: DashboardProps) {
   const [mode, setMode] = useState<'live' | 'history'>('live');
   const [tasks, setTasks] = useState<TaskSummary[]>([]);
   const [historyTrace, setHistoryTrace] = useState<TraceView | null>(null);
