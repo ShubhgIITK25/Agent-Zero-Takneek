@@ -734,6 +734,15 @@ export class TaskRunner {
       if (outcome.blocked) {
         subtask.lastError = outcome.claim;
         if (attempt < MAX_RETRIES_PER_SUBTASK) {
+          // A BLOCKED response can arrive after the implementer has already
+          // applied one or more approved edits. Roll those edits back before
+          // escalating, just like a failed verifier result below; otherwise
+          // the next attempt starts from a workspace the previous model has
+          // explicitly said it could not finish.
+          await this.restoreBacktrackPoint(
+            subtask,
+            `The agent reported it was blocked on attempt ${attempt}.`
+          );
           this.emit({
             type: 'intervention',
             subtaskId: subtask.id,
