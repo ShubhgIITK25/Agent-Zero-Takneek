@@ -11,6 +11,7 @@ export type AgentSettings = {
   enabledModelIds: string[];
   maxCostUsd: number;
   maxSeconds: number;
+  savedAt?: number;
 };
 
 export type OrchestratorStatus = {

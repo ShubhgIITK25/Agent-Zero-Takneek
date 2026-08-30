@@ -840,6 +840,8 @@ type AgentSettings = {
   /** Per-task hard ceilings. Defaults match the PS's evaluation limits. */
   maxCostUsd: number;
   maxSeconds: number;
+  /** Non-secret timestamp used by the Settings footer. */
+  savedAt?: number;
 };
 
 type StoredAgentSettings = Omit<AgentSettings, "envVars"> & {
@@ -858,6 +860,14 @@ function settingsFilePath(): string {
   return path.join(app.getPath("userData"), "agent-settings.json");
 }
 
+async function settingsFileSavedAt(): Promise<number | undefined> {
+  try {
+    return (await fs.stat(settingsFilePath())).mtimeMs;
+  } catch {
+    return undefined;
+  }
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -867,6 +877,10 @@ function stringRecord(value: unknown): Record<string, string> {
   return Object.fromEntries(
     Object.entries(value).filter(([, item]) => typeof item === "string"),
   ) as Record<string, string>;
+}
+
+function validTimestamp(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value > 0;
 }
 
 function encryptedStringRecord(value: unknown): Record<string, string> {
@@ -894,26 +908,31 @@ function normalizeAgentSettings(value: unknown): AgentSettings {
     typeof data.maxSeconds === "number" && Number.isFinite(data.maxSeconds)
       ? data.maxSeconds
       : DEFAULT_AGENT_SETTINGS.maxSeconds;
+  const savedAt = validTimestamp(data.savedAt) ? data.savedAt : undefined;
 
   return {
     envVars: stringRecord(data.envVars),
     enabledModelIds: [...enabledModelIds],
     maxCostUsd,
     maxSeconds,
+    ...(savedAt === undefined ? {} : { savedAt }),
   };
 }
 
-async function persistAgentSettings(settings: AgentSettings): Promise<void> {
+async function persistAgentSettings(settings: AgentSettings): Promise<number> {
+  const savedAt = Date.now();
   const stored: StoredAgentSettings = {
     envVars: encryptEnvVars(settings.envVars, safeStorage),
     envVarsEncrypted: true,
     enabledModelIds: settings.enabledModelIds,
     maxCostUsd: settings.maxCostUsd,
     maxSeconds: settings.maxSeconds,
+    savedAt,
   };
   const target = settingsFilePath();
   await fs.mkdir(path.dirname(target), { recursive: true });
   await fs.writeFile(target, JSON.stringify(stored, null, 2), "utf-8");
+  return savedAt;
 }
 
 async function loadAgentSettings(): Promise<AgentSettings> {
@@ -933,21 +952,26 @@ async function loadAgentSettings(): Promise<AgentSettings> {
 
   const data = isRecord(parsed) ? parsed : {};
   const settings = normalizeAgentSettings(data);
+  const savedAt = validTimestamp(data.savedAt)
+    ? data.savedAt
+    : await settingsFileSavedAt();
   if (data.envVarsEncrypted === true) {
-    return {
+    const loaded = {
       ...settings,
       envVars: decryptEnvVars(
         encryptedStringRecord(data.envVars),
         safeStorage,
       ),
     };
+    return savedAt === undefined ? loaded : { ...loaded, savedAt };
   }
 
   // Older releases wrote plaintext values. Keep them usable for this read,
   // then transparently migrate them when the OS keychain is available.
   if (safeStorage.isEncryptionAvailable()) {
     try {
-      await persistAgentSettings(settings);
+      const migratedAt = await persistAgentSettings(settings);
+      return { ...settings, savedAt: migratedAt };
     } catch (err) {
       console.warn(
         "[settings] Could not migrate legacy plaintext settings to secure storage.",
@@ -955,7 +979,7 @@ async function loadAgentSettings(): Promise<AgentSettings> {
       );
     }
   }
-  return settings;
+  return savedAt === undefined ? settings : { ...settings, savedAt };
 }
 
 ipcMain.handle("settings:get", async (): Promise<AgentSettings> => loadAgentSettings());

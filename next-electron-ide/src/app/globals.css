@@ -2481,6 +2481,17 @@ button:hover {
   margin-right: auto;
 }
 
+.settings-unsaved {
+  color: var(--nx-warn);
+  font-size: 12px;
+  margin-right: auto;
+}
+
+.settings-save:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
 .settings-loading {
   padding: 30px;
   color: var(--nx-muted);

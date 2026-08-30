@@ -15,7 +15,7 @@
  * choosing among the models you can actually use.
  */
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { AgentSettings, ModelHealth, ModelHealthState } from '../lib/electron-api';
 import { MODEL_REGISTRY, checkEligibility, PROVIDER_CONFIG, ProviderId } from '../../orchestrator/models';
 
@@ -44,25 +44,39 @@ const PROVIDER_HELP: Record<ProviderId, { url: string; hint: string }> = {
 
 export default function SettingsPanel({ onClose }: SettingsPanelProps) {
   const [settings, setSettings] = useState<AgentSettings | null>(null);
-  const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [dirty, setDirty] = useState(false);
+  const [lastSavedAt, setLastSavedAt] = useState<number | null>(null);
   const [tab, setTab] = useState<'models' | 'keys'>('models');
   const [health, setHealth] = useState<Record<string, ModelHealth>>({});
   const [checking, setChecking] = useState(false);
   const [lastChecked, setLastChecked] = useState<number | null>(null);
+  const changeVersion = useRef(0);
+
+  const loadSettings = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    setSettings(null);
+    setDirty(false);
+    setLastSavedAt(null);
+    try {
+      const s = await window.electronAPI?.settingsGet();
+      setSettings(
+        s ?? { envVars: {}, enabledModelIds: [], maxCostUsd: 0.5, maxSeconds: 2700 }
+      );
+      setLastSavedAt(s?.savedAt ?? null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not load settings.');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
 
   useEffect(() => {
-    (async () => {
-      try {
-        const s = await window.electronAPI?.settingsGet();
-        setSettings(
-          s ?? { envVars: {}, enabledModelIds: [], maxCostUsd: 0.5, maxSeconds: 2700 }
-        );
-      } catch (err) {
-        setError(err instanceof Error ? err.message : 'Could not load settings.');
-      }
-    })();
-  }, []);
+    void loadSettings();
+  }, [loadSettings]);
 
   const byProvider = useMemo(() => {
     const groups: Record<string, typeof MODEL_REGISTRY> = {};
@@ -123,6 +137,14 @@ export default function SettingsPanel({ onClose }: SettingsPanelProps) {
               <div className="settings-warning" role="alert">
                 {error}
               </div>
+              <footer className="settings-footer">
+                <button type="button" className="settings-cancel" onClick={onClose}>
+                  Close
+                </button>
+                <button type="button" className="settings-save" onClick={() => void loadSettings()} disabled={loading}>
+                  {loading ? 'Retrying…' : 'Retry'}
+                </button>
+              </footer>
             </>
           ) : <p className="settings-loading">Loading settings…</p>}
         </div>
@@ -132,7 +154,9 @@ export default function SettingsPanel({ onClose }: SettingsPanelProps) {
 
   const update = (patch: Partial<AgentSettings>) => {
     setSettings({ ...settings, ...patch });
-    setSaved(false);
+    changeVersion.current += 1;
+    setDirty(true);
+    setError(null);
   };
 
   const toggleModel = (id: string) => {
@@ -147,16 +171,26 @@ export default function SettingsPanel({ onClose }: SettingsPanelProps) {
   };
 
   const save = async () => {
+    if (saving || !dirty) return;
+    const versionAtStart = changeVersion.current;
     setError(null);
+    setSaving(true);
     try {
       const didSave = await window.electronAPI?.settingsSet(settings);
       if (didSave !== true) throw new Error('Settings could not be saved.');
-      setSaved(true);
-      setTimeout(() => setSaved(false), 2000);
+      const savedAt = Date.now();
+      setLastSavedAt(savedAt);
+      setSettings((current) => current ? { ...current, savedAt } : current);
+      if (changeVersion.current === versionAtStart) setDirty(false);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Settings could not be saved.');
+    } finally {
+      setSaving(false);
     }
   };
+
+  const formatSavedAt = (timestamp: number) =>
+    new Intl.DateTimeFormat(undefined, { dateStyle: 'short', timeStyle: 'short' }).format(timestamp);
 
   const enabledCount = settings.enabledModelIds.length;
   const missingKeys = (Object.keys(byProvider) as ProviderId[]).filter((p) => {
@@ -370,12 +404,16 @@ export default function SettingsPanel({ onClose }: SettingsPanelProps) {
         </div>
 
         <footer className="settings-footer">
-          {saved && <span className="settings-saved">Saved</span>}
+          {dirty ? (
+            <span className="settings-unsaved">Unsaved changes</span>
+          ) : lastSavedAt ? (
+            <span className="settings-saved">Last saved {formatSavedAt(lastSavedAt)}</span>
+          ) : null}
           <button type="button" className="settings-cancel" onClick={onClose}>
             Close
           </button>
-          <button type="button" className="settings-save" onClick={save}>
-            Save
+          <button type="button" className="settings-save" onClick={() => void save()} disabled={saving || !dirty}>
+            {saving ? 'Saving…' : 'Save'}
           </button>
         </footer>
       </div>
