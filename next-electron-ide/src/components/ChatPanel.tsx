@@ -202,6 +202,16 @@ export default function ChatPanel({
         }
         break;
       }
+      case 'replan':
+        pushLocal({
+          id: nextId(),
+          kind: 'system',
+          text:
+            `↻ Re-planned: ${e.diagnosis} → ${(e.replacements ?? [])
+              .map((s: any, i: number) => `${i + 1}. ${s.title}`)
+              .join('  ')}` + ` (${e.replansRemaining} re-plan${e.replansRemaining === 1 ? '' : 's'} left)`,
+        });
+        break;
       case 'subtask_started':
         pushLocal({ id: nextId(), kind: 'system', text: `▸ ${e.title}${e.attempt > 1 ? ` (attempt ${e.attempt})` : ''}` });
         break;

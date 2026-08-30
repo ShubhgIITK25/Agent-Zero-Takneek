@@ -72,6 +72,8 @@ export type SubtaskView = {
   status: string;
   attempts: number;
   note?: string;
+  /** Set on a subtask a re-plan created: which subtask it replaced. */
+  replacedSubtaskId?: string;
 };
 
 export type Intervention = {
@@ -111,6 +113,8 @@ export type TraceView = {
   failureReason: string | null;
   planShortCircuited: boolean;
   subtasks: SubtaskView[];
+  /** One entry per mid-task re-plan: what was dropped and what replaced it. */
+  replans: { failedSubtaskId: string; diagnosis: string; replacementIds: string[] }[];
   nodes: TraceNode[];
   interventions: Intervention[];
   compactions: CompactionRecord[];
@@ -138,6 +142,7 @@ export function emptyTrace(): TraceView {
     failureReason: null,
     planShortCircuited: false,
     subtasks: [],
+    replans: [],
     nodes: [],
     interventions: [],
     compactions: [],
@@ -160,6 +165,7 @@ export function applyEvent(view: TraceView, e: TraceEvent): TraceView {
   const v: TraceView = {
     ...view,
     subtasks: [...view.subtasks],
+    replans: [...(view.replans ?? [])],
     nodes: [...view.nodes],
     interventions: [...view.interventions],
     compactions: [...view.compactions],
@@ -196,6 +202,44 @@ export function applyEvent(view: TraceView, e: TraceEvent): TraceView {
       }));
       v.planShortCircuited = !!e.shortCircuited;
       break;
+
+    /**
+     * A re-plan swapped one subtask for a different decomposition. The
+     * replacements are INSERTED after the subtask they replace rather than
+     * replacing the whole list, so the plan reads in execution order and the
+     * subtask that was dropped stays visible with its trace — "what we tried
+     * and abandoned" is exactly what a reviewer needs to see.
+     */
+    case "replan": {
+      const at = v.subtasks.findIndex((x) => x.id === e.failedSubtaskId);
+      const additions: SubtaskView[] = (e.replacements ?? []).map((s: any) => ({
+        id: s.id,
+        title: s.title,
+        detail: s.detail,
+        category: s.category,
+        dependsOn: s.dependsOn ?? [],
+        status: s.status ?? "pending",
+        attempts: s.attempts ?? 0,
+        replacedSubtaskId: e.failedSubtaskId,
+      }));
+      // Re-point dependents at the last replacement, mirroring what the
+      // orchestrator did to the real DAG, so the rendered graph is not a
+      // second, diverging story about the same run.
+      const lastId = additions.length ? additions[additions.length - 1].id : null;
+      if (lastId) {
+        v.subtasks = v.subtasks.map((s) =>
+          s.dependsOn.includes(e.failedSubtaskId)
+            ? { ...s, dependsOn: s.dependsOn.map((d) => (d === e.failedSubtaskId ? lastId : d)) }
+            : s
+        );
+      }
+      v.subtasks.splice(at < 0 ? v.subtasks.length : at + 1, 0, ...additions);
+      v.replans = [
+        ...(v.replans ?? []),
+        { failedSubtaskId: e.failedSubtaskId, diagnosis: e.diagnosis, replacementIds: additions.map((a) => a.id) },
+      ];
+      break;
+    }
 
     case "subtask_started": {
       const s = v.subtasks.find((x) => x.id === e.subtaskId);

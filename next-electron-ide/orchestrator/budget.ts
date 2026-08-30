@@ -94,6 +94,26 @@ export class Budget {
     return this.costRemaining <= 0 || this.timeRemaining <= 0;
   }
 
+  /**
+   * How much of each spendable ceiling is still in hand, as 0..1.
+   *
+   * `canAfford` answers "can I pay for this one call", which is the wrong
+   * question for a decision that commits to a whole extra round of work. The
+   * re-planner uses this instead: replanning buys a planner call PLUS two or
+   * three fresh subtask executions, so it is only worth starting while a
+   * meaningful share of BOTH ceilings remains. Starting a re-plan at 90% spent
+   * reliably converts a partial result into a ceiling breach, which scores
+   * zero — strictly worse than accepting the failed subtask.
+   */
+  get fractionRemaining(): { cost: number; time: number } {
+    const spendableCost = this.maxCostUsd * (1 - COST_RESERVE);
+    const spendableTime = this.maxSeconds * (1 - TIME_RESERVE);
+    return {
+      cost: spendableCost > 0 ? this.costRemaining / spendableCost : 0,
+      time: spendableTime > 0 ? this.timeRemaining / spendableTime : 0,
+    };
+  }
+
   snapshot(): BudgetSnapshot {
     return {
       costUsd: this.cost,

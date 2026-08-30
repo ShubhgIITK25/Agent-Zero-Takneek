@@ -36,6 +36,24 @@ Every task goes through the same pipeline, checkpointed after each step so a tas
    The rollback is the part that matters. Without it, attempt 2 starts from a tree the verifier has already rejected and attempt 3 compounds it — and when the retries run out, the union of every broken attempt is left on disk under a subtask marked `failed`, with its dependents blocked so nothing downstream ever cleans up. The undo point is captured lazily: the first time a subtask writes to a file, that file's prior content is stashed (creating a file records "did not exist", so undoing it is a delete). Restoring costs one write per touched file and needs no VCS — deliberately *not* `git stash`/`git checkout .`, because the project root isn't guaranteed to be a repo, and an agent reaching into the user's index to undo its own mistake is a worse failure than the one it's fixing.
 
    Rollback fires on all four terminal failures: verification failed with retries left, retries exhausted, the agent reported `BLOCKED`, and no model available. It never fires on a pass — verified work drops its undo point immediately, so no later failure can reach back and revert a subtask that succeeded. Because a rollback can undo edits **you approved by hand**, it's always reported as a `workspace_restored` intervention naming every file, and the retry prompt explicitly tells the model its edits were reverted (otherwise it assumes they survived and writes half a fix).
+
+6. **Re-plan, bounded** — when a subtask has spent *every* retry, the system stops retrying and changes the plan instead.
+
+   The retry ladder has already re-run that subtask on a stronger model with the verifier's complaint fed back in. If three of those failed, the model isn't the problem — **the subtask is**, and a fourth retry is precisely the "blindly retrying the same action" the PS penalises. So a re-planner is asked to *diagnose* the failure and either decompose the subtask into 2–3 genuinely different steps, or say it's impossible. `abandon` is a first-class answer: a re-planner that always produces a new decomposition is one that spends the remaining budget rewording the same impossible subtask.
+
+   The replaced subtask becomes `replaced` — a status distinct from `failed` on purpose, because the work is still being attempted under new ids, and counting it as incomplete would make a *successful* re-plan report failure. Anything that depended on it is rewired to the last replacement; without that rewire the dependents wait forever on an id that can never be `done`.
+
+   **Every bound is a hard stop, checked before the planner call so a disallowed re-plan costs nothing:**
+
+   | Bound | Value | Why |
+   |---|---|---|
+   | Re-plans per task | 2 | Whole-task budget, not per-subtask — stops a struggling task rewriting its own plan indefinitely |
+   | Re-plan depth | 1 | Only original subtasks may be re-planned. A replacement that fails is simply failed — no recursive tree of re-plans |
+   | Replacements per re-plan | 3 | Caps how far one re-plan can widen the DAG |
+   | Cost remaining | ≥25% | A re-plan buys a planner call **plus** a fresh round of subtask work |
+   | Time remaining | ≥20% | Same |
+
+   The budget gates use `fractionRemaining`, not `canAfford` — `canAfford` answers "can I pay for this one call", which is the wrong question for a decision that commits to a whole extra round of work. Starting a re-plan at 90% spent reliably converts a partial result into a **ceiling breach, which scores zero** — strictly worse than accepting one failed subtask. Every refusal emits a `replan_declined` intervention naming which bound stopped it, so "we could have re-planned but didn't" is never silent.
 6. **Aggregate** — once every subtask has resolved to `done`, `failed`, or `skipped`, results are summarized back to the user.
 
 A task only ends in `done` if **every** subtask ended `done`. Any subtask left `failed` (retries exhausted) or `skipped` (its dependency failed) makes the whole task end `failed`, with the specific subtask(s) and reasons named in the failure message — a partially-successful run is never reported as a plain success.
@@ -134,7 +152,7 @@ Routing decisions surface in two places from the one `routing_decision` event: t
 npm test
 ```
 
-Runs, in order: `model-health.js` (the settings-screen provider probe, with `fetch` stubbed so all five health states are pinned deterministically and offline), `unit.js` (router scoring, budget math, diff/compaction unit tests), `ignore.js`, `review-buffer.js`, `task-completion.js` (an end-to-end regression test through the real `TaskRunner`, with the model boundary mocked, proving a task with any non-`done` subtask ends `failed` — not `done` — and emits `task_failed` with the specific subtask(s) named), `backtrack.js` (same harness over a real temp project: every attempt fails verification, and the workspace must end byte-identical to how it started — an overwritten file restored, a created file deleted), `protocol.js` (JSON-RPC message round-trip tests), and `resume.js` (crash recovery from a hand-crafted checkpoint).
+Runs, in order: `model-health.js` (the settings-screen provider probe, with `fetch` stubbed so all five health states are pinned deterministically and offline), `unit.js` (router scoring, budget math, diff/compaction unit tests), `ignore.js`, `review-buffer.js`, `task-completion.js` (an end-to-end regression test through the real `TaskRunner`, with the model boundary mocked, proving a task with any non-`done` subtask ends `failed` — not `done` — and emits `task_failed` with the specific subtask(s) named), `backtrack.js` (same harness over a real temp project: every attempt fails verification, and the workspace must end byte-identical to how it started — an overwritten file restored, a created file deleted), `replan.js` (four scenarios through the real scheduler: a decomposed subtask recovers and the task still reports `done`; a failing replacement is *not* re-planned again; an abandoning re-planner leaves the failure standing; dependents are rewired to the replacements instead of deadlocking), `protocol.js` (JSON-RPC message round-trip tests), and `resume.js` (crash recovery from a hand-crafted checkpoint).
 
 `npm run typecheck` runs all three `tsconfig.json`s (root, `electron/`, `orchestrator/`) with `--noEmit`.
 

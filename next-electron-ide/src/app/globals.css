@@ -1809,6 +1809,21 @@ button:hover {
   color: var(--nx-muted);
 }
 
+/* `replaced` is not a failure — a re-plan swapped this subtask for a different
+   decomposition, and those replacements are elsewhere in the same list. Given
+   its own colour so it reads as "superseded", not "broken". */
+.dash-substatus-replaced {
+  background: rgba(197, 134, 192, 0.15);
+  color: #c586c0;
+}
+
+/* Marks the replacements a re-plan produced, so the swap is visible in the
+   plan itself rather than only in the interventions feed. */
+.dash-badge-replan {
+  background: rgba(197, 134, 192, 0.15);
+  color: #c586c0;
+}
+
 .dash-node {
   border: 1px solid var(--nx-border);
   border-radius: 3px;

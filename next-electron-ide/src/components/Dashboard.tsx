@@ -408,6 +408,14 @@ export default function Dashboard({ live, onClose }: DashboardProps) {
                         {g.subtask.attempts > 1 && (
                           <span className="dash-badge dash-badge-retry">attempt {g.subtask.attempts}</span>
                         )}
+                        {g.subtask.replacedSubtaskId && (
+                          <span
+                            className="dash-badge dash-badge-replan"
+                            title={`Created by a re-plan after ${g.subtask.replacedSubtaskId} failed every retry`}
+                          >
+                            re-plan of {g.subtask.replacedSubtaskId}
+                          </span>
+                        )}
                         {g.subtask.dependsOn.length > 0 && (
                           <span className="dash-muted">after {g.subtask.dependsOn.join(', ')}</span>
                         )}

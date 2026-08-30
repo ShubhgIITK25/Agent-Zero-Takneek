@@ -56,6 +56,35 @@ const MAX_STEPS_PER_SUBTASK = 12;
 const MAX_TOKENS_PER_SUBTASK = 60_000;
 const MAX_IDENTICAL_REPEATS = 3;
 
+// ---------------------------------------------------------------------------
+// Re-planning bounds
+// ---------------------------------------------------------------------------
+// Re-planning is the one mechanism here that can ADD work to a task that is
+// already going badly, so every one of these is a hard stop rather than a
+// heuristic. Together they bound the worst case at:
+//   2 re-plans x (1 planner call + 3 subtasks x 3 retries x 12 steps)
+// and the budget/time gates below cut it off long before that in practice.
+//
+// Why re-plan at all: the retry ladder already re-runs a subtask on a stronger
+// model with the verifier's complaint fed back in. If all three of those fail,
+// the model is not the problem — the subtask is. A fourth retry is exactly the
+// "blindly retrying the same action" the PS penalises; changing the plan is the
+// only remaining lever.
+
+/** Whole-task budget. A task gets this many re-plans total, not per subtask. */
+const MAX_REPLANS_PER_TASK = 2;
+/** Only original (depth-0) subtasks may be re-planned, so replacements that
+ *  fail are simply failed — no recursive tree of re-plans. */
+const MAX_REPLAN_DEPTH = 1;
+/** Cap on how far one re-plan may widen the DAG. */
+const MAX_REPLACEMENTS_PER_REPLAN = 3;
+/** Do not START a re-plan unless this share of each ceiling is still in hand.
+ *  A re-plan buys a planner call plus a fresh round of subtask work; beginning
+ *  one at 90% spent reliably converts a partial result into a ceiling breach,
+ *  and a breach scores zero — strictly worse than accepting the failure. */
+const REPLAN_MIN_COST_FRACTION = 0.25;
+const REPLAN_MIN_TIME_FRACTION = 0.2;
+
 export type Emit = (body: EventBody) => void;
 
 let nodeCounter = 0;
@@ -90,6 +119,8 @@ export class TaskRunner {
   private backtrack = new Map<string, { content: string | null; wasTracked: boolean }>();
   /** Which subtask `backtrack` currently belongs to. */
   private backtrackOwner: string | null = null;
+  /** Re-plans spent on this task. Bounded by MAX_REPLANS_PER_TASK. */
+  private replansUsed = 0;
   /** .nexideignore / .ignore — loaded once per task, not re-read on every tool call. */
   private ignore: ReturnType<typeof loadIgnoreMatcher>;
 
@@ -480,12 +511,18 @@ export class TaskRunner {
       }
 
       // Terminal by construction: the scheduling loop above only exits once
-      // every subtask is 'done', 'failed', or 'skipped' (a 'blocked' subtask
-      // is converted to 'skipped' as soon as it is selected). So "did the
-      // task actually succeed" is exactly "did every subtask end 'done'" —
+      // every subtask is 'done', 'failed', 'skipped' or 'replaced' (a 'blocked'
+      // subtask is converted to 'skipped' as soon as it is selected). So "did
+      // the task actually succeed" is exactly "did every subtask end 'done'" —
       // a failed subtask, or one skipped because its dependency failed, both
       // mean the task did NOT complete, even if most subtasks passed.
-      const incomplete = this.snapshot.subtasks.filter((s) => s.status !== 'done');
+      //
+      // 'replaced' is the one exception, and it is not a loophole: it means the
+      // re-planner swapped that subtask for a different decomposition, and
+      // those replacements are themselves in this list and must each end
+      // 'done'. Counting the replaced original as incomplete would make a
+      // SUCCESSFUL re-plan report failure.
+      const incomplete = this.snapshot.subtasks.filter((s) => s.status !== 'done' && s.status !== 'replaced');
       const summary = await this.aggregate();
       this.snapshot.summary = summary;
 
@@ -707,6 +744,10 @@ export class TaskRunner {
           continue;
         }
         await this.restoreBacktrackPoint(subtask, 'The agent reported it was blocked and retries are exhausted.');
+        // Roll back FIRST, then re-plan: the replacements must start from the
+        // same tree the original subtask started from, and the re-planner is
+        // told that is the case.
+        if (await this.tryReplan(subtask, `Agent reported BLOCKED: ${outcome.claim}`)) return;
         subtask.status = 'failed';
         this.emit({ type: 'subtask_finished', subtaskId: subtask.id, status: 'failed', note: outcome.claim });
         this.blockDependents(subtask.id);
@@ -809,6 +850,16 @@ export class TaskRunner {
         subtask,
         `All ${MAX_RETRIES_PER_SUBTASK} attempts failed verification.`
       );
+
+      // Last resort before declaring failure: the retry ladder has already
+      // re-run this on a stronger model with the verifier's complaint fed in.
+      // If that failed three times the subtask itself is the problem, so ask
+      // the re-planner whether a different decomposition would work. Bounded —
+      // see tryReplan.
+      if (await this.tryReplan(subtask, `Verification failed ${subtask.attempts}x. Last reason: ${verdict.reason}`)) {
+        return;
+      }
+
       subtask.status = 'failed';
       this.emit({
         type: 'intervention',
@@ -821,6 +872,150 @@ export class TaskRunner {
       this.blockDependents(subtask.id);
       return;
     }
+  }
+
+  /**
+   * BOUNDED MID-TASK RE-PLANNING.
+   *
+   * Called once, when a subtask has spent every retry it was allowed and is
+   * about to be marked `failed`. Returns true if the subtask was replaced with
+   * a different decomposition (the caller must then NOT mark it failed and must
+   * NOT block its dependents), false if the original failure stands.
+   *
+   * The bounds are all checked BEFORE the planner call, so a re-plan that is
+   * not allowed costs nothing. Every refusal is emitted as a `replan_declined`
+   * intervention naming which bound stopped it — a silent "we could have
+   * re-planned but didn't" is exactly the kind of invisible decision this
+   * system is built to avoid.
+   */
+  private async tryReplan(subtask: Subtask, failureReason: string): Promise<boolean> {
+    const decline = (detail: string, action: string): false => {
+      this.emit({ type: 'intervention', subtaskId: subtask.id, cause: 'replan_declined', detail, action });
+      return false;
+    };
+
+    // ---- bounds, cheapest first ------------------------------------------
+    if (this.cancelled || this.ceilingBreached()) return false;
+
+    if ((subtask.replanDepth ?? 0) >= MAX_REPLAN_DEPTH) {
+      return decline(
+        `"${subtask.title}" is itself the product of a re-plan, and re-plans do not nest.`,
+        'Accepting the failure instead of re-planning a re-plan.'
+      );
+    }
+    if (this.replansUsed >= MAX_REPLANS_PER_TASK) {
+      return decline(
+        `Both re-plans for this task are already spent (limit ${MAX_REPLANS_PER_TASK}).`,
+        'Accepting the failure — further re-planning is capped to stop a task rewriting its own plan indefinitely.'
+      );
+    }
+
+    const frac = this.budget.fractionRemaining;
+    if (frac.cost < REPLAN_MIN_COST_FRACTION || frac.time < REPLAN_MIN_TIME_FRACTION) {
+      return decline(
+        `Only ${(frac.cost * 100).toFixed(0)}% of the cost ceiling and ${(frac.time * 100).toFixed(0)}% of the time ceiling remain.`,
+        `Re-planning needs at least ${REPLAN_MIN_COST_FRACTION * 100}% / ${REPLAN_MIN_TIME_FRACTION * 100}% in hand — a breach scores zero, which is worse than one failed subtask.`
+      );
+    }
+
+    // ---- ask ---------------------------------------------------------------
+    const completed = this.snapshot.subtasks.filter((s) => s.status === 'done');
+    const messages = agents.replannerMessages(
+      this.snapshot.pinnedFacts[0] ?? this.prompt,
+      subtask,
+      failureReason,
+      completed,
+      [...this.changedFiles],
+      MAX_REPLACEMENTS_PER_REPLAN
+    );
+
+    const res = await this.dispatch({
+      role: 'planner',
+      subtaskId: subtask.id,
+      parentId: null,
+      messages,
+      tools: [],
+      signals: {
+        category: 'analysis',
+        estimatedContextTokens: estimateMessageTokens(messages),
+        budgetRemaining: this.budget.costRemaining,
+        timeRemaining: this.budget.timeRemaining,
+        // Force escalation, same reasoning as the tie-break: deciding that a
+        // plan is wrong is a harder judgement than executing it, and the cheap
+        // model that just failed three times is not the one to make it.
+        attemptNumber: 2,
+        cooldownProviders: this.rateLimits.cooldownList(),
+      },
+    });
+    if (!res) return decline('No model was available to re-plan.', 'Accepting the original failure.');
+
+    const plan = agents.parseReplan(res.text, MAX_REPLACEMENTS_PER_REPLAN);
+    this.replansUsed++; // the call is spent either way — count it, or a stream
+                        // of abandons could bypass MAX_REPLANS_PER_TASK.
+
+    if (plan.abandon) {
+      return decline(
+        `Re-planner diagnosis: ${plan.diagnosis} — ${plan.reason}`,
+        'It judged no decomposition would help, so the subtask stays failed rather than burning budget on a reworded retry.'
+      );
+    }
+
+    // ---- splice the new subtasks into the DAG -----------------------------
+    const replacements: Subtask[] = plan.subtasks.map((s, i) => ({
+      id: `${subtask.id}r${i + 1}`,
+      title: s.title,
+      detail: s.detail,
+      category: s.category,
+      // The first replacement inherits the failed subtask's prerequisites (all
+      // already `done`, which is why it ran at all); the rest chain after their
+      // predecessor. Chaining forward-only keeps the DAG acyclic by
+      // construction rather than by validation.
+      dependsOn: i === 0 ? [...subtask.dependsOn] : [`${subtask.id}r${i}`],
+      status: 'pending',
+      attempts: 0,
+      costSpent: 0,
+      tokensSpent: 0,
+      replanDepth: (subtask.replanDepth ?? 0) + 1,
+      replacedSubtaskId: subtask.id,
+    }));
+    const lastId = replacements[replacements.length - 1].id;
+
+    // Anything that depended on the failed subtask now depends on the LAST
+    // replacement. Without this rewire the dependents stay waiting on an id
+    // that can never be `done`, and the deadlock detector would skip them —
+    // turning a successful re-plan into a task that still fails.
+    for (const s of this.snapshot.subtasks) {
+      if (s.dependsOn.includes(subtask.id)) {
+        s.dependsOn = s.dependsOn.map((d) => (d === subtask.id ? lastId : d));
+      }
+    }
+
+    // `replaced`, not `failed`: the work is still being attempted under new
+    // ids, so this must not count against task completion. It stays in the
+    // list, with its trace, so the dashboard shows what was tried and dropped.
+    subtask.status = 'replaced';
+    subtask.lastError = failureReason;
+
+    const at = this.snapshot.subtasks.findIndex((s) => s.id === subtask.id);
+    this.snapshot.subtasks.splice(at + 1, 0, ...replacements);
+
+    this.emit({
+      type: 'intervention',
+      subtaskId: subtask.id,
+      cause: 'replan',
+      detail: `"${subtask.title}" failed ${subtask.attempts} attempts. Diagnosis: ${plan.diagnosis}`,
+      action: `Replaced it with ${replacements.length} subtask(s): ${replacements.map((r) => r.title).join('; ')}.`,
+    });
+    this.emit({ type: 'subtask_finished', subtaskId: subtask.id, status: 'replaced', note: plan.diagnosis });
+    this.emit({
+      type: 'replan',
+      failedSubtaskId: subtask.id,
+      diagnosis: plan.diagnosis,
+      replacements,
+      replansRemaining: MAX_REPLANS_PER_TASK - this.replansUsed,
+    });
+    this.checkpoint();
+    return true;
   }
 
   /**
@@ -856,7 +1051,7 @@ export class TaskRunner {
    * scheduler has already exhausted everything whose dependencies are `done` —
    * so mark them `skipped` with a diagnosis of why. */
   private resolveDeadlockedSubtasks(): void {
-    const terminal = new Set(['done', 'failed', 'skipped']);
+    const terminal = new Set(['done', 'failed', 'skipped', 'replaced']);
     const stranded = this.snapshot.subtasks.filter((s) => !terminal.has(s.status));
     if (!stranded.length) return;
 

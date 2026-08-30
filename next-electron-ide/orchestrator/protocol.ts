@@ -32,7 +32,22 @@
 
 export type AgentRole = 'planner' | 'implementer' | 'verifier' | 'tiebreak' | 'compactor' | 'isolated';
 
-export type SubtaskStatus = 'pending' | 'running' | 'blocked' | 'verifying' | 'done' | 'failed' | 'skipped';
+/**
+ * `replaced` is distinct from `failed` on purpose. It means the re-planner
+ * decided this subtask was badly scoped and swapped it for a different
+ * decomposition — the work it represented is still being attempted, just under
+ * new ids. So it is terminal for the scheduler but must NOT make the task fail,
+ * which is the one thing `failed` and `skipped` both do.
+ */
+export type SubtaskStatus =
+  | 'pending'
+  | 'running'
+  | 'blocked'
+  | 'verifying'
+  | 'done'
+  | 'failed'
+  | 'skipped'
+  | 'replaced';
 
 export type Subtask = {
   id: string;
@@ -47,6 +62,15 @@ export type Subtask = {
   costSpent: number;
   tokensSpent: number;
   lastError?: string;
+  /**
+   * 0 for subtasks the original planner produced; 1 for subtasks a re-plan
+   * produced. This is the bound that stops re-planning from recursing: only
+   * depth-0 subtasks may be re-planned, so a replacement that also fails is
+   * simply failed, never re-planned again.
+   */
+  replanDepth?: number;
+  /** Set on a replacement: which subtask it was created to replace. */
+  replacedSubtaskId?: string;
 };
 
 export type RoutingSignals = {
@@ -140,6 +164,8 @@ export type EventBody =
   | { type: 'task_failed'; reason: string }
   | { type: 'task_cancelled' }
   | { type: 'plan_created'; subtasks: Subtask[]; shortCircuited: boolean }
+  /** A subtask exhausted its retries and was replaced by a different decomposition. */
+  | { type: 'replan'; failedSubtaskId: string; diagnosis: string; replacements: Subtask[]; replansRemaining: number }
   | { type: 'subtask_started'; subtaskId: string; title: string; attempt: number }
   | { type: 'subtask_finished'; subtaskId: string; status: SubtaskStatus; note?: string }
   /** Emitted the instant the router decides — never reconstructed after the fact. */
@@ -156,7 +182,7 @@ export type EventBody =
   | { type: 'compaction'; nodeId: string | null; beforeTokens: number; afterTokens: number; summarized: number; preserved: string[] }
   | { type: 'budget_update'; costUsd: number; elapsedSeconds: number; maxCostUsd: number; maxSeconds: number; promptTokens: number; completionTokens: number }
   /** A cap fired or two agents disagreed. Always surfaced, never silent. */
-  | { type: 'intervention'; subtaskId: string | null; cause: 'retry_cap' | 'step_cap' | 'token_cap' | 'cost_ceiling' | 'time_ceiling' | 'identical_repeat' | 'disagreement' | 'provider_failover' | 'resume_rollback' | 'dependency_deadlock' | 'workspace_restored'; detail: string; action: string }
+  | { type: 'intervention'; subtaskId: string | null; cause: 'retry_cap' | 'step_cap' | 'token_cap' | 'cost_ceiling' | 'time_ceiling' | 'identical_repeat' | 'disagreement' | 'provider_failover' | 'resume_rollback' | 'dependency_deadlock' | 'workspace_restored' | 'replan' | 'replan_declined'; detail: string; action: string }
   | { type: 'checkpoint'; step: number; subtaskStates: { id: string; status: SubtaskStatus }[] }
   | { type: 'resumed'; fromStep: number; note: string }
   | { type: 'isolated_answer'; requestId: string; answer: string }

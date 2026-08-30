@@ -166,6 +166,114 @@ export function parsePlan(text: string, fallbackPrompt: string): Plan {
 }
 
 // ---------------------------------------------------------------------------
+// Re-planner
+// ---------------------------------------------------------------------------
+
+/**
+ * Asked exactly once per failed subtask, after every retry is spent.
+ *
+ * WHY A SEPARATE ROLE AND NOT JUST ANOTHER RETRY. The retry ladder already
+ * re-runs the same subtask on a stronger model with the verifier's complaint
+ * fed back in. If three of those failed, the thing that is wrong is not the
+ * model — it is the subtask. Retrying a fourth time is the "blindly retrying
+ * the same action" the PS explicitly penalises. This call changes the PLAN,
+ * which is the only lever left.
+ *
+ * WHY IT IS ALLOWED TO SAY NO. A re-planner that always produces a new
+ * decomposition is a re-planner that spends the remaining budget dressing the
+ * same impossible subtask in new words. Making `abandon` a first-class answer,
+ * and asking for a diagnosis before a decomposition, is what makes the output
+ * a diagnosis rather than a paraphrase.
+ */
+export function replannerMessages(
+  goal: string,
+  failed: Subtask,
+  failureReason: string,
+  completed: Subtask[],
+  changedFiles: string[],
+  maxReplacements: number
+): ChatMessage[] {
+  return [
+    {
+      role: 'system',
+      content:
+        'You are the re-planner in a multi-agent coding system. One subtask has failed every retry it was ' +
+        'allowed. Decide WHY, then decide what to do about it.\n\n' +
+        'It failed for one of two reasons:\n' +
+        '1. It was badly scoped — too large for one agent, ambiguous, or it assumed something that was never ' +
+        'established. This is fixable: replace it with smaller subtasks that route around the specific failure.\n' +
+        '2. It is genuinely not achievable — a dependency that cannot be installed, a file that does not exist, ' +
+        'a contradiction in the request. This is not fixable, and pretending otherwise wastes the budget the ' +
+        'remaining subtasks need.\n\n' +
+        'Rules:\n' +
+        `- At most ${maxReplacements} replacement subtasks. Fewer is better; each one costs a full round-trip.\n` +
+        '- Do NOT restate the failed subtask in different words. That exact work already failed every attempt. ' +
+        'If you cannot decompose it into genuinely different steps, abandon it instead.\n' +
+        '- Do not redo work listed as already completed.\n' +
+        '- Each replacement must be independently checkable — state what "done" looks like.\n' +
+        '- Replacements run in the order you give them, each after the previous one.\n\n' +
+        'Reply with ONLY one of these two JSON shapes:\n' +
+        '{"abandon":false,"diagnosis":"one sentence on why it really failed",' +
+        '"subtasks":[{"title":"short","detail":"what to do and what done looks like","category":"codegen"}]}\n' +
+        '{"abandon":true,"diagnosis":"one sentence on why it really failed","reason":"why no decomposition helps"}',
+    },
+    {
+      role: 'user',
+      content:
+        `Overall goal: ${goal}\n\n` +
+        `FAILED SUBTASK (${failed.attempts} attempts, all failed):\n${failed.title}\n${failed.detail}\n\n` +
+        `Why it failed: ${failureReason}\n\n` +
+        `Already completed (do not redo):\n${
+          completed.length ? completed.map((s) => `- ${s.title}`).join('\n') : '- (nothing yet)'
+        }\n\n` +
+        `Files touched so far: ${changedFiles.join(', ') || '(none)'}\n\n` +
+        'Note: any edits the failed subtask made have already been rolled back. The repository is in the state ' +
+        'it was in before that subtask started.',
+    },
+  ];
+}
+
+export type ReplanResult =
+  | { abandon: true; diagnosis: string; reason: string }
+  | { abandon: false; diagnosis: string; subtasks: { title: string; detail: string; category: Subtask['category'] }[] };
+
+/**
+ * Parses the re-planner reply. Unparseable output abandons rather than
+ * inventing a decomposition: a re-plan built from a hallucinated parse would
+ * spend real budget on subtasks nobody asked for, whereas abandoning simply
+ * leaves the original failure standing, which is the honest outcome.
+ */
+export function parseReplan(text: string, maxReplacements: number): ReplanResult {
+  const parsed = extractJson(text);
+  const diagnosis = String(parsed?.diagnosis ?? '').slice(0, 400) || 'No diagnosis given.';
+
+  if (!parsed || parsed.abandon === true) {
+    return {
+      abandon: true,
+      diagnosis,
+      reason: String(parsed?.reason ?? (parsed ? 'Re-planner chose to abandon.' : 'Re-planner reply was not parseable JSON.')).slice(0, 400),
+    };
+  }
+
+  const raw = Array.isArray(parsed.subtasks) ? parsed.subtasks : [];
+  const subtasks = raw
+    .filter((s: any) => s && (typeof s.title === 'string' || typeof s.detail === 'string'))
+    .slice(0, maxReplacements)
+    .map((s: any) => ({
+      title: String(s.title ?? 'Step').slice(0, 120),
+      detail: String(s.detail ?? s.title ?? '').slice(0, 2000),
+      category: (['analysis', 'codegen', 'simple_edit', 'verification'].includes(s.category)
+        ? s.category
+        : 'codegen') as Subtask['category'],
+    }));
+
+  if (subtasks.length === 0) {
+    return { abandon: true, diagnosis, reason: 'Re-planner returned no usable replacement subtasks.' };
+  }
+  return { abandon: false, diagnosis, subtasks };
+}
+
+// ---------------------------------------------------------------------------
 // Implementer
 // ---------------------------------------------------------------------------
 
