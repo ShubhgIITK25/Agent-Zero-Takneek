@@ -28,8 +28,8 @@ export type BudgetSnapshot = {
 };
 
 /** Keep this much of each ceiling in hand for the wrap-up call. */
-const COST_RESERVE = 0.08; // 8%
-const TIME_RESERVE = 0.06; // 6%
+const COST_RESERVE = 0.12; // 12%
+const TIME_RESERVE = 0.10; // 10%
 
 export class Budget {
   private startedAt: number;

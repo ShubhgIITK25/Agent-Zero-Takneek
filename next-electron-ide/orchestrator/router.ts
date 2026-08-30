@@ -189,7 +189,7 @@ const CATEGORY_TO_CAPABILITY: Record<Subtask['category'], ModelEntry['good_at'][
 };
 
 /** Assume a completion roughly this size when pre-costing a call. */
-const ASSUMED_COMPLETION_TOKENS = 800;
+const ASSUMED_COMPLETION_TOKENS = 600;
 
 /**
  * How hard a model's published quality index counts, per category.
