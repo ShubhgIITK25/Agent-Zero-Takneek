@@ -188,8 +188,10 @@ const CATEGORY_TO_CAPABILITY: Record<Subtask['category'], ModelEntry['good_at'][
   verification: 'verification',
 };
 
-/** Assume a completion roughly this size when pre-costing a call. */
-const ASSUMED_COMPLETION_TOKENS = 600;
+/** Assume a completion roughly this size when pre-costing a call. Exported so
+ *  the orchestrator's pre-dispatch budget gate costs a call the same way the
+ *  router does — one estimate, not two that can drift apart. */
+export const ASSUMED_COMPLETION_TOKENS = 600;
 
 /**
  * How hard a model's published quality index counts, per category.

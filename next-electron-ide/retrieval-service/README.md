@@ -17,15 +17,21 @@ pip install -r requirements.txt
 
 That's it — `npm run dev` spawns `server.py` automatically once the
 dependencies are installed (see `startRetrievalService()` in
-`electron/main.ts`). It looks for `python3` (`python` on Windows) on
-`PATH`; override with the `NEXIDE_PYTHON` env var if your interpreter is
-named differently or lives in a venv you want main.ts to use directly
-(point it at `retrieval-service/.venv/bin/python`).
+`electron/main.ts`). Interpreter resolution
+(`electron/python-interpreter.ts`) tries, in order: `$NEXIDE_PYTHON`, then
+this `.venv`, then an activated `$VIRTUAL_ENV`, then `python3` (`python`
+on Windows) on `PATH`. So a `.venv` created at `retrieval-service/.venv`
+is picked up with no configuration; set `NEXIDE_PYTHON` only if your
+interpreter lives elsewhere.
 
 If the service fails to start, the status bar shows "retrieval
-unavailable" instead of the app crashing — check the Electron devtools
-console for the `[retrieval-service]`/`[retrieval]` log lines; the most
-common cause is a missing interpreter or unmet dependency.
+unavailable" instead of the app crashing. If it starts but on a Python
+without the dependencies, it runs **degraded** (BM25 over line-window
+chunks, no vector search or reranking) — the startup log says `DEGRADED —
+missing: …` and the status bar reads `keyword-only`, and `GET /health`
+reports `embeddings` / `sqlite_vec` / `ast_chunking` booleans plus the
+`python` path in use. Check the Electron devtools console for the
+`[retrieval-service]` / `[retrieval]` log lines.
 
 **First run downloads two small ONNX models** (the embedder and reranker,
 ~35MB and ~25MB respectively) from Hugging Face via `fastembed`, then
@@ -122,7 +128,7 @@ All requests are `POST` with a JSON body (except `/health`).
 
 | Endpoint   | Body                                                          | Use                                        |
 |------------|----------------------------------------------------------------|---------------------------------------------|
-| `/health`  | (GET, no body)                                                 | readiness check                              |
+| `/health`  | (GET, no body)                                                 | readiness + `{embeddings, sqlite_vec, ast_chunking, reranker, python}` capability flags |
 | `/index`   | `{root_path, codebase_id?}`                                     | full index build (first open of a project)   |
 | `/update`  | `{root_path, codebase_id, changed_paths}`                       | incremental reindex (file watcher-driven)    |
 | `/query`   | `{codebase_id, query, k?}`                                      | `retrieve_context` tool backing              |

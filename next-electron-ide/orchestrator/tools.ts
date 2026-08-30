@@ -422,6 +422,21 @@ export const TOOLS: Tool[] = [
         return { content: `"git ${sub}" changes repository state. Use run_command (which is approval-gated) for it.` };
       }
 
+      // `git branch` with no positional argument lists branches (read-only).
+      // `git branch <name>` creates one, and `-d/-D/-m/-M/--edit-description`
+      // mutate refs — all of which write to .git and must go through approval
+      // like any other side effect, not slip through because the subcommand
+      // name happens to be on the read-only list.
+      if (sub === 'branch') {
+        const rest = gitArgs.slice(1);
+        const mutates =
+          rest.some((a) => /^-(d|D|m|M)$/.test(a) || a === '--delete' || a === '--move' || a === '--edit-description') ||
+          rest.some((a) => !a.startsWith('-')); // a bare token is a new branch name
+        if (mutates) {
+          return { content: `"git branch ${rest.join(' ')}" creates or changes a branch. Use run_command (which is approval-gated) for it.` };
+        }
+      }
+
       // Execute safely using the array
       const { stdout, stderr, code } = await execSafeGit(gitArgs, ctx.rootPath, 30_000);
       return { content: `exit ${code}\n${clamp(stdout)}${stderr ? `\nstderr: ${clamp(stderr, 1000)}` : ''}` };

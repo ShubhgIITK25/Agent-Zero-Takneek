@@ -71,6 +71,21 @@ export type Subtask = {
   replanDepth?: number;
   /** Set on a replacement: which subtask it was created to replace. */
   replacedSubtaskId?: string;
+  /**
+   * Repo-relative files this subtask expects to modify, as declared by the
+   * planner. Advisory, never enforced: an agent may edit a file that is not
+   * listed, and a listed file may go untouched.
+   *
+   * The scheduler uses it for ONE thing — refusing to run two subtasks at the
+   * same time when their declared files overlap. That is not a safety
+   * mechanism (the stale-proposal guard already makes a concurrent write
+   * impossible to apply silently); it is a COST mechanism. Without it, two
+   * parallel subtasks editing one file means the loser's proposal is refused
+   * and it must re-read and re-propose — a whole extra model round-trip. The
+   * declaration lets the planner mark subtasks independent aggressively
+   * without that being a gamble.
+   */
+  touchesFiles?: string[];
 };
 
 export type RoutingSignals = {

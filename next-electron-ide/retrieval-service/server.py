@@ -32,6 +32,52 @@ import indexer
 import retrieval
 
 DATA_DIR = None
+
+
+def _capabilities():
+    """Which parts of the pipeline this interpreter can actually run.
+
+    All three depend on packages that are NOT on a stock python3
+    (see requirements.txt). Electron spawns whatever interpreter it resolved
+    and reads this back to tell the user, in the status bar, when retrieval is
+    running degraded rather than letting it silently serve worse results.
+
+    These are import-level checks on purpose — cheap, and the "deps not
+    installed" case is exactly what they need to catch. They do NOT download
+    or load a model (fastembed does that lazily on first real use), and they
+    do not prove sqlite was built with extension-loading enabled; store.py
+    still does the authoritative sqlite-vec check per connection.
+    """
+    caps = {"python": sys.executable}
+
+    try:
+        import fastembed  # noqa: F401
+
+        caps["embeddings"] = True
+        caps["reranker"] = True
+    except Exception:
+        caps["embeddings"] = False
+        caps["reranker"] = False
+
+    try:
+        import sqlite_vec  # noqa: F401
+
+        caps["sqlite_vec"] = True
+    except Exception:
+        caps["sqlite_vec"] = False
+
+    try:
+        import tree_sitter  # noqa: F401
+        import tree_sitter_python  # noqa: F401
+
+        caps["ast_chunking"] = True
+    except Exception:
+        caps["ast_chunking"] = False
+
+    return caps
+
+
+CAPABILITIES = {}  # filled in main(), served from /health
 _index_locks = {}  # codebase_id -> Lock, so concurrent /index and /update on
                     # the same project don't race each other's SQLite writes
 
@@ -64,7 +110,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         if self.path == "/health":
-            self._send_json({"status": "ok"})
+            self._send_json({"status": "ok", **CAPABILITIES})
             return
         self._send_json({"error": "not found"}, 404)
 
@@ -157,7 +203,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
-    global DATA_DIR
+    global DATA_DIR, CAPABILITIES
     parser = argparse.ArgumentParser()
     parser.add_argument("--port", type=int, required=True)
     parser.add_argument("--data-dir", type=str, required=True)
@@ -165,6 +211,26 @@ def main():
 
     DATA_DIR = args.data_dir
     os.makedirs(DATA_DIR, exist_ok=True)
+
+    CAPABILITIES = _capabilities()
+    missing = [
+        name
+        for name, key in (
+            ("vector-search", "sqlite_vec"),
+            ("embeddings", "embeddings"),
+            ("AST chunking", "ast_chunking"),
+        )
+        if not CAPABILITIES.get(key)
+    ]
+    if missing:
+        print(
+            f"[retrieval-service] DEGRADED — missing: {', '.join(missing)}. "
+            f"Interpreter: {sys.executable}. "
+            f"Install requirements.txt into it for the full pipeline.",
+            flush=True,
+        )
+    else:
+        print("[retrieval-service] full pipeline available", flush=True)
 
     httpd = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
     print(f"[retrieval-service] listening on 127.0.0.1:{args.port}, data_dir={DATA_DIR}", flush=True)

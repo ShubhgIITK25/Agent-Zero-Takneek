@@ -25,8 +25,9 @@ function retrievalLabel(status: RetrievalStatus | null | undefined): string | nu
     case 'ready': {
       const files = status.files_indexed;
       const chunks = status.chunks_indexed;
-      if (files == null || chunks == null) return 'Index ready';
-      return `Index ready (${files} files, ${chunks} chunks)`;
+      const suffix = status.degraded ? ' · keyword-only' : '';
+      if (files == null || chunks == null) return `Index ready${suffix}`;
+      return `Index ready (${files} files, ${chunks} chunks)${suffix}`;
     }
     case 'error':
       return `Index error: ${status.message ?? 'unknown'}`;
@@ -58,8 +59,14 @@ export default function StatusBar({
       <div className="status-right">
         {retrievalText && (
           <span
-            className={`status-item status-retrieval status-retrieval-${retrievalStatus?.state}`}
-            title="Code retrieval index status"
+            className={`status-item status-retrieval status-retrieval-${retrievalStatus?.state}${
+              retrievalStatus?.degraded ? ' status-retrieval-degraded' : ''
+            }`}
+            title={
+              retrievalStatus?.degraded
+                ? 'Retrieval is running keyword-only: the Python service is missing tree-sitter / fastembed / sqlite-vec. Install retrieval-service/requirements.txt or set NEXIDE_PYTHON (README §2.3).'
+                : 'Code retrieval index status'
+            }
           >
             {retrievalText}
           </span>

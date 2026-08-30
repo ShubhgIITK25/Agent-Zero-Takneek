@@ -102,12 +102,23 @@ export function plannerMessages(prompt: string, repoOverview: string, agentsMd: 
         'need makes the whole job slower for no benefit. Before you write a dependency, ask: "would this ' +
         'subtask fail if the other one had not run yet?" If no, leave dependsOn empty.\n' +
         '- A subtask may only depend on EARLIER ones — never forward, never circular.\n' +
+        '- "touchesFiles": list the repo-relative files the subtask will MODIFY (not files it merely ' +
+        'reads). Leave it [] if you cannot name them or the subtask writes nothing. This is how two ' +
+        'subtasks are kept from editing one file at the same time, which costs a wasted round-trip when ' +
+        'it happens — so a subtask whose files you CAN name is safer to mark independent, not riskier. ' +
+        'Never list a whole directory, and never guess a file you have no evidence exists.\n' +
+        '- DO NOT add a final "verify everything works" subtask. Every subtask is already checked by a ' +
+        'separate verifier agent the moment it finishes. A trailing verification step that depends on all ' +
+        'the others is a duplicate check that costs an extra round-trip AND forces every parallel branch ' +
+        'to finish before it can start. Use "verification" ONLY for a check that is real work in its own ' +
+        'right and that no single subtask could perform — e.g. running an existing integration suite.\n' +
         '- Each subtask must be independently checkable — state what "done" looks like.\n' +
         '- category: "analysis" (read/understand), "codegen" (write substantial code), "simple_edit" ' +
         '(small mechanical change), "verification" (run tests/checks).\n\n' +
         'Reply with ONLY this JSON:\n' +
         '{"trivial": boolean, "restated_goal": "one sentence", "subtasks": [' +
-        '{"id":"s1","title":"short","detail":"what to do and what done looks like","category":"codegen","dependsOn":[]}]}',
+        '{"id":"s1","title":"short","detail":"what to do and what done looks like","category":"codegen",' +
+        '"dependsOn":[],"touchesFiles":["src/foo.ts"]}]}',
     },
     ...(agentsMd ? [{ role: 'system' as const, content: agentsMd }] : []),
     { role: 'user', content: `Repository overview:\n${repoOverview}\n\n---\n\nRequest:\n${prompt}` },
@@ -115,6 +126,29 @@ export function plannerMessages(prompt: string, repoOverview: string, agentsMd: 
 }
 
 export type Plan = { trivial: boolean; restatedGoal: string; subtasks: Subtask[] };
+
+/**
+ * The planner's declared file list, reduced to something safe to compare.
+ *
+ * Only ever used to decide whether two subtasks may run at once, so the goal
+ * is a stable key, not a real path: forward slashes, no leading "./" or "/",
+ * and anything that tries to climb out of the repo is dropped rather than
+ * resolved. A model that returns a sentence instead of a list, or invents 40
+ * files, must not be able to turn that into a scheduling problem — hence the
+ * type check and the cap.
+ */
+function normaliseTouchedFiles(raw: any): string[] {
+  if (!Array.isArray(raw)) return [];
+  const out = new Set<string>();
+  for (const entry of raw) {
+    if (typeof entry !== 'string') continue;
+    const cleaned = entry.trim().replace(/\\/g, '/').replace(/^\.?\//, '');
+    if (!cleaned || cleaned.includes('..')) continue;
+    out.add(cleaned);
+    if (out.size >= 20) break;
+  }
+  return [...out];
+}
 
 export function parsePlan(text: string, fallbackPrompt: string): Plan {
   const parsed = extractJson(text);
@@ -157,6 +191,7 @@ export function parsePlan(text: string, fallbackPrompt: string): Plan {
       // Drop dependencies on ids the planner invented or that come later —
       // a cyclic or forward dependency would deadlock the scheduler.
       dependsOn: Array.isArray(s.dependsOn) ? s.dependsOn.filter((d: any) => typeof d === 'string' && valid.has(d)) : [],
+      touchesFiles: normaliseTouchedFiles(s.touchesFiles),
       category,
       status: 'pending',
       attempts: 0,
