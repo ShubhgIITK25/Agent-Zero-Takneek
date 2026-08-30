@@ -279,7 +279,13 @@ async function callOllama(
     ...(tools.length
       ? { tools: tools.map((t) => ({ type: 'function', function: { name: t.name, description: t.description, parameters: t.parameters } })) }
       : {}),
-    options: { temperature: 0.2 },
+    // num_ctx must be sent explicitly. Ollama otherwise falls back to a small
+    // default (4k) regardless of what the weights support, and it does not
+    // error on overflow — it drops the oldest tokens, which for us means the
+    // system prompt and the tool definitions vanish and the model starts
+    // replying in prose. The registry's contextWindow is chosen to be a window
+    // the reference machine can actually allocate; see models.ts.
+    options: { temperature: 0.2, num_ctx: model.contextWindow },
   });
 
   if (!res.ok) {

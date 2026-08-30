@@ -71,6 +71,25 @@ export class TaskRunner {
   private step = 0;
   private notes: string[] = [];
   private changedFiles = new Set<string>();
+  /**
+   * BACKTRACK POINT — the workspace as it stood before the subtask now running
+   * touched it. Captured lazily: the first time a subtask writes a given file,
+   * that file's prior content is stashed here (`content: null` == the file did
+   * not exist yet). Restoring this map undoes every edit the subtask made.
+   *
+   * Why lazily and per-file rather than a snapshot of the tree: we do not know
+   * in advance which files an agent will touch, and copying a repo before every
+   * attempt would cost more than the task. Capturing at the moment of write is
+   * exact, costs one read per distinct file, and needs no VCS.
+   *
+   * Why not `git stash` / `git checkout .`: the project root is not guaranteed
+   * to be a git repo, and even when it is, an agent that reaches into the user's
+   * index or stash to undo its own mistake is a far worse failure mode than the
+   * one it is fixing. This state is entirely our own.
+   */
+  private backtrack = new Map<string, { content: string | null; wasTracked: boolean }>();
+  /** Which subtask `backtrack` currently belongs to. */
+  private backtrackOwner: string | null = null;
   /** .nexideignore / .ignore — loaded once per task, not re-read on every tool call. */
   private ignore: ReturnType<typeof loadIgnoreMatcher>;
 
@@ -253,6 +272,10 @@ export class TaskRunner {
 
       const finalContent = applyAcceptedBlocks(d, acceptedHere);
       const full = path.resolve(this.config.rootPath, d.path);
+      // Stash what is there now, BEFORE overwriting it, so a failed
+      // verification can put it back. Must happen on the write path — this is
+      // the only point at which the pre-edit content still exists.
+      await this.captureBacktrackPoint(subtaskId, d.path, full);
       await fs.mkdir(path.dirname(full), { recursive: true });
       await fs.writeFile(full, finalContent, 'utf8');
       written.push(d.path);
@@ -563,8 +586,97 @@ export class TaskRunner {
     return lines.join('\n');
   }
 
+  /**
+   * Start tracking edits for a subtask, discarding any previous subtask's
+   * point. Called once per subtask, NOT once per attempt: a retry should
+   * return the tree to how it looked before the subtask started, not to how
+   * the previous failed attempt left it.
+   */
+  private beginBacktrackPoint(subtaskId: string): void {
+    this.backtrack = new Map();
+    this.backtrackOwner = subtaskId;
+  }
+
+  /** Stash a file's current content the first time this subtask writes to it. */
+  private async captureBacktrackPoint(subtaskId: string, rel: string, full: string): Promise<void> {
+    if (this.backtrackOwner !== subtaskId) return;
+    if (this.backtrack.has(rel)) return; // already have the pre-subtask state
+    const wasTracked = this.changedFiles.has(rel);
+    try {
+      this.backtrack.set(rel, { content: await fs.readFile(full, 'utf8'), wasTracked });
+    } catch {
+      // Unreadable means it does not exist yet: undoing a create is a delete.
+      this.backtrack.set(rel, { content: null, wasTracked });
+    }
+  }
+
+  /**
+   * Undo every edit the current subtask made, returning the workspace to its
+   * pre-subtask state. Returns the number of files restored.
+   *
+   * This is the actual backtracking step. Without it a failed verification
+   * retries ON TOP of the edits that just failed verification, so attempt 2
+   * starts from a tree the verifier already rejected and attempt 3 compounds
+   * it — and if all attempts fail, the union of every broken attempt is left
+   * on disk with the subtask marked `failed` and nobody cleaning up.
+   */
+  private async restoreBacktrackPoint(subtask: Subtask, why: string): Promise<number> {
+    if (!this.backtrack.size) return 0;
+
+    const restored: string[] = [];
+    const failures: string[] = [];
+    // Some of these edits may have been approved by the user by hand. Undoing
+    // a human's approved change is never allowed to be silent, which is why
+    // this reports through `intervention` and names every file.
+    const approvedByHand = [...this.backtrack.keys()];
+
+    for (const [rel, prior] of this.backtrack) {
+      const full = path.resolve(this.config.rootPath, rel);
+      try {
+        if (prior.content === null) {
+          await fs.rm(full, { force: true });
+        } else {
+          await fs.mkdir(path.dirname(full), { recursive: true });
+          await fs.writeFile(full, prior.content, 'utf8');
+        }
+        restored.push(rel);
+        // A file this subtask created is no longer a changed file. One it
+        // merely edited may still be changed by an EARLIER subtask, and its
+        // stashed content already includes that earlier change — so leave it.
+        if (!prior.wasTracked) this.changedFiles.delete(rel);
+      } catch (err) {
+        failures.push(`${rel} (${err instanceof Error ? err.message : String(err)})`);
+      }
+    }
+
+    this.emit({
+      type: 'intervention',
+      subtaskId: subtask.id,
+      cause: 'workspace_restored',
+      detail:
+        `${why} Reverted ${restored.length} file(s) to their state before "${subtask.title}" ran: ` +
+        `${approvedByHand.join(', ')}.` +
+        (failures.length ? ` Could NOT revert: ${failures.join('; ')}.` : ''),
+      action: failures.length
+        ? 'The workspace is only partially rolled back — the files listed as un-revertable still hold the failed edit.'
+        : 'The next attempt starts from a clean tree instead of building on a rejected one.',
+    });
+
+    this.backtrack = new Map();
+    return restored.length;
+  }
+
   /** One subtask, with escalating retries, verification, and tie-break. */
   private async runSubtask(subtask: Subtask): Promise<void> {
+    // One backtrack point per subtask, taken before the first attempt.
+    //
+    // On a RESUME this is necessarily empty: the pre-edit contents lived in
+    // memory and that process is gone. So a rollback after a resume can only
+    // undo edits made since the resume, and the intervention it emits names
+    // exactly which files it did revert — it never claims a clean tree it
+    // cannot deliver.
+    this.beginBacktrackPoint(subtask.id);
+
     for (let attempt = subtask.attempts + 1; attempt <= MAX_RETRIES_PER_SUBTASK; attempt++) {
       if (this.cancelled || this.ceilingBreached()) return;
 
@@ -574,6 +686,7 @@ export class TaskRunner {
 
       const outcome = await this.executeSubtask(subtask, attempt);
       if (!outcome) {
+        await this.restoreBacktrackPoint(subtask, 'No model was available to finish this subtask.');
         subtask.status = 'failed';
         subtask.lastError = 'no model could execute this subtask';
         this.emit({ type: 'subtask_finished', subtaskId: subtask.id, status: 'failed', note: subtask.lastError });
@@ -593,6 +706,7 @@ export class TaskRunner {
           });
           continue;
         }
+        await this.restoreBacktrackPoint(subtask, 'The agent reported it was blocked and retries are exhausted.');
         subtask.status = 'failed';
         this.emit({ type: 'subtask_finished', subtaskId: subtask.id, status: 'failed', note: outcome.claim });
         this.blockDependents(subtask.id);
@@ -604,6 +718,7 @@ export class TaskRunner {
       // real money to confirm that nothing happened.
       const worthVerifying = subtask.category !== 'analysis' || this.changedFiles.size > 0;
       if (!worthVerifying) {
+        this.backtrack = new Map();
         subtask.status = 'done';
         this.notes.push(`${subtask.title}: ${outcome.claim}`);
         this.emit({ type: 'subtask_finished', subtaskId: subtask.id, status: 'done', note: 'analysis-only, no verification needed' });
@@ -614,6 +729,9 @@ export class TaskRunner {
       const verdict = await this.verify(subtask, outcome.claim);
 
       if (verdict.verdict === 'pass') {
+        // Verified work is committed: drop the undo point so no later failure
+        // can reach back and revert a subtask that passed.
+        this.backtrack = new Map();
         subtask.status = 'done';
         this.notes.push(`${subtask.title}: ${outcome.claim}`);
         this.emit({ type: 'subtask_finished', subtaskId: subtask.id, status: 'done', note: verdict.reason });
@@ -640,6 +758,9 @@ export class TaskRunner {
       }
 
       if (finalVerdict === 'pass') {
+        // The tie-break overrode the verifier's fail — so this work stands and
+        // must not be rolled back either.
+        this.backtrack = new Map();
         subtask.status = 'done';
         this.emit({ type: 'subtask_finished', subtaskId: subtask.id, status: 'done', note: 'passed on tie-break' });
         return;
@@ -654,17 +775,40 @@ export class TaskRunner {
           detail: `Verification failed: ${verdict.reason}`,
           action: `Retrying (attempt ${attempt + 1}/${MAX_RETRIES_PER_SUBTASK}) with the failure fed back in, on a stronger model.`,
         });
+        // BACKTRACK, then retry. The rejected edits come off disk first, so the
+        // next attempt re-solves the original problem rather than trying to
+        // patch a tree the verifier already refused.
+        const reverted = await this.restoreBacktrackPoint(
+          subtask,
+          `Verification failed on attempt ${attempt}.`
+        );
         // Feed the failure into the next attempt so it is a different attempt,
-        // not the same one again.
+        // not the same one again — and tell it the tree was rolled back, or it
+        // will assume its earlier edits are still there and write half a fix.
         const convo = this.snapshot.conversations[subtask.id] ?? [];
         convo.push({
           role: 'user',
-          content: `Your previous attempt was rejected by an independent verifier: ${verdict.reason}\nEvidence: ${verdict.evidence}\nFix this specifically. Do not repeat the same approach.`,
+          content:
+            `Your previous attempt was rejected by an independent verifier: ${verdict.reason}\n` +
+            `Evidence: ${verdict.evidence}\n` +
+            (reverted
+              ? `Your edits from that attempt have been REVERTED — the ${reverted} file(s) you changed are back to their original contents. Start from the original code, not from your previous edit.\n`
+              : '') +
+            `Fix this specifically. Do not repeat the same approach.`,
         });
         this.snapshot.conversations[subtask.id] = convo;
+        this.checkpoint();
         continue;
       }
 
+      // Retries exhausted. Roll the workspace back rather than leaving the
+      // debris of every failed attempt behind: this subtask is about to be
+      // marked failed and its dependents blocked, so nothing downstream will
+      // ever clean up after it.
+      await this.restoreBacktrackPoint(
+        subtask,
+        `All ${MAX_RETRIES_PER_SUBTASK} attempts failed verification.`
+      );
       subtask.status = 'failed';
       this.emit({
         type: 'intervention',

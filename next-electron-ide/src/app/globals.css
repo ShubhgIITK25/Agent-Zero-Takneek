@@ -2606,6 +2606,21 @@ button:hover {
   cursor: default;
 }
 
+/* Monaco renders `.view-lines` (the text) in the same stacking layer as
+   `.view-zones` (where these toolbars live) but later in the DOM, so the
+   transparent part of the text layer that sits over a hunk bar swallows the
+   click — you get an I-beam cursor and dead Keep / Deny buttons. This review
+   buffer is read-only, so surrendering click-to-select in it costs nothing;
+   in exchange the toolbars become clickable. Scoped to `.review-editor` so the
+   real code editor keeps normal mouse behaviour. */
+.review-editor .monaco-editor .view-lines {
+  pointer-events: none;
+}
+
+.review-editor .nx-hunk-bar {
+  pointer-events: auto;
+}
+
 /* --- chat panel pointer card (the review itself lives in the editor) ------ */
 
 .chat-diff-pointer {

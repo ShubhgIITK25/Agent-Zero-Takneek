@@ -17,7 +17,7 @@ Open **Settings** in the app and enter keys for whichever providers you want ava
 
 - **Groq** — `GROQ_API_KEY`. Free tier, fastest of the three, and the default for most subtasks.
 - **OpenRouter** — `OPENROUTER_API_KEY`. Free-tier routes, used both as its own provider and as Groq's failover target.
-- **Ollama** — no key; point it at a local `ollama serve` (default `http://localhost:11434`). Zero marginal cost, useful when you want to keep a demo running without burning free-tier quota.
+- **Ollama** — no key; point it at a local `ollama serve` (default `http://127.0.0.1:11434`). Zero marginal cost, useful when you want to keep a demo running without burning free-tier quota. See **[Running on a local model](docs/local-models.md)** for setup, which model fits which machine, and why the local context windows are deliberately small.
 
 A model is only offered to the router once its provider has a saved, valid key (or, for Ollama, a reachable local server). Keys are stored locally, never bundled or committed.
 
@@ -42,16 +42,51 @@ Writes, deletes, and shell commands never execute unmediated — they go through
 
 ## Model roster and eligibility
 
-The PS constraint is 80B **total** parameters (not active parameters — this matters for MoE models, where total and active can differ by an order of magnitude). The registry (`orchestrator/models.ts`) is the single source of truth for eligibility, and it deliberately includes two models that fail the rule so the constraint is visibly enforced rather than just assumed:
+The PS constraint is 80B **total** parameters (not active parameters — this matters for MoE models, where total and active can differ by an order of magnitude). The registry (`orchestrator/models.ts`) is the single source of truth for eligibility, and it deliberately carries four models that fail the rule so the constraint is visibly enforced rather than just assumed. Each fails in a different way, because each is a different way of being fooled:
 
-| Model | Provider | Total params | Active params | Eligible? |
+| Model | Provider | Total | Active | Why it's blocked |
 |---|---|---|---|---|
-| GPT-OSS 120B | Groq | 120B | — | **No** — dense, over the 80B ceiling |
-| Nemotron 3 Super 120B-A12B | OpenRouter | 120B | 12B | **No** — total is what counts, not active; this is the exact MoE trap the rule targets |
+| GPT-OSS 120B | Groq | 120B | — | Dense and simply over the ceiling. The easy case. |
+| Nemotron 3 Super 120B-A12B | OpenRouter | 120B | 12B | Total is what counts. Checking *active* params passes it. |
+| Llama 4 Maverick 17B-128E | Groq | 400B | 17B | The api id itself says `17b`. Filtering on the model **name** ships a 400B model. |
+| Mistral Small 4 | OpenRouter | 119B | — | Called "Small". "Small" is a product line, not a size — the published repo is `Mistral-Small-4-119B-2603`. |
 
-Everything else in the registry — Llama 3.1 8B, GPT-OSS 20B, Qwen 3.6 27B, and Llama 3.3 70B on Groq; Gemma 4 31B, Gemma 4 26B-A4B, Nemotron 3 Nano 30B-A3B, and LFM 2.5 2.6B on OpenRouter; Qwen2.5 Coder 7B/14B and Gemma 3 12B on Ollama — is at or under 80B total and eligible. A model whose provider doesn't publish a parameter count is treated as ineligible by default (unverifiable, not "probably fine").
+A model whose provider doesn't publish a parameter count is treated as ineligible by default (unverifiable, not "probably fine").
 
-Provider catalogues and pricing drift; re-check model ids against the live docs before a demo.
+### Eligible roster
+
+| Model | Provider | Total | Cost /1M in→out | Quality¹ | Used for |
+|---|---|---|---|---|---|
+| **Qwen 3.8 27B** | Groq | 27B | $0.80 → $4.00 | **52.0** | Planning, tie-break, hard codegen |
+| **Qwen 3.8 27B (1M ctx)** | OpenRouter | 27B | $0.43 → $2.55 | **52.0** | Same weights, ~half price, 1M window — failover + huge contexts |
+| Qwen 3.6 27B | Groq | 27B | $0.60 → $3.00 | 37.7 | Same-provider fallback |
+| Qwen 3.6 35B-A3B | OpenRouter | 35B | $0.10 → $0.90 | 32.1 | Best quality-per-dollar; default paid choice |
+| Gemma 4 31B | OpenRouter | 31B | **free** | 29.7 | Free workhorse |
+| Gemma 4 26B-A4B | OpenRouter | 25.2B | **free** | 26.1 | Free, 3.8B active — fast |
+| Nemotron 3.5 Lightning 30B-A3B | OpenRouter | 30B | **free** | 23.6 | Free with a 1M window — the "context too big, budget too small" escape hatch |
+| GPT-OSS 20B | Groq | 20B | $0.075 → $0.30 | 15.2 | Cheapest hosted model that still calls tools reliably |
+| North Mini Code 30B-A3B | OpenRouter | 30B | **free** | 20.2 | Free agentic *coding* model (coding index 36.5) |
+| Nemotron 3 Nano 30B-A3B | OpenRouter | 30B | **free** | 13.8 | Cheap third opinion |
+| Llama 3.3 70B | Groq | 70B | $0.59 → $0.79 | — | Long-context analysis only; **not** tagged for codegen (see below) |
+| Llama 3.1 8B Instant | Groq | 8B | $0.05 → $0.08 | — | Cheap floor |
+| LFM 2.5 2.6B | OpenRouter | 2.6B | **free** | — | Trivial classification only |
+| Qwen2.5 Coder 7B · Granite 4 7B-A1B · Qwen2.5 Coder 14B · Gemma 3 12B · Qwen3 Coder 30B-A3B | Ollama | 7–30B | **$0** | — | [Local models →](docs/local-models.md) |
+
+¹ Artificial Analysis intelligence index, as published in the OpenRouter catalogue. Omitted where the model hasn't been benchmarked.
+
+**Why quality index and not parameter count.** Size used to be the router's proxy for "more capable", and it has aged badly: Llama 3.3 70B is 2.6× the size of Qwen 3.8 27B and scores 11.9 against its 68.1 on coding. So the router escalates on the published benchmark index, falling back to size (capped) only for models nobody has scored. That's also why Llama 3.3 70B is no longer tagged for `codegen` — keeping it there meant the biggest model kept winning work it's now bad at.
+
+**Where the quality actually gets spent.** The index is weighted per subtask category (`QUALITY_WEIGHT` in `orchestrator/router.ts`), not flatly, because the cost of being wrong isn't flat. A bad `simple_edit` is caught on the next line; a bad plan is only caught after every subtask under it has been paid for, and a bad verification verdict is never caught at all — it ships. So `analysis` (which is how the planner and the tie-break both route) and `verification` weight quality ~4× harder than `simple_edit` does. Cost still dominates overall — the cost penalty reaches 45 against quality's ~23 — so a free model that fits still wins early in a task, which is correct when C is weighted ~2× T in `S_task`. Quality decides between models of *similar* price, and decides the tie-break outright.
+
+### Keeping the registry honest
+
+```bash
+npm run verify:models
+```
+
+Every id, price, context window and parameter count in the registry is a factual claim about a catalogue that churns every few weeks, and a stale claim doesn't fail at build time — it fails as a 404 mid-demo. `scripts/verify-models.mjs` re-derives those claims from the live sources (`openrouter.ai/api/v1/models`, `console.groq.com/docs/models`, `ollama.com/library/<model>/tags`) and exits non-zero if a model has disappeared. A price or context drift is reported as a warning; a missing id is a failure. Last full run: **2026-08-30 — 21 verified, 0 missing.**
+
+The one entry it can't check is the Gemini route, because listing `generativelanguage.googleapis.com` requires a key — so it's reported as `skip`/UNVERIFIABLE rather than being quietly counted as OK.
 
 ## Settings
 
@@ -96,6 +131,7 @@ Runs, in order: `unit.js` (router scoring, budget math, diff/compaction unit tes
 
 ## Known limitations
 
-- Ollama models require a local server the judges' machine may not have running; keep a Groq/OpenRouter fallback path in the demo.
-- Provider catalogues change; `groq:qwen3.6-27b` and similar preview-tier ids are the most likely to be renamed or retired without notice.
+- Ollama models require a local server the judges' machine may not have running; keep a Groq/OpenRouter fallback path in the demo. See [docs/local-models.md](docs/local-models.md).
+- Provider catalogues change. Run `npm run verify:models` before a demo — it checks every id against the live catalogues. The Gemini entry is the one it can't check (that listing needs a key), so it's marked UNVERIFIABLE in the registry with the OpenRouter route to the same weights as its fallback.
+- `qualityIndex` values come from Artificial Analysis via the OpenRouter catalogue. They're a published third-party benchmark, not our own measurement, and they're only comparable *between* the models listed here.
 - The orchestrator is a separate Node child process (spawned via `process.execPath` with `ELECTRON_RUN_AS_NODE=1`, so no separate Node install is required on the end-user machine) rather than running inside Electron's main process — this keeps a runaway agent from ever blocking the UI thread, at the cost of one extra IPC hop per event.

@@ -20,11 +20,21 @@
  * unverifiable model is a disqualification risk, which is exactly why the
  * Gemini wiring this replaced had to go.
  *
- * VERIFY BEFORE SUBMISSION: provider catalogues churn. Model ids here were
- * checked against provider docs in Aug 2026. `npm run verify:models` (see
- * scripts/verify-models.mjs) re-checks ids and pricing against the live
- * /models endpoints so a renamed model surfaces as a failure, not a 404 at
- * demo time.
+ * `qualityIndex` is the Artificial Analysis intelligence index as published in
+ * the OpenRouter catalogue. It exists because parameter count turned out to be
+ * a BAD capability proxy: llama-3.3-70b is 2.6x the size of qwen3.8-27b and
+ * scores roughly a fifth of it on coding. The router uses this number, not
+ * size, to decide what "escalate to something more capable" means. Where a
+ * model has not been benchmarked the field is omitted and the router falls
+ * back to size — stated rather than hidden.
+ *
+ * VERIFY BEFORE SUBMISSION: provider catalogues churn. Every id, price, and
+ * context window below was checked on 2026-08-30 against the live sources —
+ * openrouter.ai/api/v1/models, console.groq.com/docs/models, and
+ * ollama.com/library. `npm run verify:models` (scripts/verify-models.mjs)
+ * re-runs that check so a renamed model surfaces as a failing script rather
+ * than a 404 in front of a judge. The one entry it cannot check is the Gemini
+ * one, because that catalogue needs a key; see its note.
  */
 
 export type ProviderId = "groq" | "openrouter" | "ollama" | "gemini";
@@ -39,10 +49,15 @@ export type ModelEntry = {
   paramsBTotal: number | null;
   /** Active params for MoE models; informational only, never used for eligibility. */
   paramsBActive?: number;
+  /** For local models this is also the `num_ctx` we ask Ollama to allocate,
+   *  so it must be a window the reference machine can actually hold. */
   contextWindow: number;
   /** USD per 1M tokens. Zero for local and for free-tier routes. */
   pricing: { inputPerM: number; outputPerM: number };
   tier: "free" | "payg" | "local";
+  /** Artificial Analysis intelligence index (0-100), as published in the
+   *  OpenRouter catalogue. Omitted when the model has not been benchmarked. */
+  qualityIndex?: number;
   /** What the router is willing to hand this model. */
   good_at: ("planning" | "codegen" | "analysis" | "simple" | "verification")[];
   /** Rough tokens/sec, used only to break ties on the time term. */
@@ -77,11 +92,13 @@ export const MODEL_REGISTRY: ModelEntry[] = [
     provider: "groq",
     paramsBTotal: 20,
     contextWindow: 131072,
-    pricing: { inputPerM: 0.1, outputPerM: 0.5 },
-    tier: "free",
-    good_at: ["codegen", "analysis", "verification"],
+    pricing: { inputPerM: 0.075, outputPerM: 0.3 },
+    tier: "payg",
+    qualityIndex: 15.2,
+    good_at: ["codegen", "analysis", "verification", "simple"],
     speed: "fast",
-    notes: "Good cost/quality midpoint; open weights, size published.",
+    notes:
+      "Cheapest hosted model that still calls tools reliably. The workhorse for routine implementer turns.",
   },
   {
     id: "groq:qwen3.6-27b",
@@ -90,11 +107,32 @@ export const MODEL_REGISTRY: ModelEntry[] = [
     provider: "groq",
     paramsBTotal: 27,
     contextWindow: 131072,
-    pricing: { inputPerM: 0.15, outputPerM: 0.6 },
-    tier: "free",
-    good_at: ["codegen", "analysis", "planning"],
+    pricing: { inputPerM: 0.6, outputPerM: 3.0 },
+    tier: "payg",
+    qualityIndex: 37.7,
+    good_at: ["codegen", "analysis", "planning", "verification"],
     speed: "fast",
-    notes: "Preview model on Groq — strong at code for its size.",
+    notes:
+      "Superseded by qwen3.8-27b on the same provider at similar cost — keep it enabled only as a same-provider fallback.",
+  },
+  {
+    // The single most capable model that fits under 80B anywhere in the live
+    // catalogue: intelligence 52.0 / coding 68.1 / agentic 50.9, versus 29.7 /
+    // 43.4 / 14.4 for the next best free option. This is the model the planner,
+    // verifier and tie-break want, and the reason `qualityIndex` exists at all.
+    id: "groq:qwen3.8-27b",
+    apiId: "qwen/qwen3.8-27b",
+    label: "Qwen 3.8 27B",
+    provider: "groq",
+    paramsBTotal: 27,
+    contextWindow: 131042,
+    pricing: { inputPerM: 0.8, outputPerM: 4.0 },
+    tier: "payg",
+    qualityIndex: 52.0,
+    good_at: ["planning", "analysis", "codegen", "verification"],
+    speed: "fast",
+    notes:
+      "Best-in-class under the 80B ceiling. Dense 27B, so quality does not come with a hidden total-parameter cost. Priciest per token here — the router only reaches for it on hard subtasks and tie-breaks.",
   },
   {
     id: "groq:llama-3.3-70b",
@@ -104,11 +142,11 @@ export const MODEL_REGISTRY: ModelEntry[] = [
     paramsBTotal: 70,
     contextWindow: 131072,
     pricing: { inputPerM: 0.59, outputPerM: 0.79 },
-    tier: "free",
-    good_at: ["planning", "codegen", "analysis"],
+    tier: "payg",
+    good_at: ["analysis", "planning"],
     speed: "medium",
     notes:
-      "The heavy end of what the constraint allows. Reserve for planning and hard codegen.",
+      "Biggest model here but no longer the best: it predates the current Qwen/Gemma generation and scores 11.9 on coding against qwen3.8-27b's 68.1. Kept for long-context analysis; deliberately NOT tagged for codegen.",
   },
   {
     id: "groq:gpt-oss-120b",
@@ -118,11 +156,31 @@ export const MODEL_REGISTRY: ModelEntry[] = [
     paramsBTotal: 120,
     contextWindow: 131072,
     pricing: { inputPerM: 0.15, outputPerM: 0.75 },
-    tier: "free",
+    tier: "payg",
+    qualityIndex: 24.1,
     good_at: ["planning", "codegen", "analysis"],
     speed: "medium",
     notes:
       "INELIGIBLE: 120B dense, over the 80B ceiling. Listed so the block is visible.",
+  },
+  {
+    // The sharpest version of the trap: the API id itself says "17b". A team
+    // that filtered on the model name rather than the published total would
+    // ship a 400B model and lose the round.
+    id: "groq:llama-4-maverick",
+    apiId: "meta-llama/llama-4-maverick-17b-128e-instruct",
+    label: "Llama 4 Maverick 17B-128E",
+    provider: "groq",
+    paramsBTotal: 400,
+    paramsBActive: 17,
+    contextWindow: 131072,
+    pricing: { inputPerM: 0.2, outputPerM: 0.6 },
+    tier: "payg",
+    qualityIndex: 14.5,
+    good_at: ["codegen", "analysis"],
+    speed: "fast",
+    notes:
+      "INELIGIBLE: 400B total across 128 experts. The api id advertises the 17B ACTIVE count, which is exactly the number the rule does not use.",
   },
 
   // ---------------------------------------------------------- OpenRouter ---
@@ -147,15 +205,82 @@ export const MODEL_REGISTRY: ModelEntry[] = [
     apiId: "google/gemma-4-26b-a4b-it:free",
     label: "Gemma 4 26B-A4B (MoE)",
     provider: "openrouter",
-    paramsBTotal: 26,
-    paramsBActive: 4,
+    paramsBTotal: 25.2,
+    paramsBActive: 3.8,
     contextWindow: 262144,
     pricing: { inputPerM: 0, outputPerM: 0 },
     tier: "free",
+    qualityIndex: 26.1,
     good_at: ["simple", "analysis", "verification"],
     speed: "fast",
     notes:
-      "MoE: 26B total / 4B active. Eligible on TOTAL (26B), which is the number the rule uses.",
+      "MoE: 25.2B total / 3.8B active. Eligible on TOTAL, which is the number the rule uses.",
+  },
+  {
+    // Same weights as groq:qwen3.8-27b but roughly half the price and with a
+    // 1M window, so this is both the cheaper way to reach the best model and
+    // the failover that keeps a tie-break alive when Groq rate-limits.
+    id: "openrouter:qwen3.8-27b",
+    apiId: "qwen/qwen3.8-27b",
+    label: "Qwen 3.8 27B (1M ctx)",
+    provider: "openrouter",
+    paramsBTotal: 27,
+    contextWindow: 1000000,
+    pricing: { inputPerM: 0.425, outputPerM: 2.55 },
+    tier: "payg",
+    qualityIndex: 52.0,
+    good_at: ["planning", "analysis", "codegen", "verification"],
+    speed: "medium",
+    notes:
+      "Cheaper route to the strongest eligible model, and the only one whose window survives a whole-repo retrieval. Slower than the Groq route, which is the trade the router weighs.",
+  },
+  {
+    id: "openrouter:north-mini-code",
+    apiId: "cohere/north-mini-code:free",
+    label: "North Mini Code 30B-A3B",
+    provider: "openrouter",
+    paramsBTotal: 30,
+    paramsBActive: 3,
+    contextWindow: 256000,
+    pricing: { inputPerM: 0, outputPerM: 0 },
+    tier: "free",
+    qualityIndex: 20.2,
+    good_at: ["codegen", "simple"],
+    speed: "fast",
+    notes:
+      "Purpose-built agentic coding model, and free. Coding index 36.5 — higher than the 120B model we are not allowed to use. Best zero-cost codegen route available.",
+  },
+  {
+    id: "openrouter:nemotron-3.5-lightning",
+    apiId: "nvidia/nemotron-3.5-lightning:free",
+    label: "Nemotron 3.5 Lightning 30B-A3B",
+    provider: "openrouter",
+    paramsBTotal: 30,
+    paramsBActive: 3,
+    contextWindow: 1000000,
+    pricing: { inputPerM: 0, outputPerM: 0 },
+    tier: "free",
+    qualityIndex: 23.6,
+    good_at: ["analysis", "verification", "simple"],
+    speed: "fast",
+    notes:
+      "Free, 3B active so it is genuinely fast, and a 1M window. The escape hatch when a context is too big for every paid model we can still afford.",
+  },
+  {
+    id: "openrouter:qwen3.6-35b-a3b",
+    apiId: "qwen/qwen3.6-35b-a3b",
+    label: "Qwen 3.6 35B-A3B (MoE)",
+    provider: "openrouter",
+    paramsBTotal: 35,
+    paramsBActive: 3,
+    contextWindow: 262144,
+    pricing: { inputPerM: 0.1, outputPerM: 0.9 },
+    tier: "payg",
+    qualityIndex: 32.1,
+    good_at: ["codegen", "analysis", "verification"],
+    speed: "fast",
+    notes:
+      "Best quality-per-dollar in the registry: 32.1 index at 1/8th the input price of qwen3.8-27b. The default paid choice when the free tiers are exhausted.",
   },
   {
     id: "openrouter:nemotron-nano-30b",
@@ -164,13 +289,14 @@ export const MODEL_REGISTRY: ModelEntry[] = [
     provider: "openrouter",
     paramsBTotal: 30,
     paramsBActive: 3,
-    contextWindow: 262144,
+    contextWindow: 256000,
     pricing: { inputPerM: 0, outputPerM: 0 },
     tier: "free",
+    qualityIndex: 13.8,
     good_at: ["analysis", "verification", "planning"],
     speed: "fast",
     notes:
-      "Reasoning-tuned MoE, 30B total. Useful as the tie-break third opinion.",
+      "Reasoning-tuned MoE, 30B total, free. Kept as a cheap third opinion, but qwen3.8-27b outscores it heavily — enable it for cost, not for quality.",
   },
   {
     id: "openrouter:lfm-2.5-2.6b",
@@ -195,28 +321,84 @@ export const MODEL_REGISTRY: ModelEntry[] = [
     contextWindow: 262144,
     pricing: { inputPerM: 0, outputPerM: 0 },
     tier: "free",
+    qualityIndex: 25.7,
     good_at: ["planning", "codegen"],
     speed: "medium",
     notes:
       "INELIGIBLE: 120B TOTAL despite only 12B active. This is the exact trap the rule targets.",
   },
+  {
+    // Third face of the same trap, and the one that catches people who check
+    // the vendor's own size language instead of the weights: it is shipped as
+    // "Mistral Small", and the repo it publishes is Mistral-Small-4-119B-2603.
+    id: "openrouter:mistral-small-4",
+    apiId: "mistralai/mistral-small-2603",
+    label: "Mistral Small 4 (119B)",
+    provider: "openrouter",
+    paramsBTotal: 119,
+    contextWindow: 262144,
+    pricing: { inputPerM: 0.15, outputPerM: 0.6 },
+    tier: "payg",
+    qualityIndex: 19.7,
+    good_at: ["codegen", "analysis"],
+    speed: "medium",
+    notes:
+      'INELIGIBLE: 119B dense. The word "Small" is a product-line name, not a size — the published repo is Mistral-Small-4-119B-2603.',
+  },
 
   // -------------------------------------------------------------- Ollama ---
   // Zero marginal cost, which is the strongest possible lever on the C term.
-  // Sizes assume ~4-bit quantisation to fit 16GB RAM / 8GB VRAM.
+  // Sizes assume ~4-bit quantisation on the reference box: 16GB RAM, 8GB VRAM.
+  //
+  // `contextWindow` here is NOT the model's architectural maximum. It is the
+  // window we ask Ollama to allocate (`num_ctx`), and the KV cache for it has
+  // to fit in memory alongside the weights. Advertising gemma3's 131k here and
+  // sending a 100k prompt would not fail loudly — Ollama would silently drop
+  // the front of the conversation, which is the worst possible failure mode for
+  // an agent that just put its instructions there. So these are the windows the
+  // reference machine can genuinely hold.
   {
     id: "ollama:qwen2.5-coder-7b",
     apiId: "qwen2.5-coder:7b",
     label: "Qwen2.5 Coder 7B (local)",
     provider: "ollama",
     paramsBTotal: 7,
-    contextWindow: 32768,
+    contextWindow: 16384,
     pricing: { inputPerM: 0, outputPerM: 0 },
     tier: "local",
     good_at: ["simple", "codegen", "verification"],
     speed: "medium",
     notes:
-      "Free at the margin. Fits 8GB VRAM quantised. Best cost lever available.",
+      "~4.7GB at Q4 plus a 16k KV cache — the largest local model that fits 8GB VRAM entirely. Best cost lever available.",
+  },
+  {
+    id: "ollama:llama3.1-8b",
+    apiId: "llama3.1:8b",
+    label: "Llama 3.1 8B (local)",
+    provider: "ollama",
+    paramsBTotal: 8,
+    contextWindow: 16384,
+    pricing: { inputPerM: 0, outputPerM: 0 },
+    tier: "local",
+    good_at: ["simple", "verification"],
+    speed: "medium",
+    notes:
+      "Note the .1 — the original `llama3` tag has no tool-calling template and cannot drive an agent loop. 3.1 added it. Weak at code (coding index ~5), so it is tagged for simple edits and pass/fail verification only.",
+  },
+  {
+    id: "ollama:granite4-7b-a1b",
+    apiId: "granite4:7b-a1b-h",
+    label: "Granite 4 7B-A1B (local, MoE)",
+    provider: "ollama",
+    paramsBTotal: 7,
+    paramsBActive: 1,
+    contextWindow: 16384,
+    pricing: { inputPerM: 0, outputPerM: 0 },
+    tier: "local",
+    good_at: ["simple", "verification"],
+    speed: "fast",
+    notes:
+      "Only 1B parameters active per token, so it is usable at real speed even with no GPU at all. The model to enable when the box is CPU-only and the alternative is not running locally.",
   },
   {
     id: "ollama:qwen2.5-coder-14b",
@@ -224,13 +406,13 @@ export const MODEL_REGISTRY: ModelEntry[] = [
     label: "Qwen2.5 Coder 14B (local)",
     provider: "ollama",
     paramsBTotal: 14,
-    contextWindow: 32768,
+    contextWindow: 8192,
     pricing: { inputPerM: 0, outputPerM: 0 },
     tier: "local",
     good_at: ["codegen", "analysis"],
     speed: "slow",
     notes:
-      "Tight on 8GB VRAM at 4-bit; verify it loads on your box before relying on it.",
+      "~9GB at Q4, so it spills past 8GB VRAM and part of it runs on CPU. Works, but expect several times the latency of the 7B. Verify it loads on your box before relying on it.",
   },
   {
     id: "ollama:gemma3-12b",
@@ -238,13 +420,28 @@ export const MODEL_REGISTRY: ModelEntry[] = [
     label: "Gemma 3 12B (local)",
     provider: "ollama",
     paramsBTotal: 12,
-    contextWindow: 131072,
+    contextWindow: 8192,
     pricing: { inputPerM: 0, outputPerM: 0 },
     tier: "local",
     good_at: ["analysis", "simple", "verification"],
     speed: "slow",
     notes:
-      "Local Gemma. Long context for its size, useful for analysis over big retrievals.",
+      "Local Gemma. The weights support 128k context but the KV cache for it does not fit the reference box, so we allocate 8k.",
+  },
+  {
+    id: "ollama:qwen3-coder-30b",
+    apiId: "qwen3-coder:30b",
+    label: "Qwen3 Coder 30B-A3B (local, MoE)",
+    provider: "ollama",
+    paramsBTotal: 30,
+    paramsBActive: 3,
+    contextWindow: 16384,
+    pricing: { inputPerM: 0, outputPerM: 0 },
+    tier: "local",
+    good_at: ["codegen", "analysis", "simple"],
+    speed: "medium",
+    notes:
+      "ABOVE THE REFERENCE SPEC: ~18GB at Q4, so it needs ~24GB RAM or a 24GB GPU. Listed because only 3B activate per token, so where it does fit it is both the best and the fastest local coder. Leave it disabled on a 16GB machine.",
   },
   // Open-weights Gemma served through the Gemini API (generativelanguage.*),
   // so the same GEMINI_API_KEY and REST adapter are reused. Free tier, and
@@ -258,11 +455,17 @@ export const MODEL_REGISTRY: ModelEntry[] = [
     contextWindow: 131072,
     pricing: { inputPerM: 0, outputPerM: 0 },
     tier: "free",
+    qualityIndex: 29.7,
     good_at: ["codegen", "analysis", "planning"],
     speed: "medium",
     notes:
       "Gemma 4 31B open weights via the Gemini API. Free tier. Gemma has no " +
-      "system role, so the adapter folds the system prompt into the first user turn.",
+      "system role, so the adapter folds the system prompt into the first user turn. " +
+      "UNVERIFIED id: listing generativelanguage.googleapis.com needs a key, so this " +
+      "is the one entry verify:models cannot check. The weights are confirmed real " +
+      "(the OpenRouter route to the same model is enabled above); what is unconfirmed " +
+      "is whether Google still serves them under this name. Enable the OpenRouter " +
+      "route instead if a call 404s.",
   },
 ];
 

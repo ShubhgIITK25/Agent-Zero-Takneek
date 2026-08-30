@@ -76,6 +76,42 @@ const CATEGORY_TO_CAPABILITY: Record<Subtask['category'], ModelEntry['good_at'][
 /** Assume a completion roughly this size when pre-costing a call. */
 const ASSUMED_COMPLETION_TOKENS = 800;
 
+/**
+ * How hard a model's published quality index counts, per category.
+ *
+ * Not a flat weight, because the cost of being wrong is not flat. A bad
+ * `simple_edit` is discovered on the next line. A bad plan is discovered after
+ * every subtask under it has already been paid for, and a bad verification
+ * verdict is never discovered at all — it ships. The planner and the tie-break
+ * both route as `analysis`, and the verifier as `verification`, so weighting
+ * those two categories is precisely how "spend quality where it matters" is
+ * expressed in this router.
+ *
+ * Cost still dominates: the penalty term below reaches 45, so a free model
+ * that fits keeps beating a paid one early in a task. That is intended — C is
+ * weighted ~2x T in S_task. Quality decides between models of similar price.
+ */
+const QUALITY_WEIGHT: Record<Subtask['category'], number> = {
+  analysis: 0.45,
+  verification: 0.4,
+  codegen: 0.3,
+  simple_edit: 0.1,
+};
+
+/**
+ * A single 0-100 capability number for a model.
+ *
+ * Parameter count was the original proxy and it has aged badly: llama-3.3-70b
+ * is 2.6x the size of qwen3.8-27b and scores 11.9 against its 68.1 on coding.
+ * So prefer the published benchmark index, and fall back to size only for
+ * models nobody has scored — capped well below the top of the index, because
+ * "big and unmeasured" is not evidence of being good.
+ */
+function capabilityOf(m: ModelEntry): number {
+  if (m.qualityIndex != null) return m.qualityIndex;
+  return Math.min(30, (m.paramsBTotal ?? 0) * 0.4);
+}
+
 export class Router {
   constructor(
     private enabledModelIds: string[],
@@ -156,11 +192,17 @@ export class Router {
       const headroom = m.contextWindow / Math.max(1, signals.estimatedContextTokens);
       if (headroom > 3) score += 8;
 
-      // Retries escalate: if a smaller model already failed this subtask, bias
+      // Published capability, weighted by how expensive a wrong answer is in
+      // this category. See QUALITY_WEIGHT.
+      const capability = capabilityOf(m);
+      score += capability * QUALITY_WEIGHT[signals.category];
+      if (m.qualityIndex != null) parts.push(`quality ${m.qualityIndex}`);
+
+      // Retries escalate: if a weaker model already failed this subtask, bias
       // toward capability over thrift. Repeating the cheap failure is the exact
       // "blindly retrying the same action" the PS penalises.
-      if (signals.attemptNumber > 1 && m.paramsBTotal != null) {
-        score += Math.min(20, m.paramsBTotal * 0.35);
+      if (signals.attemptNumber > 1) {
+        score += Math.min(22, capability * 0.38);
         parts.push(`escalated for attempt ${signals.attemptNumber}`);
       }
 

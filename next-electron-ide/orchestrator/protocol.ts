@@ -156,7 +156,7 @@ export type EventBody =
   | { type: 'compaction'; nodeId: string | null; beforeTokens: number; afterTokens: number; summarized: number; preserved: string[] }
   | { type: 'budget_update'; costUsd: number; elapsedSeconds: number; maxCostUsd: number; maxSeconds: number; promptTokens: number; completionTokens: number }
   /** A cap fired or two agents disagreed. Always surfaced, never silent. */
-  | { type: 'intervention'; subtaskId: string | null; cause: 'retry_cap' | 'step_cap' | 'token_cap' | 'cost_ceiling' | 'time_ceiling' | 'identical_repeat' | 'disagreement' | 'provider_failover' | 'resume_rollback' | 'dependency_deadlock'; detail: string; action: string }
+  | { type: 'intervention'; subtaskId: string | null; cause: 'retry_cap' | 'step_cap' | 'token_cap' | 'cost_ceiling' | 'time_ceiling' | 'identical_repeat' | 'disagreement' | 'provider_failover' | 'resume_rollback' | 'dependency_deadlock' | 'workspace_restored'; detail: string; action: string }
   | { type: 'checkpoint'; step: number; subtaskStates: { id: string; status: SubtaskStatus }[] }
   | { type: 'resumed'; fromStep: number; note: string }
   | { type: 'isolated_answer'; requestId: string; answer: string }
