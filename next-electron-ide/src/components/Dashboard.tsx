@@ -10,7 +10,7 @@
  * the two modes.
  */
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   TraceView,
   TraceNode,
@@ -245,10 +245,35 @@ function ExecutionGraph({
   reverting: boolean;
   revertMessage: string | null;
 }) {
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(() => nodes[nodes.length - 1]?.id ?? null);
   const visible = nodes.slice(-180);
-  const selected = nodes.find((node) => node.id === selectedId) ?? null;
+  const selected = nodes.find((node) => node.id === selectedId) ?? nodes[nodes.length - 1] ?? null;
   const latestChange = [...fileChanges].reverse().find((change) => !change.revertedAt);
+
+  useEffect(() => {
+    if (nodes.length === 0) {
+      setSelectedId(null);
+      return;
+    }
+
+    if (!selectedId) {
+      setSelectedId(nodes[nodes.length - 1].id);
+    }
+  }, [nodes, selectedId]);
+
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el || nodes.length === 0) {
+      return;
+    }
+
+    const frame = requestAnimationFrame(() => {
+      el.scrollLeft = el.scrollWidth;
+    });
+
+    return () => cancelAnimationFrame(frame);
+  }, [nodes.length, visible.length]);
 
   return (
     <section className="dash-section">
@@ -270,7 +295,7 @@ function ExecutionGraph({
         <p className="dash-muted">No execution events yet.</p>
       ) : (
         <>
-          <div className="dash-graph-scroll">
+          <div ref={scrollRef} className="dash-graph-scroll">
             <div className="dash-graph-track">
               {visible.map((node, index) => (
                 <div className="dash-graph-entry" key={node.id}>

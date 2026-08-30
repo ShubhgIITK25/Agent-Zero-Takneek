@@ -60,6 +60,7 @@ button:hover {
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  padding-top: 28px;
 }
 
 .file-tree {
@@ -72,7 +73,8 @@ button:hover {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 10px 14px;
+  padding: 12px 14px 10px;
+  margin-top: 8px;
   font-size: 11px;
   font-weight: 600;
   letter-spacing: 0.08em;
