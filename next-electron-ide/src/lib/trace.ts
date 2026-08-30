@@ -479,3 +479,111 @@ export function formatUsd(n: number): string {
 export function formatMs(ms: number): string {
   return ms < 1000 ? `${Math.round(ms)}ms` : `${(ms / 1000).toFixed(1)}s`;
 }
+
+/**
+ * ============================================================================
+ *  CALL TREE — turning the flat node list into the hierarchy it always was
+ * ============================================================================
+ * Every node carries a `parentId` naming the call that caused it: the planner
+ * is the root, a verifier hangs off the implementer whose claim it judges, a
+ * retry hangs off the verifier that rejected the previous attempt. Read
+ * top-down that spells out WHY the task did what it did — something a list
+ * ordered by timestamp cannot express, because in a flat list "attempt 2" and
+ * "the verifier that forced attempt 2" are just two adjacent rows.
+ *
+ * THE RESULT IS ALWAYS A FOREST, WHATEVER THE INPUT. The renderer recurses
+ * over `children`, so a single cycle or dangling parent would hang the UI, and
+ * both are reachable in practice rather than theoretical:
+ *   - a dangling parent is normal — replaying a truncated events.jsonl, or
+ *     rendering one subtask's nodes in isolation, both leave children whose
+ *     parent is not in the set;
+ *   - a cycle should be impossible, but "should be impossible" is a poor
+ *     reason to let the dashboard freeze on the one run that matters.
+ * So an unresolvable parent (missing, self-referential, or on a cyclic chain)
+ * is treated as no parent, and the node surfaces as a root instead of
+ * vanishing. Nothing is ever dropped: every input node appears exactly once.
+ */
+
+export type CallTreeNode = {
+  node: TraceNode;
+  children: CallTreeNode[];
+  /** 0 for a root; only used for display. */
+  depth: number;
+};
+
+export function buildCallTree(nodes: TraceNode[]): CallTreeNode[] {
+  const wrapped = new Map<string, CallTreeNode>();
+  for (const node of nodes) wrapped.set(node.nodeId, { node, children: [], depth: 0 });
+
+  // Resolve each node's EFFECTIVE parent first, before linking anything, so
+  // the link step cannot build a structure the renderer can't walk.
+  const parentOf = new Map<string, string | null>();
+  for (const node of nodes) {
+    let parent: string | null = node.parentId;
+    if (parent === node.nodeId) parent = null;
+    if (parent != null && !wrapped.has(parent)) parent = null;
+
+    if (parent != null) {
+      // Walk the ancestor chain. Revisiting anything means a cycle — including
+      // one that does not contain this node — so detach and let it be a root.
+      const seen = new Set<string>([node.nodeId]);
+      let cursor: string | null = parent;
+      while (cursor != null) {
+        if (seen.has(cursor)) {
+          parent = null;
+          break;
+        }
+        seen.add(cursor);
+        const up: string | null = wrapped.get(cursor)!.node.parentId;
+        cursor = up != null && wrapped.has(up) ? up : null;
+      }
+    }
+    parentOf.set(node.nodeId, parent);
+  }
+
+  const roots: CallTreeNode[] = [];
+  for (const node of nodes) {
+    const self = wrapped.get(node.nodeId)!;
+    const parent = parentOf.get(node.nodeId) ?? null;
+    if (parent == null) roots.push(self);
+    else wrapped.get(parent)!.children.push(self);
+  }
+
+  const assignDepth = (item: CallTreeNode, depth: number): void => {
+    item.depth = depth;
+    for (const child of item.children) assignDepth(child, depth + 1);
+  };
+  for (const root of roots) assignDepth(root, 0);
+
+  return roots;
+}
+
+/** Rolled-up cost of a node and everything it caused — the number that makes a
+ *  collapsed branch honest about what it is hiding. */
+export function subtreeTotals(item: CallTreeNode): {
+  calls: number;
+  costUsd: number;
+  tokens: number;
+} {
+  let calls = 1;
+  let costUsd = item.node.costUsd;
+  let tokens = item.node.promptTokens + item.node.completionTokens;
+  for (const child of item.children) {
+    const sub = subtreeTotals(child);
+    calls += sub.calls;
+    costUsd += sub.costUsd;
+    tokens += sub.tokens;
+  }
+  return { calls, costUsd, tokens };
+}
+
+/** Deepest level in a forest, 1-based. Used to label the view ("4 levels deep"). */
+export function treeDepth(roots: CallTreeNode[]): number {
+  let max = 0;
+  const walk = (item: CallTreeNode): void => {
+    max = Math.max(max, item.depth + 1);
+    for (const child of item.children) walk(child);
+  };
+  for (const root of roots) walk(root);
+  return max;
+}

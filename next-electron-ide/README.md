@@ -222,6 +222,8 @@ File edits are presented as block-level diffs (LCS-based) with **partial approva
 
 ## Observability dashboard
 
+**Call hierarchy.** Every model call records the call that *caused* it, so the dashboard draws the real tree rather than a flat list: the planner is the root, each subtask's implementer turns hang off it, the verifier hangs off the implementer whose claim it judges, and a retry hangs off the verifier that rejected the previous attempt. Read top-down it explains *why* the task did what it did — something a time-ordered list can't show, since there "attempt 2" and "the verifier that forced attempt 2" are just two adjacent rows. Branches collapse, and a collapsed one reports the calls and cost it is hiding. **Full tree** shows the whole causal chain including edges that cross subtask boundaries; **By subtask** keeps the per-subtask grouping (status, category, retries, dependencies) with each group drawn as its own tree.
+
 The live dashboard and the post-hoc "replay a finished task" dashboard are driven by the same pure reducer folding over the same event stream — one from live IPC events, the other from the task's persisted `events.jsonl` — so what you see live and what you see on replay can never diverge into two different renderings of the same run.
 
 Every task is persisted as an append-only JSONL event log plus an atomically-written (temp file + rename) snapshot, so a crash or force-quit mid-task loses at most the in-flight step, and the task list lets you resume from the last checkpoint.
