@@ -126,6 +126,8 @@ The live dashboard and the post-hoc "replay a finished task" dashboard are drive
 
 Every task is persisted as an append-only JSONL event log plus an atomically-written (temp file + rename) snapshot, so a crash or force-quit mid-task loses at most the in-flight step, and the task list lets you resume from the last checkpoint.
 
+Routing decisions surface in two places from the one `routing_decision` event: the dashboard's per-node **Routing** tab, and — new — an expandable row in the agent panel itself. The panel row is a one-liner by default (`⇄ north-mini-code · fits codegen, zero marginal cost · 3 not picked`); clicking it drops down the full reason, the decision signals (category, attempt, budget/time remaining, context size), and every candidate that lost with the reason it lost (`llama-3.3-70b — scored 41.3 vs 58.7`, `gemma-4-31b — context ~60000 tok exceeds its 262144 window`). So the "why not the other models" is one click away, not buried in a separate panel.
+
 ## Testing
 
 ```bash

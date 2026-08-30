@@ -48,8 +48,21 @@ type Bubble =
   | { id: string; kind: 'agent'; text: string }
   | { id: string; kind: 'system'; text: string }
   | { id: string; kind: 'error'; text: string }
-  /** `count` collapses N consecutive identical routing decisions into one row. */
-  | { id: string; kind: 'routing'; text: string; model: string; count: number }
+  /** `count` collapses N consecutive identical routing decisions into one row.
+   *  The compact row shows `model` + truncated `text`; the rest (`reason` in
+   *  full, the `rejected` candidates, the decision `signals`) is kept here so
+   *  the row can expand in place instead of sending the user to the dashboard. */
+  | {
+      id: string;
+      kind: 'routing';
+      text: string;
+      model: string;
+      count: number;
+      provider: string;
+      reason: string;
+      rejected: { modelId: string; why: string }[];
+      signals: Record<string, unknown>;
+    }
   | { id: string; kind: 'approval'; requestId: string; approvalKind: 'diff' | 'command'; summary: string; command?: string; diffs?: FileDiffView[]; resolved?: string };
 
 let bubbleSeq = 0;
@@ -66,6 +79,30 @@ function compactRouting(e: TraceEvent): { model: string; text: string } {
   const reason = String(e.reason ?? '');
   const colon = reason.indexOf('): ');
   return { model, text: colon >= 0 ? reason.slice(colon + 3) : reason };
+}
+
+/**
+ * The handful of routing signals worth showing a human, in a fixed order, with
+ * the raw numbers turned into something readable. Anything else in the signals
+ * object (internal bookkeeping) is left out on purpose.
+ */
+function readableSignals(signals: Record<string, unknown>): { label: string; value: string }[] {
+  const out: { label: string; value: string }[] = [];
+  const n = (v: unknown) => (typeof v === 'number' ? v : undefined);
+
+  if (signals.category) out.push({ label: 'category', value: String(signals.category) });
+  const attempt = n(signals.attemptNumber);
+  if (attempt != null) out.push({ label: 'attempt', value: attempt > 1 ? `${attempt} (escalated)` : '1' });
+  const ctx = n(signals.estimatedContextTokens);
+  if (ctx != null) out.push({ label: 'context', value: `~${ctx.toLocaleString()} tok` });
+  const budget = n(signals.budgetRemaining);
+  if (budget != null) out.push({ label: 'budget left', value: `$${budget.toFixed(4)}` });
+  const time = n(signals.timeRemaining);
+  if (time != null) out.push({ label: 'time left', value: `${Math.round(time)}s` });
+  const cd = signals.cooldownProviders;
+  if (Array.isArray(cd) && cd.length) out.push({ label: 'in cooldown', value: cd.join(', ') });
+
+  return out;
 }
 
 /** Matches `src/foo.ts:120` and `src/foo.ts:120-140` inside agent prose. */
@@ -117,6 +154,16 @@ export default function ChatPanel({
   const [resumable, setResumable] = useState<{ taskId: string; prompt: string; step: number } | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const push = (b: Bubble) => setBubbles((prev) => [...prev, b]);
+  // Which routing rows are expanded to show their full reason / rejected
+  // candidates / signals. Keyed by bubble id so it survives re-renders.
+  const [expandedRouting, setExpandedRouting] = useState<Set<string>>(new Set());
+  const toggleRouting = (id: string) =>
+    setExpandedRouting((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
   const [showHistory, setShowHistory] = useState(false);
   const [historyTasks, setHistoryTasks] = useState<any[]>([]);
 
@@ -141,7 +188,17 @@ export default function ChatPanel({
         if (last?.kind === 'routing' && last.model === model && last.text === text) {
           last.count += 1;
         } else {
-          pushLocal({ id: nextId(), kind: 'routing', model, text, count: 1 });
+          pushLocal({
+            id: nextId(),
+            kind: 'routing',
+            model,
+            text,
+            count: 1,
+            provider: String(e.provider ?? ''),
+            reason: String(e.reason ?? text),
+            rejected: Array.isArray(e.rejected) ? e.rejected : [],
+            signals: e.signals && typeof e.signals === 'object' ? e.signals : {},
+          });
         }
         break;
       }
@@ -543,12 +600,63 @@ export default function ChatPanel({
               );
             }
             if (b.kind === 'routing') {
+              const open = expandedRouting.has(b.id);
+              const hasDetail = b.rejected.length > 0 || readableSignals(b.signals).length > 0;
+              const sig = readableSignals(b.signals);
               return (
-                <div key={b.id} className="chat-routing" title={b.text}>
-                  <span className="chat-routing-icon">⇄</span>
-                  <span className="chat-routing-model">{b.model}</span>
-                  <span className="chat-routing-why">{b.text}</span>
-                  {b.count > 1 && <span className="chat-routing-count">×{b.count}</span>}
+                <div key={b.id} className={`chat-routing${open ? ' chat-routing-open' : ''}`}>
+                  <button
+                    type="button"
+                    className="chat-routing-head"
+                    onClick={() => hasDetail && toggleRouting(b.id)}
+                    aria-expanded={open}
+                    disabled={!hasDetail}
+                    title={hasDetail ? (open ? 'Hide routing detail' : 'Show why this model won') : b.text}
+                  >
+                    <span className="chat-routing-icon">{hasDetail ? (open ? '▾' : '▸') : '⇄'}</span>
+                    <span className="chat-routing-model">{b.model}</span>
+                    <span className="chat-routing-why">{b.text}</span>
+                    {b.count > 1 && <span className="chat-routing-count">×{b.count}</span>}
+                    {!open && b.rejected.length > 0 && (
+                      <span className="chat-routing-rejcount">{b.rejected.length} not picked</span>
+                    )}
+                  </button>
+
+                  {open && (
+                    <div className="chat-routing-detail">
+                      <p className="chat-routing-reason">
+                        <span className="chat-routing-picked">
+                          {b.model}
+                          {b.provider ? ` · ${b.provider}` : ''}
+                        </span>
+                        {b.reason.replace(/^.*?\): /, '')}
+                      </p>
+
+                      {sig.length > 0 && (
+                        <dl className="chat-routing-signals">
+                          {sig.map((s) => (
+                            <div key={s.label}>
+                              <dt>{s.label}</dt>
+                              <dd>{s.value}</dd>
+                            </div>
+                          ))}
+                        </dl>
+                      )}
+
+                      {b.rejected.length > 0 && (
+                        <ul className="chat-routing-rejected">
+                          {b.rejected.map((r, i) => (
+                            <li key={`${r.modelId}-${i}`}>
+                              <span className="chat-routing-rej-model">
+                                {r.modelId.split(':').pop() || r.modelId}
+                              </span>
+                              <span className="chat-routing-rej-why">{r.why}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </div>
+                  )}
                 </div>
               );
             }
