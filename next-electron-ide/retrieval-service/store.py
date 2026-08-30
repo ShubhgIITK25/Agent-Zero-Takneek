@@ -85,6 +85,16 @@ def _db_path(data_dir: str, codebase_id: str) -> str:
     return os.path.join(data_dir, f"{codebase_id}.db")
 
 
+def _fts_has_tokens(db: sqlite3.Connection) -> bool:
+    """True if chunks_fts carries the v2 `tokens` column. A missing table counts
+    as v2 because _SCHEMA is about to create it in the current format."""
+    try:
+        cols = [r[1] for r in db.execute("PRAGMA table_info(chunks_fts)")]
+    except sqlite3.OperationalError:
+        return True
+    return not cols or "tokens" in cols
+
+
 def get_db(data_dir: str, codebase_id: str, vec_enabled_hint=True) -> sqlite3.Connection:
     if codebase_id in _connections:
         return _connections[codebase_id]
@@ -118,8 +128,21 @@ def get_db(data_dir: str, codebase_id: str, vec_enabled_hint=True) -> sqlite3.Co
     # unless the extension is loaded first.
     if not fresh:
         have = db.execute("PRAGMA user_version").fetchone()[0]
-        if have and have < INDEX_FORMAT_VERSION:
+        # `have == 0` is the *most* stale an index can be: it predates
+        # versioning entirely. Guarding this with `if have and ...` read 0 as
+        # "no version recorded, leave it alone", which is exactly backwards and
+        # let a v1 file through to be written by v2 code.
+        stale = have < INDEX_FORMAT_VERSION
+        if stale:
             print(f"[store] index for {codebase_id} is format v{have}, rebuilding at v{INDEX_FORMAT_VERSION}")
+        # The stamp below is unconditional, so any index opened by a build that
+        # had that bug is now labelled v2 while still carrying the v1 schema.
+        # Its version can never be trusted again, so confirm the format against
+        # the one column that actually distinguishes v1 from v2.
+        elif not _fts_has_tokens(db):
+            print(f"[store] index for {codebase_id} claims v{have} but has a v1 FTS table, rebuilding")
+            stale = True
+        if stale:
             for tbl in ("chunks_fts", "chunks_vec", "edges", "chunks", "files"):
                 try:
                     db.execute(f"DROP TABLE IF EXISTS {tbl}")
