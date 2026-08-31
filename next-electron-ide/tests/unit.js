@@ -167,7 +167,12 @@ t('a rate-limited provider is excluded, with the reason recorded', () => {
   rl.penalise('ollama', true);
   const res = new Router(enabled, rl).route(base);
   assert.notStrictEqual(res.model.provider, 'ollama');
-  assert.ok(res.rejected.some((x) => /backoff/.test(x.why)));
+  // The reason must be actionable, not just present: it names the provider and
+  // says how long the wait is, so the user can decide to switch rather than sit
+  // and retry. (It used to read "in rate-limit backoff", which said neither.)
+  const why = res.rejected.find((x) => /^ollama:/.test(x.why))?.why ?? '';
+  assert.ok(/ollama/.test(why), `reason does not name the provider: "${why}"`);
+  assert.ok(/retrying in ~/.test(why), `reason does not say how long: "${why}"`);
 });
 t('a context larger than the window is rejected with a reason', () => {
   const res = r.route({ ...base, estimatedContextTokens: 40000 });

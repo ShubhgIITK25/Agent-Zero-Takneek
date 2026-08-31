@@ -201,7 +201,15 @@ export type EventBody =
   | { type: 'compaction'; nodeId: string | null; beforeTokens: number; afterTokens: number; summarized: number; preserved: string[] }
   | { type: 'budget_update'; costUsd: number; elapsedSeconds: number; maxCostUsd: number; maxSeconds: number; promptTokens: number; completionTokens: number }
   /** A cap fired or two agents disagreed. Always surfaced, never silent. */
-  | { type: 'intervention'; subtaskId: string | null; cause: 'retry_cap' | 'step_cap' | 'token_cap' | 'cost_ceiling' | 'time_ceiling' | 'identical_repeat' | 'disagreement' | 'provider_failover' | 'resume_rollback' | 'dependency_deadlock' | 'workspace_restored' | 'replan' | 'replan_declined' | 'retrieval_weak' | 'model_unhealthy' | 'stale_proposal'; detail: string; action: string }
+  | { type: 'intervention'; subtaskId: string | null; cause: 'retry_cap' | 'step_cap' | 'token_cap' | 'cost_ceiling' | 'time_ceiling' | 'identical_repeat' | 'disagreement' | 'provider_failover' | 'resume_rollback' | 'dependency_deadlock' | 'workspace_restored' | 'replan' | 'replan_declined' | 'retrieval_weak' | 'model_unhealthy' | 'stale_proposal' | 'rate_limited';
+      /**
+       * How loudly to say it. Not derivable from `cause`: a provider failover
+       * is routine when another model picks the work up and serious when none
+       * can, and only the emitter knows which happened. Absent means 'warn',
+       * so older event logs replay unchanged.
+       */
+      severity?: 'info' | 'warn' | 'error';
+      detail: string; action: string }
   /**
    * Which subtasks are executing right now. Emitted only when the set changes,
    * so the dashboard can draw real overlap rather than inferring it from

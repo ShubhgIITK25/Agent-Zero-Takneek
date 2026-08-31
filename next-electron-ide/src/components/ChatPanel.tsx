@@ -218,9 +218,23 @@ export default function ChatPanel({
       case 'compaction':
         pushLocal({ id: nextId(), kind: 'system', text: `Compacted context ${e.beforeTokens}→${e.afterTokens} tokens.` });
         break;
-      case 'intervention':
-        pushLocal({ id: nextId(), kind: e.cause === 'provider_failover' ? 'error' : 'system', text: `${e.cause.replace(/_/g, ' ')} — ${e.detail}\n${e.action}` });
+      case 'intervention': {
+        // Severity comes from the orchestrator rather than being inferred from
+        // the cause here. The same cause can be routine or fatal — a failover
+        // that found another model is not an error, and a rate limit never was
+        // one: it is a documented free-tier behaviour the router is built to
+        // route around. Only a genuine dead end is rendered red.
+        //
+        // Older event logs carry no severity, so a failover without one keeps
+        // its previous treatment and history replays unchanged.
+        const severity = e.severity ?? (e.cause === 'provider_failover' ? 'error' : 'info');
+        pushLocal({
+          id: nextId(),
+          kind: severity === 'error' ? 'error' : 'system',
+          text: `${e.cause.replace(/_/g, ' ')} — ${e.detail}\n${e.action}`,
+        });
         break;
+      }
       case 'approval_request':
         pushLocal({ id: nextId(), kind: 'approval', requestId: e.request.requestId, approvalKind: e.request.kind, summary: e.request.summary, command: e.request.command, diffs: e.request.diff });
         break;

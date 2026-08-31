@@ -58,13 +58,91 @@ export class ProviderError extends Error {
   retryable: boolean;
   rateLimited: boolean;
   status?: number;
-  constructor(message: string, opts: { retryable: boolean; rateLimited: boolean; status?: number }) {
+  /**
+   * Which quota was hit. This is the difference between a pause and a wall:
+   * a per-minute limit clears while the task is still running, a per-day one
+   * does not clear today at all. Backing off 20 seconds against a daily quota
+   * just buys another 429.
+   */
+  quotaScope?: 'minute' | 'day' | 'unknown';
+  /** How long the provider itself said to wait, in ms, when it said so. */
+  retryAfterMs?: number;
+  /** The provider's own sentence, with the JSON envelope stripped off. */
+  humanMessage?: string;
+  constructor(
+    message: string,
+    opts: {
+      retryable: boolean;
+      rateLimited: boolean;
+      status?: number;
+      quotaScope?: 'minute' | 'day' | 'unknown';
+      retryAfterMs?: number;
+      humanMessage?: string;
+    }
+  ) {
     super(message);
     this.name = 'ProviderError';
     this.retryable = opts.retryable;
     this.rateLimited = opts.rateLimited;
     this.status = opts.status;
+    this.quotaScope = opts.quotaScope;
+    this.retryAfterMs = opts.retryAfterMs;
+    this.humanMessage = opts.humanMessage;
   }
+}
+
+/**
+ * Pull the one useful sentence out of a provider's error envelope.
+ *
+ * Providers return their limits as nested JSON with the headers embedded, e.g.
+ * {"error":{"message":"Rate limit exceeded: free-models-per-day...","metadata":
+ * {"headers":{"X-RateLimit-Limit":"50",...}}}}. Rendering that raw is what made
+ * an ordinary free-tier pause look like a crash. Everything below reads that
+ * body — never the Response headers — so no call site has to change.
+ */
+export function describeProviderError(text: string): string {
+  try {
+    const parsed = JSON.parse(text);
+    const msg = parsed?.error?.message ?? parsed?.message ?? parsed?.error;
+    if (typeof msg === 'string' && msg.trim()) return msg.trim().slice(0, 200);
+  } catch {
+    // Not JSON — fall through to the raw text.
+  }
+  const stripped = text.replace(/\s+/g, ' ').trim();
+  return stripped ? stripped.slice(0, 160) : 'no detail supplied';
+}
+
+/** Per-day, per-minute, or unstated. */
+export function quotaScopeOf(text: string): 'minute' | 'day' | 'unknown' {
+  if (/per[-_ ]?day|daily|requests[-_ ]per[-_ ]day|rpd\b/i.test(text)) return 'day';
+  if (/per[-_ ]?min|per[-_ ]?second|rpm\b|tpm\b/i.test(text)) return 'minute';
+  return 'unknown';
+}
+
+/**
+ * What the provider said to wait, in ms. Reads Retry-After and X-RateLimit-Reset
+ * out of the body (providers echo their headers there), and tolerates all three
+ * encodings seen in the wild: seconds-to-wait, epoch seconds, epoch millis.
+ */
+export function retryAfterMsOf(text: string): number | undefined {
+  const retryAfter = /"?retry[-_]?after"?\s*[:=]\s*"?(\d+(?:\.\d+)?)"?/i.exec(text);
+  if (retryAfter) {
+    const secs = Number(retryAfter[1]);
+    if (Number.isFinite(secs) && secs > 0) return Math.min(secs * 1000, 6 * 60 * 60_000);
+  }
+  const reset = /"?x-ratelimit-reset"?\s*[:=]\s*"?(\d+)"?/i.exec(text);
+  if (reset) {
+    const raw = Number(reset[1]);
+    if (!Number.isFinite(raw) || raw <= 0) return undefined;
+    const now = Date.now();
+    // > year-2001 in ms means it is an absolute epoch-millis deadline.
+    if (raw > 1e12) return Math.max(0, Math.min(raw - now, 6 * 60 * 60_000));
+    // > year-2001 in seconds means absolute epoch seconds.
+    if (raw > 1e9) return Math.max(0, Math.min(raw * 1000 - now, 6 * 60 * 60_000));
+    // Otherwise it is a plain duration in seconds.
+    return Math.min(raw * 1000, 6 * 60 * 60_000);
+  }
+  return undefined;
 }
 
 /**
@@ -115,7 +193,15 @@ async function postJson(url: string, headers: Record<string, string>, body: unkn
 
 function classifyHttp(status: number, text: string): ProviderError {
   if (status === 429) {
-    return new ProviderError(`rate limited (429): ${text.slice(0, 200)}`, { retryable: true, rateLimited: true, status });
+    const human = describeProviderError(text);
+    return new ProviderError(`rate limited (429): ${human}`, {
+      retryable: true,
+      rateLimited: true,
+      status,
+      quotaScope: quotaScopeOf(text),
+      retryAfterMs: retryAfterMsOf(text),
+      humanMessage: human,
+    });
   }
   if (status === 401 || status === 403) {
     return new ProviderError(`auth failed (${status}) — check the API key in Settings`, { retryable: false, rateLimited: false, status });

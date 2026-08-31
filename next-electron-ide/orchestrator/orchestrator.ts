@@ -153,6 +153,15 @@ export class TaskRunner {
   private approvalGate: Promise<void> = Promise.resolve();
   /** Last concurrency set emitted, so the event fires on change rather than per tick. */
   private lastConcurrencyKey = '';
+  /**
+   * Providers we have already explained a rate limit for, keyed by quota.
+   *
+   * Without this, three parallel subtasks hitting the same spent free tier
+   * produce three identical notices, and a long task produces one per subtask
+   * — turning a single fact ("this provider is out of quota today") into a
+   * wall of repetition that buries everything else.
+   */
+  private reportedRateLimits = new Set<string>();
   /** Re-plans spent on this task. Bounded by MAX_REPLANS_PER_TASK. */
   private replansUsed = 0;
   /** .nexideignore / .ignore — loaded once per task, not re-read on every tool call. */
@@ -509,6 +518,7 @@ export class TaskRunner {
           type: 'intervention',
           subtaskId: opts.subtaskId,
           cause: 'provider_failover',
+          severity: 'error',
           detail: `No eligible model available (tried: ${tried.join(', ') || 'none'})`,
           action: 'Aborting this step — every enabled model is excluded, over budget, or rate-limited.',
         });
@@ -615,12 +625,57 @@ export class TaskRunner {
           continue;
         }
 
-        this.rateLimits.penalise(route.model.provider, pe.rateLimited);
+        const provider = route.model.provider;
+        this.rateLimits.penalise(provider, pe.rateLimited, {
+          quotaScope: pe.quotaScope,
+          retryAfterMs: pe.retryAfterMs,
+          note:
+            pe.quotaScope === 'day'
+              ? 'daily quota spent'
+              : pe.quotaScope === 'minute'
+                ? 'per-minute quota hit'
+                : undefined,
+        });
+
+        if (pe.rateLimited) {
+          // A rate limit is NOT an error. It is the free tier working exactly
+          // as documented, and the router is built to route around it. Saying
+          // it once, calmly, as information is the honest report; a red block
+          // per occurrence tells the user something is broken when nothing is.
+          const key = `${provider}:${pe.quotaScope ?? 'unknown'}`;
+          if (!this.reportedRateLimits.has(key)) {
+            this.reportedRateLimits.add(key);
+            const secs = this.rateLimits.cooldownRemainingSeconds(provider);
+            const when =
+              secs >= 3600
+                ? `about ${Math.round(secs / 3600)}h`
+                : secs >= 60
+                  ? `about ${Math.round(secs / 60)} min`
+                  : `${secs}s`;
+            this.emit({
+              type: 'intervention',
+              subtaskId: opts.subtaskId,
+              cause: 'rate_limited',
+              severity: 'info',
+              detail:
+                pe.quotaScope === 'day'
+                  ? `${provider} has used up its quota for today (${pe.humanMessage ?? pe.message}).`
+                  : `${provider} is rate limited (${pe.humanMessage ?? pe.message}).`,
+              action:
+                pe.quotaScope === 'day'
+                  ? `Skipping ${provider} for the rest of this task and using the other providers. Nothing is lost — enable a Groq or local Ollama model in Settings if you want more headroom.`
+                  : `Pausing ${provider} for ${when} and continuing on another model. No work is lost.`,
+            });
+          }
+          continue;
+        }
+
         this.emit({
           type: 'intervention',
           subtaskId: opts.subtaskId,
           cause: 'provider_failover',
-          detail: `${route.model.label} (${route.model.provider}) failed: ${pe.message}`,
+          severity: 'warn',
+          detail: `${route.model.label} (${provider}) failed: ${pe.message}`,
           action: 'Re-routing the same context to another model — no work is lost.',
         });
       }
@@ -963,7 +1018,19 @@ export class TaskRunner {
         : 'The next attempt starts from a clean tree instead of building on a rejected one.',
     });
 
-    this.backtrack = new Map();
+    // Spend THIS subtask's undo point, and only this one.
+    //
+    // It was `this.backtrack = new Map()` when there was a single global undo
+    // map. Left as-is under per-subtask maps it wiped the outer map — erasing
+    // every OTHER in-flight subtask's undo point as a side effect of one
+    // subtask rolling back, and (because captureBacktrackPoint returns early
+    // when a subtask has no map at all) silently disabling this subtask's own
+    // rollback on every later attempt.
+    //
+    // Clearing rather than deleting is deliberate: the next attempt's first
+    // write re-captures, and since the tree was just restored, what it
+    // captures is the original content again.
+    own.clear();
     return restored.length;
   }
 

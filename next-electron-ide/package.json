@@ -21,7 +21,7 @@
     "build:orchestrator": "tsc -p orchestrator/tsconfig.json",
     "verify:models": "node scripts/verify-models.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p electron/tsconfig.json && tsc --noEmit -p orchestrator/tsconfig.json",
-    "test": "npm run build:orchestrator && node tests/unit.js && node tests/ignore.js && node tests/review-buffer.js && node tests/tree.js && node tests/health.js && node tests/parallel.js && node tests/task-completion.js && node tests/protocol.js && node tests/resume.js",
+    "test": "npm run build:orchestrator && node tests/unit.js && node tests/ignore.js && node tests/review-buffer.js && node tests/tree.js && node tests/health.js && node tests/ratelimit.js && node tests/model-health.js && node tests/watcher.js && node tests/execution-graph.js && node tests/backtrack.js && node tests/replan.js && node tests/parallel.js && node tests/task-completion.js && node tests/protocol.js && node tests/resume.js",
     "test:retrieval": "python3 retrieval-service/test_recovery.py || echo '(skipped: python3 unavailable)'"
   },
   "dependencies": {

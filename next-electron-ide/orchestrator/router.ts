@@ -156,19 +156,68 @@ export class RateLimitTracker {
   /** provider -> epoch ms until which it is in backoff */
   private cooldownUntil = new Map<string, number>();
   private consecutiveFailures = new Map<string, number>();
+  /** provider -> why it is waiting, in words a person can act on. */
+  private reason = new Map<string, string>();
 
-  /** Exponential backoff, capped — a 429 storm should not park a provider forever. */
-  penalise(provider: string, rateLimited: boolean): void {
+  /**
+   * Back off for as long as the situation actually warrants.
+   *
+   * Blind exponential backoff was wrong in both directions. Against a
+   * PER-DAY quota it is far too short: the quota does not reset for hours, so
+   * every retry buys another 429, another wasted round-trip, and another
+   * alarming line in the chat — which is exactly the behaviour that made a
+   * spent free tier look like a broken system. Against a per-minute quota it
+   * is often too long, when the provider has told us precisely when it will
+   * accept traffic again.
+   *
+   * So: use the provider's own hint when it gave one; treat a daily quota as
+   * spent for the rest of this task; otherwise fall back to exponential.
+   */
+  penalise(
+    provider: string,
+    rateLimited: boolean,
+    hint: { quotaScope?: 'minute' | 'day' | 'unknown'; retryAfterMs?: number; note?: string } = {}
+  ): void {
     const n = (this.consecutiveFailures.get(provider) ?? 0) + 1;
     this.consecutiveFailures.set(provider, n);
-    const baseMs = rateLimited ? 20_000 : 5_000;
-    const waitMs = Math.min(baseMs * Math.pow(2, n - 1), 120_000);
+
+    let waitMs: number;
+    let why: string;
+    if (hint.quotaScope === 'day') {
+      // Long enough to outlive any single task. Not permanent: a resumed task
+      // hours later should try again rather than inherit today's verdict.
+      waitMs = 6 * 60 * 60_000;
+      why = hint.note ?? 'daily quota spent';
+    } else if (hint.retryAfterMs != null && hint.retryAfterMs > 0) {
+      // Trust the provider, plus a second of margin for clock skew.
+      waitMs = Math.min(hint.retryAfterMs + 1_000, 6 * 60 * 60_000);
+      why = hint.note ?? 'provider asked us to wait';
+    } else {
+      const baseMs = rateLimited ? 20_000 : 5_000;
+      waitMs = Math.min(baseMs * Math.pow(2, n - 1), 120_000);
+      why = hint.note ?? (rateLimited ? 'rate limited' : 'call failed');
+    }
+
     this.cooldownUntil.set(provider, Date.now() + waitMs);
+    this.reason.set(provider, why);
   }
 
   clear(provider: string): void {
     this.consecutiveFailures.delete(provider);
     this.cooldownUntil.delete(provider);
+    this.reason.delete(provider);
+  }
+
+  /** Seconds remaining, for a message a person can act on. 0 if not waiting. */
+  cooldownRemainingSeconds(provider: string): number {
+    const until = this.cooldownUntil.get(provider);
+    if (until == null || until <= Date.now()) return 0;
+    return Math.ceil((until - Date.now()) / 1000);
+  }
+
+  /** Why this provider is waiting, for the routing trace. */
+  cooldownReason(provider: string): string | null {
+    return this.inCooldown(provider) ? this.reason.get(provider) ?? 'rate limited' : null;
   }
 
   inCooldown(provider: string): boolean {
@@ -264,7 +313,16 @@ export class Router {
         continue;
       }
       if (this.rateLimits.inCooldown(m.provider)) {
-        rejected.push({ modelId: m.id, why: `provider ${m.provider} is in rate-limit backoff` });
+        // Say what is being waited on and for how long. "in backoff" told the
+        // user nothing they could act on; "daily quota spent, 5h58m" tells
+        // them to switch provider rather than sit and retry.
+        const secs = this.rateLimits.cooldownRemainingSeconds(m.provider);
+        const human =
+          secs >= 3600 ? `${Math.round(secs / 360) / 10}h` : secs >= 60 ? `${Math.round(secs / 60)}m` : `${secs}s`;
+        rejected.push({
+          modelId: m.id,
+          why: `${m.provider}: ${this.rateLimits.cooldownReason(m.provider)} — retrying in ~${human}`,
+        });
         continue;
       }
       // Leave room for the reply, not just the prompt.
