@@ -12,23 +12,29 @@ type EditorPaneProps = {
   revealLine?: number;
   onChange: (value: string) => void;
   onSave: () => void | Promise<void>;
+  onSaveAs?: () => void | Promise<void>;
 };
 
-export default function EditorPane({ filePath, content, revealLine, onChange, onSave }: EditorPaneProps) {
+export default function EditorPane({ filePath, content, revealLine, onChange, onSave, onSaveAs }: EditorPaneProps) {
   const editorRef = useRef<Parameters<OnMount>[0] | null>(null);
   const onSaveRef = useRef(onSave);
+  const onSaveAsRef = useRef(onSaveAs);
 
   // Monaco registers keyboard commands once when the editor mounts. Keep the
   // latest callback in a ref so Ctrl/Cmd+S saves the currently active file,
   // rather than the "no file selected" state from that first mount.
   useEffect(() => {
     onSaveRef.current = onSave;
-  }, [onSave]);
+    onSaveAsRef.current = onSaveAs;
+  }, [onSave, onSaveAs]);
 
   const handleMount: OnMount = (editor, monaco) => {
     editorRef.current = editor;
     editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => {
       void onSaveRef.current();
+    });
+    editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyMod.Shift | monaco.KeyCode.KeyS, () => {
+      void onSaveAsRef.current?.();
     });
   };
 

@@ -506,6 +506,17 @@ function buildMenu() {
           },
         },
         { type: "separator" },
+        {
+          label: "Save",
+          accelerator: "CmdOrCtrl+S",
+          click: () => mainWindow?.webContents.send("file:save"),
+        },
+        {
+          label: "Save As…",
+          accelerator: "CmdOrCtrl+Shift+S",
+          click: () => mainWindow?.webContents.send("file:saveAs"),
+        },
+        { type: "separator" },
         { role: "quit" },
       ],
     },
@@ -595,6 +606,14 @@ ipcMain.handle("dialog:openFolder", async () => {
   if (result.canceled || !result.filePaths[0]) return null;
   setOpenFolder(result.filePaths[0]);
   return openFolderPath;
+});
+
+ipcMain.handle("dialog:saveFileAs", async (_evt, defaultPath?: string) => {
+  const result = await dialog.showSaveDialog(mainWindow!, {
+    defaultPath: defaultPath || "untitled.txt",
+  });
+  if (result.canceled || !result.filePath) return null;
+  return result.filePath;
 });
 
 // The renderer asks for this on mount rather than waiting for a

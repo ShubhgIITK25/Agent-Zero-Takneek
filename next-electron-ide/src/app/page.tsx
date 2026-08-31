@@ -200,12 +200,6 @@ export default function Home() {
     if (activePath) await saveFile(activePath);
   }, [activePath, saveFile]);
 
-  useEffect(() => {
-    return () => {
-      for (const timer of autoSaveTimers.current.values()) clearTimeout(timer);
-    };
-  }, []);
-
   // Re-reads the file tree from disk, and reloads any open, non-dirty
   // file's content from disk (never clobbers unsaved edits). Pass a
   // specific path to only reload that one file — used when the agent's
@@ -235,6 +229,60 @@ export default function Home() {
     },
     [rootPath, openFiles]
   );
+
+  const saveActiveFileAs = useCallback(async () => {
+    if (!window.electronAPI || !activePath) return;
+    const currentValue = contents.current.get(activePath);
+    if (currentValue === undefined) return;
+
+    const newPath = await window.electronAPI.saveFileAs(activePath);
+    if (!newPath) return;
+    if (newPath === activePath) {
+      await saveActiveFile();
+      return;
+    }
+
+    await window.electronAPI.writeFile(newPath, currentValue);
+    contents.current.set(newPath, currentValue);
+    savedContents.current.set(newPath, currentValue);
+    setOpenFiles((prev) => {
+      const existing = prev.find((f) => f.path === newPath);
+      if (existing) {
+        return prev.map((f) => (f.path === newPath ? { ...f, dirty: false } : f));
+      }
+      return [
+        ...prev,
+        {
+          path: newPath,
+          name: newPath.split(/[\\/]/).pop() || newPath,
+          dirty: false,
+        },
+      ];
+    });
+    setActivePath(newPath);
+    void refreshWorkspace(newPath);
+  }, [activePath, refreshWorkspace, saveActiveFile]);
+
+  useEffect(() => {
+    if (!window.electronAPI) {
+      return () => {
+        for (const timer of autoSaveTimers.current.values()) clearTimeout(timer);
+      };
+    }
+
+    const offSave = window.electronAPI.onFileSave(() => {
+      void saveActiveFile();
+    });
+    const offSaveAs = window.electronAPI.onFileSaveAs(() => {
+      void saveActiveFileAs();
+    });
+
+    return () => {
+      offSave();
+      offSaveAs();
+      for (const timer of autoSaveTimers.current.values()) clearTimeout(timer);
+    };
+  }, [saveActiveFile, saveActiveFileAs]);
 
   // The files:refresh IPC listener is set up once (empty-deps effect,
   // above) but refreshWorkspace's identity changes whenever rootPath/
@@ -351,6 +399,7 @@ export default function Home() {
               revealLine={pendingLine && pendingLine.path === activePath ? pendingLine.line : undefined}
               onChange={(value) => activePath && updateContent(activePath, value)}
               onSave={saveActiveFile}
+              onSaveAs={saveActiveFileAs}
             />
           ) : (
             <div className="editor-empty">

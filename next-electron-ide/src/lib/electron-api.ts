@@ -101,6 +101,9 @@ export interface ElectronAPI {
   readDir: (dirPath: string) => Promise<FileNode[]>;
   readFile: (filePath: string) => Promise<string>;
   writeFile: (filePath: string, content: string) => Promise<boolean>;
+  saveFileAs: (defaultPath?: string) => Promise<string | null>;
+  onFileSave: (cb: () => void) => () => void;
+  onFileSaveAs: (cb: () => void) => () => void;
   createFile: (filePath: string) => Promise<boolean>;
   createFolder: (dirPath: string) => Promise<boolean>;
   rename: (oldPath: string, newPath: string) => Promise<boolean>;

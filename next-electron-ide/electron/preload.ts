@@ -73,6 +73,18 @@ const api = {
     ipcRenderer.invoke("fs:readFile", filePath),
   writeFile: (filePath: string, content: string): Promise<boolean> =>
     ipcRenderer.invoke("fs:writeFile", filePath, content),
+  saveFileAs: (defaultPath?: string): Promise<string | null> =>
+    ipcRenderer.invoke("dialog:saveFileAs", defaultPath),
+  onFileSave: (cb: () => void) => {
+    const listener = () => cb();
+    ipcRenderer.on("file:save", listener);
+    return () => ipcRenderer.removeListener("file:save", listener);
+  },
+  onFileSaveAs: (cb: () => void) => {
+    const listener = () => cb();
+    ipcRenderer.on("file:saveAs", listener);
+    return () => ipcRenderer.removeListener("file:saveAs", listener);
+  },
   createFile: (filePath: string): Promise<boolean> =>
     ipcRenderer.invoke("fs:createFile", filePath),
   createFolder: (dirPath: string): Promise<boolean> =>

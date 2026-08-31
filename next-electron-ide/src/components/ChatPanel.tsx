@@ -47,6 +47,7 @@ type Bubble =
   | { id: string; kind: 'user'; text: string }
   | { id: string; kind: 'agent'; text: string }
   | { id: string; kind: 'system'; text: string }
+  | { id: string; kind: 'warning'; text: string }
   | { id: string; kind: 'error'; text: string }
   /** `count` collapses N consecutive identical routing decisions into one row.
    *  The compact row shows `model` + truncated `text`; the rest (`reason` in
@@ -228,9 +229,10 @@ export default function ChatPanel({
         // Older event logs carry no severity, so a failover without one keeps
         // its previous treatment and history replays unchanged.
         const severity = e.severity ?? (e.cause === 'provider_failover' ? 'error' : 'info');
+        const kind = e.cause === 'rate_limited' ? 'warning' : severity === 'error' ? 'error' : 'system';
         pushLocal({
           id: nextId(),
-          kind: severity === 'error' ? 'error' : 'system',
+          kind,
           text: `${e.cause.replace(/_/g, ' ')} — ${e.detail}\n${e.action}`,
         });
         break;
@@ -688,6 +690,14 @@ export default function ChatPanel({
               return (
                 <div key={b.id} className="chat-system">
                   {b.text}
+                </div>
+              );
+            }
+            if (b.kind === 'warning') {
+              return (
+                <div key={b.id} className="chat-message chat-message-warning">
+                  <div className="chat-message-role">Rate limit</div>
+                  <div className="chat-message-text">{b.text}</div>
                 </div>
               );
             }

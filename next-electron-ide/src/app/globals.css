@@ -759,6 +759,14 @@ button:hover {
 
 /* ---------- Chat: tool calls / approval gate / errors ---------- */
 
+.chat-message-warning {
+  align-self: stretch;
+  background: rgba(245, 158, 11, 0.12);
+  border: 1px solid rgba(255, 213, 0, 0.45);
+  color: #fff;
+  max-width: 100%;
+}
+
 .chat-message-error {
   align-self: stretch;
   background: rgba(220, 38, 38, 0.15);
