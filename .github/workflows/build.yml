@@ -14,7 +14,7 @@ jobs:
 
     defaults:
       run:
-        working-directory: Agent-Zero-Takneek/next-electron-ide
+        working-directory: next-electron-ide
 
     steps:
       - name: Check out Git repository
@@ -23,9 +23,9 @@ jobs:
       - name: Install Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 24
           cache: 'npm'
-          cache-dependency-path: Agent-Zero-Takneek/next-electron-ide/package-lock.json
+          cache-dependency-path: next-electron-ide/package-lock.json
 
       - name: Install Python
         uses: actions/setup-python@v5
@@ -49,10 +49,10 @@ jobs:
         with:
           name: App-Binaries-${{ matrix.os }}
           path: |
-            Agent-Zero-Takneek/next-electron-ide/dist/*.exe
-            Agent-Zero-Takneek/next-electron-ide/dist/*.dmg
-            Agent-Zero-Takneek/next-electron-ide/dist/*.AppImage
-            Agent-Zero-Takneek/next-electron-ide/dist/*.deb
-            Agent-Zero-Takneek/next-electron-ide/dist/*.rpm
-            Agent-Zero-Takneek/next-electron-ide/dist/*.pacman
+            next-electron-ide/dist/*.exe
+            next-electron-ide/dist/*.dmg
+            next-electron-ide/dist/*.AppImage
+            next-electron-ide/dist/*.deb
+            next-electron-ide/dist/*.rpm
+            next-electron-ide/dist/*.pacman
           retention-days: 7
