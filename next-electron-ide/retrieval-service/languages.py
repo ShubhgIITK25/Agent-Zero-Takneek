@@ -1,19 +1,3 @@
-"""
-Language detection and tree-sitter query patterns for AST-boundary chunking.
-
-Each entry maps a file extension to:
-  - a tree-sitter language name (as known to tree_sitter_language_pack)
-  - a query string that matches "definition" nodes we want as chunks
-    (functions, methods, classes — never a fixed-size text window)
-  - the node type name tree-sitter uses for call expressions in that
-    language, so the chunker can walk a definition's subtree and pull out
-    what it calls (this is what feeds the symbol/call graph)
-
-Anything not listed here falls back to a naive line-window chunker
-(see chunker.py:fallback_chunks) instead of crashing — better a coarser
-chunk than no coverage for a language we haven't wired up yet.
-"""
-
 # Each language maps to the module that provides its compiled grammar and
 # the accessor function to call on that module (tree_sitter_typescript
 # bundles two grammars — typescript and tsx — under two different

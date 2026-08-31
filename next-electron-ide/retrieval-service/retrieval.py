@@ -1,28 +1,4 @@
-"""
-Phase 2: query. This is what `retrieve_context` (the tool exposed to the
-model) actually runs.
-
-Stage 1 (recall)   — BM25 and vector search run in parallel-ish (both are
-                      fast local SQLite calls), candidates unioned.
-Stage 2 (expand)    — 1-hop graph neighbors of the strongest vector hits
-                      are pulled in, so a structurally-relevant chunk that
-                      just doesn't *sound* like the query still surfaces.
-Stage 3 (rerank)    — a small local cross-encoder (or, if it's not
-                      available, a cheap heuristic) cuts the combined
-                      candidate pool down to the k chunks actually worth
-                      spending the calling model's tokens on.
-Stage 4 (recover)  — a first attempt can come back thin or weak. That is not
-                      a rare edge case: it is the normal outcome when the user
-                      asks in English ("how are user sessions created") about
-                      a corpus written in identifiers (`createUserSession`).
-                      So a weak attempt is DETECTED (`assess`) and retried with
-                      a widened recall pool and a reformulated query
-                      (`reformulate`) before the caller ever sees it.
-
-Every result carries a `why_relevant` tag naming the signal that surfaced
-it, and every escalation is recorded in `attempts`, so this is legible in
-the observability dashboard later, not a black box.
-"""
+# recall, expand, rerank and recover
 import re
 import time
 import store
@@ -32,24 +8,14 @@ import embeddings
 RECALL_K = 25
 GRAPH_EXPAND_TOP_N = 8
 MAX_SNIPPET_LINES = 60
-# RRF deliberately combines ranks, not raw BM25/vector/cross-encoder scores:
-# those scores have different scales and cannot safely be compared directly.
 RRF_K = 60
 GRAPH_RRF_WEIGHT = 0.5
 RERANK_RRF_WEIGHT = 2.0
 
-# --- escalation ---------------------------------------------------------
-# What a widened retry widens to. Deliberately one step, not a ramp: a second
-# attempt 2.4x wider either finds the thing or the thing is not in the index,
-# and a third and fourth pass mostly cost latency.
 WIDE_RECALL_K = 60
 WIDE_GRAPH_EXPAND_TOP_N = 16
-# Cap on how many extra results a widened attempt may hand back, so "recover
-# from a weak result" never turns into "dump the codebase into the context".
 WIDE_K_MULTIPLIER = 2
 MAX_WIDE_K = 16
-# Reformulation can produce several spellings; trying all of them on a query
-# that is simply not in the index is latency for nothing.
 MAX_VARIANTS_TRIED = 2
 
 
@@ -72,13 +38,6 @@ def _heuristic_score(chunk: dict, query_words: set, base_rank_score: float, now:
 
 
 def _rrf_fuse(rank_lists: list, weights: list = None) -> dict:
-    """Fuse ordered candidate lists with Reciprocal Rank Fusion.
-
-    RRF score is weight / (RRF_K + rank), with ranks starting at 1.  This
-    makes keyword, vector, graph, and reranker results comparable without
-    pretending their raw scores share a scale.  Duplicate ids in one list
-    are counted only at their first occurrence.
-    """
     weights = weights or [1.0] * len(rank_lists)
     scores = {}
     for candidates, weight in zip(rank_lists, weights):
@@ -200,47 +159,10 @@ def reformulate(query_text):
             out.append(v)
     return out[:MAX_VARIANTS_TRIED]
 
-
-# ---------------------------------------------------------------------------
-# Confidence assessment
-# ---------------------------------------------------------------------------
-# WHAT WE DELIBERATELY DO NOT USE AS CONFIDENCE: the `score` field. It is an
-# RRF score — a fused *rank* score whose theoretical maximum here is about
-# 0.074 and whose absolute value carries no semantic meaning. Thresholding on
-# it would look like a confidence measure and be numerology. The signals below
-# were chosen because each is independently interpretable:
-#
-#   agreement    BM25 and vector search are independent retrievers over
-#                different representations. A chunk both surfaced is real
-#                evidence; a result set where nothing has both is a set that
-#                nothing corroborated.
-#   graph-only   a result ONLY graph expansion produced means nothing matched
-#                the query itself — we are showing a neighbour of a weak hit
-#                and calling it a result.
-#   pool size    how many distinct chunks matched anything at all. A pool of
-#                three in a large index means recall failed, not ranking.
-#   shortfall    fewer results than asked for: the index does not have it.
-#   reranker     the one genuinely calibrated number in the pipeline, when the
-#                cross-encoder loaded. It is a trained relevance model, so its
-#                score IS comparable across queries — unlike RRF.
-
 MIN_CANDIDATE_POOL = 6
 WEAK_CONFIDENCE = 0.5
-
-# Two cross-encoder thresholds, not one, because the model's usable range on
-# code is not its nominal range. ms-marco MiniLM's nominal decision boundary is
-# 0, but it was trained on web passages and systematically under-scores code.
-# Measured on this project's own orchestrator source (161 chunks, 11 queries —
-# see the table in the README):
-#
-#   answerable queries   top score  -4.1 .. +4.5   agreement 3/3 every time
-#   absent queries       top score -11.2 .. -9.0   agreement 0-1/3
-#
-# So there is a wide empty band between about -9 and -4 that separates "the
-# model is grumpy about code" from "nothing here is even topically related".
-# Both thresholds sit inside it:
-RERANK_WEAK_BELOW = -6.0        # lukewarm: contributing, or decisive if nothing agrees
-RERANK_IRRELEVANT_BELOW = -8.0  # decisive ALWAYS — no answerable query measured this low
+RERANK_WEAK_BELOW = -6.0  
+RERANK_IRRELEVANT_BELOW = -8.0  
 
 # The anchor signal is RETRIEVER AGREEMENT. BM25 and vector search are
 # independent — different representation, different algorithm — so a chunk both
@@ -330,9 +252,7 @@ def assess(results, k_requested, candidates_considered, top_rerank, total_chunks
     return score, score < WEAK_CONFIDENCE, reasons
 
 
-# ---------------------------------------------------------------------------
 # Search
-# ---------------------------------------------------------------------------
 
 def _search_once(db, query_text: str, k: int, recall_k: int, graph_top_n: int):
     """One full recall -> expand -> rerank pass. No escalation logic here."""
@@ -383,14 +303,8 @@ def _search_once(db, query_text: str, k: int, recall_k: int, graph_top_n: int):
     now = time.time()
     top_rerank = None
     if reranked is not None:
-        # Retained, not just used for ordering: this is the only calibrated
-        # relevance number in the pipeline, so `assess` needs to see it.
         top_rerank = max(reranked) if len(reranked) else None
         rerank_order = [cid for cid, _ in sorted(zip(ordered_ids, reranked), key=lambda kv: (-kv[1], kv[0]))]
-        # Keep the cross-encoder's judgment important, but retain independent
-        # recall evidence.  A reranker can score a weakly-recalled candidate
-        # highly; RRF prevents it from completely erasing keyword/vector
-        # agreement and graph evidence.
         final_scores = _rrf_fuse(
             [bm25_order, vec_order, graph_order, rerank_order],
             [1.0, 1.0, GRAPH_RRF_WEIGHT, RERANK_RRF_WEIGHT],
@@ -400,8 +314,6 @@ def _search_once(db, query_text: str, k: int, recall_k: int, graph_top_n: int):
         rerank_used = True
     else:
         query_words = set(w.lower() for w in query_text.split())
-        # The heuristic is now a small tie-breaker over the RRF result, rather
-        # than a max() over incomparable BM25 and vector score scales.
         scored = [
             (
                 cid,

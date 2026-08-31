@@ -1,23 +1,4 @@
-"""
-Standalone verification for the retrieval pipeline — no Electron needed.
-
-Run this to answer "is retrieval actually working, and what did it index?"
-without going through the IDE at all. Because it imports the same modules
-server.py does, a pass here means the pipeline itself is sound and any
-remaining problem is in the Electron wiring (see the runbook), which is a
-much smaller place to look.
-
-Usage:
-    python verify.py                      # index+query THIS project
-    python verify.py /path/to/codebase    # index+query some other codebase
-    python verify.py . -q "how are sessions created"     # your own query
-    python verify.py --inspect <file.db>  # dump an index the IDE already built
-
-The --inspect mode is the one to reach for when the IDE says "Index ready"
-but the agent still can't find something: point it at the real .db from
-app.getPath('userData')/retrieval-index/ and look at what actually got
-chunked.
-"""
+# python verify.py so that the IDE can run a retrieval-service in-process, and the IDE's own retrieval
 import argparse
 import os
 import sys
