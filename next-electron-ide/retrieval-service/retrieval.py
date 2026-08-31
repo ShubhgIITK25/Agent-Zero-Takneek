@@ -252,9 +252,7 @@ def assess(results, k_requested, candidates_considered, top_rerank, total_chunks
     return score, score < WEAK_CONFIDENCE, reasons
 
 
-# ---------------------------------------------------------------------------
 # Search
-# ---------------------------------------------------------------------------
 
 def _search_once(db, query_text: str, k: int, recall_k: int, graph_top_n: int):
     """One full recall -> expand -> rerank pass. No escalation logic here."""
@@ -305,14 +303,8 @@ def _search_once(db, query_text: str, k: int, recall_k: int, graph_top_n: int):
     now = time.time()
     top_rerank = None
     if reranked is not None:
-        # Retained, not just used for ordering: this is the only calibrated
-        # relevance number in the pipeline, so `assess` needs to see it.
         top_rerank = max(reranked) if len(reranked) else None
         rerank_order = [cid for cid, _ in sorted(zip(ordered_ids, reranked), key=lambda kv: (-kv[1], kv[0]))]
-        # Keep the cross-encoder's judgment important, but retain independent
-        # recall evidence.  A reranker can score a weakly-recalled candidate
-        # highly; RRF prevents it from completely erasing keyword/vector
-        # agreement and graph evidence.
         final_scores = _rrf_fuse(
             [bm25_order, vec_order, graph_order, rerank_order],
             [1.0, 1.0, GRAPH_RRF_WEIGHT, RERANK_RRF_WEIGHT],
@@ -322,8 +314,6 @@ def _search_once(db, query_text: str, k: int, recall_k: int, graph_top_n: int):
         rerank_used = True
     else:
         query_words = set(w.lower() for w in query_text.split())
-        # The heuristic is now a small tie-breaker over the RRF result, rather
-        # than a max() over incomparable BM25 and vector score scales.
         scored = [
             (
                 cid,
