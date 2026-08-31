@@ -5,6 +5,10 @@
   "description": "A minimal desktop IDE built with Next.js (renderer) + Electron (shell) and Monaco Editor.",
   "homepage": "https://github.com/ShubhgIITK25/Agent-Zero-Takneek",
   "main": "electron-dist/main.js",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ShubhgIITK25/Agent-Zero-Takneek.git"
+  },
   "scripts": {
     "dev:next": "next dev -p 3210",
     "dev:electron": "wait-on http://localhost:3210 && tsc -p electron/tsconfig.json && tsc -p orchestrator/tsconfig.json && electron .",
