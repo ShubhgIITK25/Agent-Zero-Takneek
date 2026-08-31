@@ -145,8 +145,18 @@ export default function SettingsPanel({ onClose }: SettingsPanelProps) {
   });
 
   return (
-    <div className="settings-overlay" role="dialog" aria-label="Agent settings">
-      <div className="settings-panel settings-panel-wide">
+    <div
+      className="settings-overlay"
+      role="dialog"
+      aria-label="Agent settings"
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
+    >
+      <div
+        className="settings-panel settings-panel-wide"
+        onClick={(e) => e.stopPropagation()}
+      >
         <header className="settings-header">
           <h2>Agent Settings</h2>
           <button type="button" className="settings-close" onClick={onClose} aria-label="Close settings">
