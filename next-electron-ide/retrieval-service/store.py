@@ -1,20 +1,4 @@
-"""
-Per-codebase SQLite store: chunks, an FTS5 keyword index (BM25 built in),
-a sqlite-vec virtual table for vector search, and plain tables for the
-symbol/call graph — all in ONE file per project.
-
-This is the actual isolation guarantee: every call into this module takes
-a codebase_id, which maps 1:1 to one .db file under the app's data dir
-(never inside the project repo, so it's never accidentally committed and
-never shared across projects). There is no code path that lets one
-codebase's connection see another's data, because they are literally
-different files opened through different connections — not different
-rows in a shared table that a bad WHERE clause could leak across.
-
-Connections are cached per codebase_id (a project stays "warm" across
-many orchestrator calls in one session) and dropped on /evict, which is
-called whenever the IDE closes a folder or opens a different one.
-"""
+# creates sqlite table and stoes everything in it. also provides search functions (bm25, vector, graph) and some utility functions for managing the index.
 import os
 import re
 import sqlite3
@@ -22,15 +6,10 @@ import hashlib
 
 import identifiers
 
-# Bump when the on-disk schema or the way text is indexed changes in a way that
-# makes an existing index wrong rather than merely stale. get_db() rebuilds any
-# index older than this. History:
-#   1  original: chunks + FTS(symbol,docstring,code) + vec + edges
-#   2  FTS gains a `tokens` column of pre-split identifiers (identifiers.py)
 INDEX_FORMAT_VERSION = 2
 
-_connections = {}  # codebase_id -> sqlite3.Connection
-_vec_enabled = {}  # id(db) -> bool — sqlite3.Connection does not support arbitrary attrs
+_connections = {} 
+_vec_enabled = {} 
 
 VEC_DIM = 384  # must match embeddings.EMBED_MODEL's output dimension
 
@@ -211,8 +190,6 @@ _WORD_RE = re.compile(r"[A-Za-z0-9_]+")
 
 def sanitize_fts_query(text: str) -> str:
     words = _WORD_RE.findall(text)
-    # Sub-words of any multi-part identifier in the query match the `tokens`
-    # column; the raw words still match `symbol`/`code` verbatim. Both are ORed.
     expanded = identifiers.expand_text(text)
     terms = list(dict.fromkeys(words + expanded.split()))[:20]
     if not terms:
@@ -301,9 +278,6 @@ def vector_search(db, query_vec, limit=25):
 
 
 def graph_neighbors(db, chunk_ids: list, limit_per_chunk=6):
-    """1-hop expansion: for each given chunk, find chunks whose symbol
-    matches something this chunk calls (callees), plus chunks that call
-    this chunk's own symbol (callers)."""
     neighbor_ids = set()
     if not chunk_ids:
         return neighbor_ids
