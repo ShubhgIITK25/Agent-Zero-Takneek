@@ -1,6 +1,6 @@
-# NEXide
+# CodéNawabs
 
-An agentic coding IDE built for the Takneek PS (IIT Kanpur Programming Club). Electron + Next.js shell around a standalone multi-agent orchestrator that plans, routes, executes, verifies, backtracks and re-plans coding subtasks against a curated roster of **≤80B-parameter** models — with a live observability dashboard, block-level diff review, and crash-safe resume.
+CodéNawabs is an agentic coding IDE built for the Takneek PS (IIT Kanpur Programming Club). It is an Electron + Next.js shell around a standalone multi-agent orchestrator that plans, routes, executes, verifies, backtracks and re-plans coding subtasks against a curated roster of **≤80B-parameter** models — with a live observability dashboard, block-level diff review, and crash-safe resume.
 
 The design premise, taken from the PS: no single small open-weight model can carry a hard multi-step coding task. So nothing here assumes one can. Every part of the system is built around the limits of a 27B model rather than around the capabilities of a frontier one.
 

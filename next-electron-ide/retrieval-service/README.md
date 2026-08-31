@@ -1,6 +1,6 @@
 # Retrieval service
 
-The code retrieval pipeline for NEXide's agent: a real AST-based codebase
+The code retrieval pipeline for CodéNawabs' agent: a real AST-based codebase
 index (not naive keyword or vector search alone), with per-project
 isolation. Runs as a separate local Python process, spawned by Electron's
 main process (`electron/main.ts`) and talked to over

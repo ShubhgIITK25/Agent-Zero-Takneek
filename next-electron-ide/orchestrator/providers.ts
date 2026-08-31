@@ -274,8 +274,8 @@ async function callOpenAICompatible(
   const headers: Record<string, string> = { Authorization: `Bearer ${apiKey}` };
   if (!isGroq) {
     // OpenRouter attributes traffic with these; harmless but expected.
-    headers['HTTP-Referer'] = 'https://localhost/nexide';
-    headers['X-Title'] = 'NEXide';
+    headers['HTTP-Referer'] = 'https://localhost/codenawabs';
+    headers['X-Title'] = 'CodéNawabs';
   }
 
   const started = Date.now();
