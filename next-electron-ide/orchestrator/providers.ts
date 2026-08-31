@@ -171,17 +171,26 @@ export function estimateMessageTokens(messages: ChatMessage[]): number {
 
 const REQUEST_TIMEOUT_MS = 90_000;
 
-async function postJson(url: string, headers: Record<string, string>, body: unknown): Promise<Response> {
+async function postJson(
+  url: string,
+  headers: Record<string, string>,
+  body: unknown,
+  signal?: AbortSignal,
+): Promise<Response> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  const composedSignal = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
   try {
     return await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...headers },
       body: JSON.stringify(body),
-      signal: controller.signal,
+      signal: composedSignal,
     });
   } catch (err) {
+    if (signal?.aborted) {
+      throw new ProviderError('cancelled by user', { retryable: false, rateLimited: false });
+    }
     const msg = err instanceof Error ? err.message : String(err);
     // A network failure or timeout is retryable on ANOTHER provider — the
     // request itself was fine, this endpoint just did not answer.
@@ -246,7 +255,8 @@ async function callOpenAICompatible(
   model: ModelEntry,
   messages: ChatMessage[],
   tools: ToolSchema[],
-  env: Record<string, string>
+  env: Record<string, string>,
+  signal?: AbortSignal,
 ): Promise<LLMResult> {
   const isGroq = model.provider === 'groq';
   const baseUrl = isGroq
@@ -269,6 +279,8 @@ async function callOpenAICompatible(
   }
 
   const started = Date.now();
+  if (signal?.aborted) throw new ProviderError('cancelled by user', { retryable: false, rateLimited: false });
+
   const res = await postJson(`${baseUrl}/chat/completions`, headers, {
     model: model.apiId,
     messages: toOpenAIMessages(messages),
@@ -282,7 +294,7 @@ async function callOpenAICompatible(
         }
       : {}),
     temperature: 0.2,
-  });
+  }, signal);
 
   if (!res.ok) {
     throw classifyHttp(res.status, await res.text().catch(() => ''));
@@ -338,7 +350,8 @@ async function callOllama(
   model: ModelEntry,
   messages: ChatMessage[],
   tools: ToolSchema[],
-  env: Record<string, string>
+  env: Record<string, string>,
+  signal?: AbortSignal,
 ): Promise<LLMResult> {
   const host = env.OLLAMA_HOST || 'http://127.0.0.1:11434';
   const started = Date.now();
@@ -357,6 +370,8 @@ async function callOllama(
     }
     return { role: m.role, content: m.content };
   });
+
+  if (signal?.aborted) throw new ProviderError('cancelled by user', { retryable: false, rateLimited: false });
 
   const res = await postJson(`${host}/api/chat`, {}, {
     model: model.apiId,
@@ -485,7 +500,8 @@ async function callGemini(
   model: ModelEntry,
   messages: ChatMessage[],
   tools: ToolSchema[],
-  env: Record<string, string>
+  env: Record<string, string>,
+  signal?: AbortSignal,
 ): Promise<LLMResult> {
   const apiKey = env.GEMINI_API_KEY;
   if (!apiKey) {
@@ -533,7 +549,9 @@ async function callGemini(
   }
 
   const started = Date.now();
-  const res = await postJson(url, {}, body);
+  if (signal?.aborted) throw new ProviderError('cancelled by user', { retryable: false, rateLimited: false });
+
+  const res = await postJson(url, {}, body, signal);
   const latencyMs = Date.now() - started;
 
   if (!res.ok) {
@@ -621,9 +639,10 @@ export async function callModel(
   model: ModelEntry,
   messages: ChatMessage[],
   tools: ToolSchema[],
-  env: Record<string, string>
+  env: Record<string, string>,
+  signal?: AbortSignal,
 ): Promise<LLMResult> {
-  if (model.provider === 'ollama') return callOllama(model, messages, tools, env);
-  if (model.provider === 'gemini') return callGemini(model, messages, tools, env);
-  return callOpenAICompatible(model, messages, tools, env);
+  if (model.provider === 'ollama') return callOllama(model, messages, tools, env, signal);
+  if (model.provider === 'gemini') return callGemini(model, messages, tools, env, signal);
+  return callOpenAICompatible(model, messages, tools, env, signal);
 }

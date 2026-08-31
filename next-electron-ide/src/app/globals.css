@@ -2504,6 +2504,13 @@ button:hover {
   color: var(--nx-muted);
 }
 
+.health-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.health-select-all,
 .health-recheck {
   font-size: 11px;
   padding: 3px 12px;
@@ -2514,6 +2521,7 @@ button:hover {
   cursor: pointer;
 }
 
+.health-select-all:hover,
 .health-recheck:hover:not(:disabled) {
   border-color: var(--accent);
 }

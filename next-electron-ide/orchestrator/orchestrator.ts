@@ -104,6 +104,7 @@ export class TaskRunner {
   /** Seeded from the Settings probe, then corrected by what actually happens. */
   private health: HealthRegistry;
   private cancelled = false;
+  private activeAbortController: AbortController | null = null;
   private pendingApprovals = new Map<string, (d: ApprovalDecision) => void>();
   private snapshot: TaskSnapshot;
   private step = 0;
@@ -236,7 +237,12 @@ export class TaskRunner {
   }
 
   cancel(): void {
+    if (this.cancelled) return;
     this.cancelled = true;
+    this.activeAbortController?.abort();
+    this.snapshot.status = 'cancelled';
+    this.checkpoint();
+    this.emit({ type: 'task_cancelled' });
     // Unblock anything waiting on a human so the process can wind down rather
     // than sitting on a promise that will never resolve.
     for (const [requestId, resolve] of this.pendingApprovals) {
@@ -583,8 +589,13 @@ export class TaskRunner {
         });
       }
 
+      const controller = new AbortController();
+      this.activeAbortController = controller;
       try {
-        const result = await callModel(route.model, opts.messages, opts.tools, this.config.env);
+        const result = await callModel(route.model, opts.messages, opts.tools, this.config.env, controller.signal);
+        if (this.cancelled || controller.signal.aborted) {
+          return null;
+        }
         this.rateLimits.clear(route.model.provider);
         this.budget.record(result.promptTokens, result.completionTokens, result.costUsd);
 
@@ -610,6 +621,9 @@ export class TaskRunner {
 
         return { nodeId, text: result.text, toolCalls: result.toolCalls, model: route.model };
       } catch (err) {
+        if (this.cancelled || controller.signal.aborted) {
+          return null;
+        }
         const pe = err instanceof ProviderError ? err : new ProviderError(String(err), { retryable: true, rateLimited: false });
         this.emit({ type: 'agent_call_end', nodeId, promptTokens: 0, completionTokens: 0, costUsd: 0, latencyMs: 0, output: '', error: pe.message });
 
@@ -703,6 +717,10 @@ export class TaskRunner {
           detail: `${route.model.label} (${provider}) failed: ${pe.message}`,
           action: 'Re-routing the same context to another model — no work is lost.',
         });
+      } finally {
+        if (this.activeAbortController === controller) {
+          this.activeAbortController = null;
+        }
       }
     }
     return null;
@@ -725,8 +743,10 @@ export class TaskRunner {
     this.emitBudget();
 
     try {
+      if (this.cancelled) return this.cancelledOut();
       if (this.snapshot.subtasks.length === 0) {
         const plan = await this.plan();
+        if (this.cancelled) return this.cancelledOut();
         if (!plan) return this.fail('Planning failed — no eligible model could produce a plan.');
         this.snapshot.subtasks = plan.subtasks;
         this.snapshot.pinnedFacts = [
@@ -888,6 +908,10 @@ export class TaskRunner {
         await Promise.race([...running.values()]);
       }
       this.emitConcurrency([], configuredParallel);
+
+      if (this.cancelled) {
+        return this.cancelledOut();
+      }
 
       // Terminal by construction: the scheduling loop above only exits once
       // every subtask is 'done', 'failed', 'skipped' or 'replaced' (a 'blocked'

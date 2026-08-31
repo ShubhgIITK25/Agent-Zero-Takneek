@@ -554,8 +554,8 @@ export default function Dashboard({ live, onClose, onWorkspaceChanged }: Dashboa
   };
 
   return (
-    <div className="dashboard-overlay" role="dialog" aria-label="Observability dashboard">
-      <div className="dashboard">
+    <div className="dashboard-overlay" role="dialog" aria-label="Observability dashboard" onClick={onClose}>
+      <div className="dashboard" onClick={(e) => e.stopPropagation()}>
         <header className="dash-header">
           <div className="dash-header-left">
             <h2>Observability</h2>
