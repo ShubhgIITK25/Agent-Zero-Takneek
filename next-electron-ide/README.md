@@ -16,11 +16,12 @@ The design premise, taken from the PS: no single small open-weight model can car
 | Know how a model gets chosen | [5. Smart routing](#5-smart-routing) |
 | Know how code is found | [6. Code retrieval](#6-code-retrieval) |
 | Know how agents call tools | [7. Tool calling](#7-tool-calling) |
-| See what we chose and what we rejected | [14. Trade-offs and rejected alternatives](#14-trade-offs-and-rejected-alternatives) |
-| See what actually went wrong while building | [15. Challenges and solutions](#15-challenges-and-solutions) |
+| Know why every limit is the number it is | [8. Bounds, budgets, and the score they defend](#8-bounds-budgets-and-the-score-they-defend) |
+| See what we chose and what we rejected | [15. Trade-offs and rejected alternatives](#15-trade-offs-and-rejected-alternatives) |
+| See what actually went wrong while building | [16. Challenges and solutions](#16-challenges-and-solutions) |
 | Run a local model | [docs/local-models.md](docs/local-models.md) |
 
-**Contents:** [1. Quick start](#1-quick-start) · [2. Setup on Linux](#2-setup-from-scratch-on-linux) · [3. Architecture](#3-architecture) · [4. Orchestration](#4-the-orchestration-pipeline) · [5. Routing](#5-smart-routing) · [6. Retrieval](#6-code-retrieval) · [7. Tool calling](#7-tool-calling) · [8. Model roster](#8-model-roster-and-eligibility) · [9. Settings](#9-settings) · [10. Context control](#10-manual-context-control) · [11. Diff review](#11-diff-review) · [12. Dashboard](#12-observability-dashboard) · [13. Persistence](#13-persistence-and-resume) · [14. Trade-offs](#14-trade-offs-and-rejected-alternatives) · [15. Challenges](#15-challenges-and-solutions) · [16. Testing](#16-testing) · [17. Builds](#17-building-desktop-installers) · [18. Limitations](#18-known-limitations) · [19. Repo map](#19-repo-map)
+**Contents:** [1. Quick start](#1-quick-start) · [2. Setup on Linux](#2-setup-from-scratch-on-linux) · [3. Architecture](#3-architecture) · [4. Orchestration](#4-the-orchestration-pipeline) · [5. Routing](#5-smart-routing) · [6. Retrieval](#6-code-retrieval) · [7. Tool calling](#7-tool-calling) · [8. Bounds & scoring](#8-bounds-budgets-and-the-score-they-defend) · [9. Model roster](#9-model-roster-and-eligibility) · [10. Settings](#10-settings) · [11. Context control](#11-manual-context-control) · [12. Diff review](#12-diff-review) · [13. Dashboard](#13-observability-dashboard) · [14. Persistence](#14-persistence-and-resume) · [15. Trade-offs](#15-trade-offs-and-rejected-alternatives) · [16. Challenges](#16-challenges-and-solutions) · [17. Testing](#17-testing) · [18. Builds](#18-building-desktop-installers) · [19. Limitations](#19-known-limitations) · [20. Repo map](#20-repo-map)
 
 ---
 
@@ -264,7 +265,7 @@ Deterministic scoring, not another model call. See §5.
 
 ### 4.3 Execute
 
-The assigned model runs with tool access, under three independent per-subtask caps — **3 retries, 12 steps, 60k tokens** — plus a guard that aborts after **3 identical repeated tool calls**. Each cap answers a different runaway: a task that keeps failing, one that keeps working without converging, and one that loops on the same call. Every cap firing is surfaced as an `intervention` event, never a silent stop.
+The assigned model runs with tool access, under three independent per-subtask caps — **3 retries, 12 steps, 60k tokens** — plus a guard that aborts after **3 identical repeated tool calls**. Each cap answers a different runaway: a task that keeps failing, one that keeps working without converging, and one that loops on the same call. Every cap firing is surfaced as an `intervention` event, never a silent stop. The exact values and the reasoning behind each are in [§8.3](#83-every-limit-in-one-table).
 
 ### 4.4 Verify
 
@@ -290,7 +291,7 @@ The retry ladder has already re-run that subtask on a stronger model with the ve
 
 The replaced subtask becomes `replaced` — a status distinct from `failed` on purpose, because the work is still being attempted under new ids, and counting it as incomplete would make a *successful* re-plan report failure. Anything that depended on it is rewired to the last replacement; without that rewire the dependents wait forever on an id that can never be `done`.
 
-**Every bound is a hard stop, checked before the planner call so a disallowed re-plan costs nothing:**
+**Every bound is a hard stop, checked before the planner call so a disallowed re-plan costs nothing** (consolidated with every other limit in [§8.3](#83-every-limit-in-one-table)):
 
 | Bound | Value | Why |
 |---|---|---|
@@ -321,11 +322,11 @@ Four things had to be made concurrency-safe first, each a real failure mode rath
 - **Undo points are per subtask**, so a rollback cannot revert a sibling's approved edits.
 - **Changed-file sets are per subtask**, so a verifier only judges its own subtask's work.
 
-Concurrency drops back to one automatically once spending passes **75% of the cost ceiling**: concurrent dispatches can each pass the affordability check and still breach together, and a breach scores zero.
+Concurrency drops back to one automatically once spending passes **75% of the cost ceiling** (`PARALLEL_BUDGET_FLOOR`, [§8.3](#83-every-limit-in-one-table)): concurrent dispatches can each pass the affordability check and still breach together, and a breach scores zero.
 
 ### 4.9 Compaction
 
-At **70%** of the active model's real context window, older turns are summarised; at **88%**, compaction is forced. Anything marked a pinned fact — the restated goal, `AGENTS.md` rules, user-pinned context — is re-injected **verbatim** after compaction rather than re-summarised, so constraints and decisions from earlier in the task do not drift. Compaction is emitted as an event with before/after token counts and the list of preserved facts, so the dashboard shows exactly what was dropped.
+At **70%** of the active model's real context window, older turns are summarised; at **88%**, compaction is forced (thresholds and the `KEEP_RECENT` window explained in [§8.3](#83-every-limit-in-one-table)). Anything marked a pinned fact — the restated goal, `AGENTS.md` rules, user-pinned context — is re-injected **verbatim** after compaction rather than re-summarised, so constraints and decisions from earlier in the task do not drift. Compaction is emitted as an event with before/after token counts and the list of preserved facts, so the dashboard shows exactly what was dropped.
 
 ---
 ## 5. Smart routing
@@ -367,6 +368,8 @@ flowchart TD
 **The routing decision is never hidden.** One `routing_decision` event feeds two views: the dashboard's per-node **Routing** tab, and an expandable row in the agent panel itself. The panel row is a one-liner by default (`⇄ north-mini-code · fits codegen, zero marginal cost · 3 not picked`); clicking it drops down the full reason, the decision signals, and every candidate that lost with the reason it lost (`llama-3.3-70b — scored 41.3 vs 58.7`, `gemma-4-31b — context ~60000 tok exceeds its 262144 window`).
 
 **Why the quality index is weighted per category.** The cost of being wrong is not flat. A bad `simple_edit` is caught on the next line; a bad *plan* is only caught after every subtask under it has been paid for; a bad *verification verdict* is never caught at all — it ships. So `analysis` (which is how the planner and tie-break both route) and `verification` weight quality ~4× harder than `simple_edit` does. Cost still dominates overall — the cost penalty reaches 45 against quality's ~23 — so a free model that fits still wins early in a task, which is correct when C is weighted ~2× T in `S_task`. Quality decides between models of *similar* price, and decides the tie-break outright.
+
+Every scoring weight, the per-category quality table, and the `S_task` arithmetic that motivates them are laid out in [§8.2](#82-the-scoring-function-worked-through) and [§8.3](#83-every-limit-in-one-table).
 
 ---
 
@@ -431,7 +434,7 @@ There is a wide empty band between ≈−9 and ≈−4 separating "the model is 
 | Most results graph-expansion only | contributing | contributing |
 | Fewer results than requested | contributing | contributing |
 
-Three of these came out of testing against a real index and would have been wrong otherwise — see §15.
+Three of these came out of testing against a real index and would have been wrong otherwise — see §16.
 
 Current accuracy on the real orchestrator source: **10/10 answerable queries not flagged, 5/5 unanswerable queries flagged**. That check runs in `test_recovery_e2e.py` so a regression in the thresholds fails a test rather than quietly degrading.
 
@@ -477,7 +480,174 @@ Two consequences worth stating because they are easy to get wrong:
 - **State-changing git deliberately has no fast path.** It would have been easy to let the `git` tool commit directly. Routing it through `run_command` means a commit gets the same explicit approval as any other side effect, and there is exactly one gate to audit instead of two.
 
 ---
-## 8. Model roster and eligibility
+## 8. Bounds, budgets, and the score they defend
+
+Every cap in this system is a **score-defence mechanism**, not a safety nicety. This section is the single place that lists all of them, works through the scoring function they serve, and answers the Q&A question each one invites: *why that number and not half or double it?*
+
+### 8.1 Why a coding agent has to be bounded at all
+
+An agent loop is unbounded work by construction: each turn can spawn another tool call, another model round-trip, another 200KB response to parse. The PS scoring makes unbounded work **catastrophic, not merely slow**:
+
+- Exceeding **$0.50 or 2700 s** on an eval task forces **A = 0** — "regardless of partial progress". A 95%-correct solution that costs $0.51 scores exactly zero.
+- Short of that ceiling, the `S_task` denominator is raised to **ε = 2.5**, so cost and time overruns are punished *super-linearly* — the closer to the ceiling, the harder each extra cent and second is penalised (worked example in §8.2).
+
+So the design treats "stop the agent in time" as a first-class correctness property. There are **four distinct runaway modes**, and no single cap catches more than one of them:
+
+| Runaway mode | What it looks like | Caught by |
+|---|---|---|
+| **Thrash** — keeps failing the same subtask | attempt 4, 5, 6… on one subtask | `MAX_RETRIES_PER_SUBTASK = 3`, then bounded re-plan, then `abandon` |
+| **Wander** — works forever without converging | 20 tool calls, no final answer, context ballooning | `MAX_STEPS_PER_SUBTASK = 12`, `MAX_TOKENS_PER_SUBTASK = 60 000` |
+| **Loop** — repeats one identical action | `read_file("x")` with the same args, turn after turn | `MAX_IDENTICAL_REPEATS = 3` |
+| **Overrun** — eats the task-level ceiling | $0.48 spent, another paid call queued | pre-dispatch budget gate + reserve margins + parallel drop-back |
+
+Every cap that fires emits an **`intervention` event** with the cause and the action taken — it is never a silent stop. A cap that halts the agent without telling the dashboard why is indistinguishable from a crash in front of a judge.
+
+### 8.2 The scoring function, worked through
+
+From the PS:
+
+```
+                 10 · A
+S_task = ────────────────────────────────────────────
+         ( 1 + w_C·(C / C_base) + w_T·(T / T_base) ) ^ ε
+
+A = passedTests / totalTests        w_C = 0.65    C_base = $0.15    ε = 2.5
+C = total $ across all agent calls  w_T = 0.35    T_base = 1320 s
+T = wall-clock seconds              Hard ceilings: C ≤ $0.50, T ≤ 2700 s, else A := 0
+```
+
+`C_base` and `T_base` are **baselines, not targets** — the formula keeps scoring above them, just steeply less. Four runs of the same hypothetical task, using the PS constants:
+
+| Run | A | C | T | C/C_base | T/T_base | denominator | **S_task** |
+|---|---|---|---|---|---|---|---|
+| **Frugal** — local + free-tier heavy | 0.80 | $0.02 | 1100 s | 0.13 | 0.83 | 1.38 ^2.5 ≈ 2.23 | **3.58** |
+| **Balanced** — paid only where it pays | 0.90 | $0.08 | 900 s | 0.53 | 0.68 | 1.59 ^2.5 ≈ 3.17 | **2.84** |
+| **Ceiling-hugger** — best model every call | 0.90 | $0.42 | 2400 s | 2.80 | 1.82 | 3.46 ^2.5 ≈ 22.2 | **0.41** |
+| **One retry too many** at 98 % budget | ~~0.90~~ **0** | $0.51 | 2400 s | — | — | — | **0.00** |
+
+What the architecture is built around, read straight off that table:
+
+- **Same accuracy, 7× the score** between "balanced" and "ceiling-hugger". Accuracy is necessary, but the multiplier decides the round. This is why routing is cost-first.
+- **Lower accuracy can still win outright.** "Frugal" scores highest *despite the worst A*, because ε = 2.5 turns a 4× cost cut into a denominator cut big enough to outweigh a missed test. This is the explicit justification for: the router's cost penalty (max **45**) outweighing its quality bonus (max ~**23**); local models being first-class rather than a fallback; and free-tier *exhaustion*, not model quality, being what pushes routing onto paid tiers.
+- **Cost is ~1.9× time.** `w_C / w_T = 1.86`. The router spends its light "speed" points only to break ties; it spends real points on the cost term.
+- **The cliff is absolute and close.** The last row is not hypothetical — it is the single most important failure mode in the system. One unaffordable retry near the ceiling converts a top-quartile score into a zero. Every budget guard in §8.3 exists to make that transition *impossible*, not merely unlikely: cost is estimated **before** dispatch in two independent places, a 12 % / 10 % reserve is held that the agent may never spend, concurrency drops to 1 at 75 % spent, and a re-plan will not start below 25 % remaining.
+
+> **Defending this in Q&A:** the honest one-liner is *"we optimise the denominator, because with ε = 2.5 the denominator is where the score is."* Accuracy gets us onto the board; cost efficiency is what ranks us on it.
+
+### 8.3 Every limit in one table
+
+Grouped by subsystem. The **"chosen against"** column is the failure the current value is picked to avoid — i.e. the answer to *"why not 2? why not 20?"*
+
+#### Orchestration — per subtask · `orchestrator/orchestrator.ts`
+
+| Constant | Value | Bounds | Chosen against |
+|---|---|---|---|
+| `MAX_RETRIES_PER_SUBTASK` | **3** | attempts on one subtask before it re-plans or fails | Attempt 1 is the routed model; 2–3 escalate to a stronger model *with the verifier's complaint fed back in*. Three genuinely different attempts is enough evidence that the **subtask** is wrong, not the model. A 4th is the "blindly retrying the same action" the PS explicitly penalises. |
+| `MAX_STEPS_PER_SUBTASK` | **12** | tool-calling turns before a forced stop | A real subtask — retrieve → read 2–3 files → edit → self-check — runs 5–8 steps. 12 is comfortable headroom. 20+ is a model that has lost the thread and is now just burning the time ceiling. |
+| `MAX_TOKENS_PER_SUBTASK` | **60 000** | cumulative tokens spent on one subtask | ≈ 45 % of a 131k window. Past this the subtask is accreting context it will never use, and input tokens are re-billed on *every* remaining turn — cheaper to stop and re-plan than to keep paying. |
+| `MAX_IDENTICAL_REPEATS` | **3** | identical consecutive tool calls with identical arguments | 2 can be a legitimate re-read of a file right after editing it. 3 in a row carries no new information and is a loop. |
+
+#### Orchestration — re-planning · `orchestrator/orchestrator.ts`
+
+All five are **hard stops checked before the planner call**, so a disallowed re-plan costs nothing. Re-planning is the only mechanism that can *add* work to a task already going badly, hence no heuristics here.
+
+| Constant | Value | Chosen against |
+|---|---|---|
+| `MAX_REPLANS_PER_TASK` | **2** | Whole-task budget, not per-subtask. Stops a struggling task from rewriting its own plan indefinitely. |
+| `MAX_REPLAN_DEPTH` | **1** | Only original (depth-0) subtasks may re-plan. A replacement that fails is simply failed — no recursive tree of re-plans off re-plans. |
+| `MAX_REPLACEMENTS_PER_REPLAN` | **3** | Caps how far a single re-plan can widen the DAG. |
+| `REPLAN_MIN_COST_FRACTION` | **0.25** | A re-plan buys a planner call **plus** a fresh round of subtask execution. Starting one at 90 % spent reliably converts a partial result into a **ceiling breach, which scores zero** — strictly worse than accepting one failed subtask. Gated on `fractionRemaining`, not `canAfford`, because `canAfford` only answers "can I pay for the next single call". |
+| `REPLAN_MIN_TIME_FRACTION` | **0.20** | Same logic, against the 2700 s ceiling. |
+
+Worst-case work this bounds: `2 re-plans × (1 planner call + 3 subtasks × 3 retries × 12 steps)` — and the budget/time gates cut it off well before that ceiling in practice.
+
+#### Budget ceilings · `orchestrator/budget.ts`
+
+| Constant | Value | Chosen against |
+|---|---|---|
+| `maxCostUsd` / `maxSeconds` | **$0.50 / 2700 s** | Defaults set to the PS hard ceilings exactly. Both are surfaced in Settings; the only sensible adjustment is *downward*, to buy an extra safety margin against a token-estimate error on the hidden eval set. The `RESERVE` fractions below already hold back 12% / 10% on top of whatever is configured here. |
+| `COST_RESERVE` | **0.12** | The agent may spend at most **88 %** of the cost ceiling. The remaining 12 % covers the final summary call and absorbs a ~5 % error in the pre-call token estimate. Running to exactly $0.50 and *then* finding the estimate was 5 % low is the exact failure this removes. |
+| `TIME_RESERVE` | **0.10** | Same, for wall-clock time — a slightly smaller margin because time estimates drift less than token counts. |
+| `PARALLEL_BUDGET_FLOOR` | **0.25** | Below 25 % cost remaining (i.e. 75 % spent), concurrency drops to 1. Concurrent dispatches can each individually pass the affordability check and still **breach the ceiling together**; serialising removes that race for the dangerous last quarter. |
+| `ASSUMED_COMPLETION_TOKENS` | **600** | The completion size the router *and* the pre-dispatch budget gate both assume when costing a call that has not happened yet. Exported from one place so the two gates cannot silently drift apart. |
+
+#### Routing · `orchestrator/router.ts`
+
+The score is `capability fit + context fit + cost pressure + quality + speed tiebreak`, with hard filters (eligibility, context window, health, cooldown, already-failed) applied first.
+
+| Weight | Value | Reasoning |
+|---|---|---|
+| Capability fit for the subtask category | **+40** if `good_at` includes it, **−25** if not | A model not tuned for the category is a likely retry, and a retry is the most expensive thing on both score terms. |
+| Cost penalty (max) | **budgetPressure × 45** | `budgetPressure = min(1, projectedCost / (budgetRemaining × 0.35))` — scales with how tight the *remaining* budget is, so a capable model is affordable early and only cheap models survive near the reserve. 45 is deliberately larger than the max quality contribution. |
+| Zero-marginal-cost bonus | **+18** | Local / free-tier routes. Large enough that a free model that fits the category beats a paid one on any normal-sized budget. |
+| Quality index, weighted per category | `qualityIndex × QUALITY_WEIGHT` | `QUALITY_WEIGHT` = analysis **0.45**, verification **0.40**, codegen **0.30**, simple_edit **0.10**. The cost of a wrong answer is not flat: a bad `simple_edit` is caught on the next line; a bad *plan* is caught only after every subtask under it is paid for; a bad *verification verdict* is never caught — it ships. The planner and tie-break both route as `analysis`. |
+| Capability fallback for unbenchmarked models | `min(30, paramsB × 0.4)` | "Big but unmeasured" is not evidence of quality, so the size-based fallback is capped well below the top of the real index. |
+| Context headroom bonus | **+8** if window > 3× the estimated context | Reward *enough* room; do not reward a 131k model on a 2k prompt (that is just wasted money on providers that bill by tier). |
+| Escalation bonus on retry | `min(22, capability × 0.38)`, only when `attemptNumber > 1` | After a cheap model failed, bias toward capability over thrift — repeating the cheap failure is the runaway the PS names. |
+| Speed tiebreak | fast **+6**, medium **+3**, slow **0** | Time is the lighter term (`w_T` 0.35), so speed only ever breaks a near-tie. |
+
+#### Verification · `orchestrator/orchestrator.ts`
+
+| Threshold | Value | Reasoning |
+|---|---|---|
+| Tie-break trigger | verifier `confidence < 0.6` | Below this the verifier is not sure enough to end a subtask on its own say-so. One extra call on a third model is far cheaper than a wrongly-failed subtask that then consumes a full retry ladder or a re-plan. |
+
+#### Compaction · `orchestrator/compaction.ts`
+
+Both thresholds are a **fraction of the active model's real context window**, not a fixed message count — a constant would over-compact on a 262k model and overrun a 32k local one.
+
+| Constant | Value | Reasoning |
+|---|---|---|
+| `SOFT_THRESHOLD` | **0.70** | Compact opportunistically at a message boundary. Keeps the *next* call's input cost down, which matters because input tokens are re-billed every turn. |
+| `HARD_THRESHOLD` | **0.88** | Compact now or the next call overflows the window. The 12% gap below 100% leaves room for the reply the model is about to generate plus the pre-call token estimate's error margin — trigger any higher and a compaction can still be followed by an overflow. |
+| `KEEP_RECENT` | **6** | The last 6 messages survive verbatim — recent tool results are what the model is actively reasoning about. Pinned facts (goal, `AGENTS.md`, modified paths, decisions) are re-injected verbatim *on top* of that, so they never degrade through repeated summarisation. |
+
+#### Retrieval · `retrieval-service/retrieval.py`
+
+| Constant | Value | Reasoning |
+|---|---|---|
+| `RECALL_K` | **25** | Candidates pulled from *each* of BM25 and vector search before fusion. Enough for RRF to have signal; small enough that reranking all of them is cheap. |
+| `MAX_SNIPPET_LINES` | **60** | Hard cap on the lines of any one returned chunk. An AST chunk is usually a whole function; a 300-line one is truncated with a marker rather than dropped, so a single result cannot dominate the agent's context budget. |
+| `GRAPH_EXPAND_TOP_N` | **8** | Only the top 8 fused hits get 1-hop call/import-graph expansion — graph neighbours of a weak hit are noise. |
+| `RRF_K` | **60** | The standard constant from the Reciprocal Rank Fusion paper (Cormack et al., 2009). RRF fuses *ranks*, never raw scores — BM25 scores, cosine distances and cross-encoder logits share no scale or zero. |
+| `GRAPH_RRF_WEIGHT` | **0.5** | A graph-expansion hit matched a *neighbour* of the query, not the query — it counts half. |
+| `RERANK_RRF_WEIGHT` | **2.0** | The cross-encoder is the one genuinely calibrated relevance signal in the pipeline, so its ranking counts double when present. |
+| `WIDE_RECALL_K` / `WIDE_GRAPH_EXPAND_TOP_N` | **60 / 16** | What a *single* widened retry widens to — ≈ 2.4× wider. One step, not a ramp: a second pass either finds the thing or it is not in the index. |
+| `WIDE_K_MULTIPLIER` / `MAX_WIDE_K` | **2 / 16** | A widened retry may return at most 2× the requested chunks, capped at 16, so "recover from a weak result" never becomes "dump the codebase into context". |
+| `MAX_VARIANTS_TRIED` | **2** | Reformulation can produce several identifier spellings; trying all of them on a query that is simply absent from the index is latency for nothing. Exit at the first that clears the bar. |
+| `MIN_CANDIDATE_POOL` | **6** | Fewer than 6 distinct chunks matching *anything* signals a recall failure — **but only relative to index size** (`< 50 %` of a tiny index is fine). An absolute floor fired on every query in a small repo; see §16. |
+| `WEAK_CONFIDENCE` | **0.5** | Below this the result set is flagged and handed *up* to the agent (already a model in a loop) rather than rewritten by a dedicated model call. |
+| `RERANK_WEAK_BELOW` / `RERANK_IRRELEVANT_BELOW` | **−6.0 / −8.0** | Two thresholds, not one, because ms-marco MiniLM was trained on web passages and systematically under-scores code. Measured on this repo's own `orchestrator/` source: answerable queries top out at −4.1…+4.5, absent queries at −11.2…−9.0. Both thresholds sit in the empty band between. |
+| `DECISIVE_PENALTY` / `CONTRIBUTING_PENALTY` / `SHORTFALL_PENALTY` | **0.55 / 0.30 / 0.20** | The same signal means different things with vs. without independent-retriever agreement, so penalties are assigned in code by context rather than as one fixed weight per signal (a flat additive scheme left "decisive" signals stuck at 0.6–0.7, never crossing the 0.5 bar — see §16). |
+
+#### Indexing · `retrieval-service/indexer.py`
+
+| Constant | Value | Reasoning |
+|---|---|---|
+| `MAX_FILE_BYTES` | **1 500 000** | Files above ~1.5 MB are generated bundles, minified vendor code or lockfiles — indexing them buries real code in the results and wastes embedding time. |
+
+#### Planning · `orchestrator/agents.ts`
+
+| Limit | Value | Reasoning |
+|---|---|---|
+| Subtasks per plan (prompt) | **1–6** | "Fewer, well-scoped subtasks beat many tiny ones" — each subtask carries a full context-assembly and verification cost. A genuinely one-shot request returns a single `trivial: true` subtask; the system never manufactures steps to look busy. |
+| Subtasks per plan (parser clamp) | **8** | A defensive ceiling above the prompt's stated max, in case a model over-produces — the parser truncates rather than letting an unbounded DAG through. |
+
+#### Process & infrastructure
+
+| Constant | Value | Location | Reasoning |
+|---|---|---|---|
+| `REQUEST_TIMEOUT_MS` | **90 000** | `orchestrator/providers.ts` | A model call that has not answered in 90 s is treated as a network failure and failed over to another provider — retryable *elsewhere*, progress intact. `callModel` itself never retries in place; the orchestrator's retry ladder owns that. |
+| `MAX_RESTARTS` | **5** | `electron/orchestrator-bridge.ts` | The main process will re-spawn a crashed orchestrator child up to 5 times before giving up and surfacing the failure — enough to ride out a transient crash, not enough to hide a reproducible one in a restart loop. |
+| `HEALTH_TTL_MS` | **1 800 000** (30 min) | `electron/main.ts` | A model-health snapshot older than 30 min is dropped rather than trusted — past that the orchestrator would "rather route and find out". Runtime evidence overrides the snapshot in both directions regardless of age. |
+| `TIMEOUT_MS` | **8 000** | `electron/model-health.ts` | The Settings health probe waits 8 s per provider catalogue call — long enough for a slow list endpoint, short enough that opening Settings never feels hung. |
+| `estimateTokens` divisor | **3.6 chars/token** | `orchestrator/providers.ts` | Pre-call estimate only, for routing and compaction triggers. Source code is denser than prose (~3.6 vs ~4). Actual accounting always uses the provider's reported `usage`. |
+| Diff `CONTEXT_LINES` | **3** | `orchestrator/diff.ts` | Standard unified-diff context. Enough to place a hunk for block-level review without turning a one-line change into a screenful. |
+| `COLLAPSE_OVER_LINES` | **18** | `src/components/DiffReview.tsx` | A diff block longer than 18 lines shows its first 18 with a "Show N more lines" toggle, so one large hunk does not push the rest of a multi-file review off-screen. |
+| `maxParallelSubtasks` clamp | **[1, 6]**, default 3 | `orchestrator/orchestrator.ts` | 1 = strictly sequential (the escape hatch). 3 overlaps a typical plan's independent subtasks without our own fan-out instantly rate-limiting a free-tier provider. 6 is a hard ceiling regardless of the setting. |
+
+---
+## 9. Model roster and eligibility
 
 The PS constraint is 80B **total** parameters (not active — this matters for MoE models, where total and active differ by an order of magnitude). The registry (`orchestrator/models.ts`) is the single source of truth, and it deliberately carries four models that **fail** the rule so the constraint is visibly enforced rather than assumed. Each fails a different way, because each is a different way of being fooled:
 
@@ -523,20 +693,20 @@ Every id, price, context window and parameter count is a factual claim about a c
 
 ---
 
-## 9. Settings
+## 10. Settings
 
 - **API keys** per provider, with inline validation. See §2.4.
 - **Model roster** — every *eligible* registry entry with its parameter count, context window and pricing. Ineligible models are filtered out entirely rather than shown greyed: the list is exactly the set the router may pick from.
 - **Live health pill** on every model, checked on open and on demand: `working`, `invalid key`, `rate-limited`, `unavailable`, `offline`. This is a *different question* from eligibility — a model can be perfectly eligible and completely dead. Hovering gives what was actually observed plus the fix (`ollama pull qwen2.5-coder:7b`, `ollama serve`, the provider's own error text).
 
   It costs **one catalogue request per provider**, not one per model: each provider's `/models` listing answers all five questions at once — network up, key valid, quota intact, id still served — for every model of that provider simultaneously. Probing 20 models individually would burn free-tier quota to render a settings screen and would be likelier to trip the rate limit it is meant to report. Deliberately *not* a real completion call: that would be the most faithful test and it is what the orchestrator actually does, but it costs tokens every time someone opens Settings. A model that lists but errors on inference is not caught here — it surfaces at run time as the `provider_failover` intervention that already exists. The probe runs in the main process (renderer `fetch` to provider APIs is CORS-blocked, and the keys live there) and reads the keys **currently typed into the form**, so you can paste one and press *Re-check* before saving.
-- **Budget ceiling**, checked *before* dispatch (not after) with a reserve margin.
-- **Max parallel subtasks** (default 3, `1` = strictly sequential).
+- **Budget ceiling** — cost and time, checked *before* dispatch (not after) with a reserve margin held back on top. Defaults are the PS ceilings; the reserve fractions and why they exist are in [§8.3](#83-every-limit-in-one-table).
+- **Max parallel subtasks** (default 3, clamped to `[1, 6]`; `1` = strictly sequential). Rationale in [§4.8](#48-parallel-subtasks) and [§8.3](#83-every-limit-in-one-table).
 - **Approval mode** for the diff/command gate.
 
 ---
 
-## 10. Manual context control
+## 11. Manual context control
 
 `AGENTS.md` in your project root is loaded automatically and its rules are pinned through compaction, the same as any other pinned fact.
 
@@ -552,13 +722,13 @@ Every id, price, context window and parameter count is a factual claim about a c
 
 ---
 
-## 11. Diff review
+## 12. Diff review
 
 File edits are presented as Git-generated unified diffs with **partial approval**: accept individual hunks and reject others in the same diff, and only the accepted hunks are applied — rejected ones are dropped and the file is rebuilt from the original plus what you accepted. The proposal is compared with `git diff --no-index` against temporary files *outside* the project, so the real file is untouched until approval. Shell commands go through the same gate as a single yes/no.
 
 ---
 
-## 12. Observability dashboard
+## 13. Observability dashboard
 
 **Call hierarchy.** Every model call records the call that *caused* it, so the dashboard draws the real tree rather than a flat list: the planner is the root, each subtask's implementer turns hang off it, the verifier hangs off the implementer whose claim it judges, and a retry hangs off the verifier that rejected the previous attempt. Read top-down it explains *why* the task did what it did — something a time-ordered list cannot show, since there "attempt 2" and "the verifier that forced attempt 2" are just two adjacent rows. Branches collapse, and a collapsed one reports the calls and cost it is hiding. **Full tree** shows the whole causal chain including cross-subtask edges; **By subtask** keeps per-subtask grouping (status, category, retries, dependencies).
 
@@ -572,7 +742,7 @@ File edits are presented as Git-generated unified diffs with **partial approval*
 
 ---
 
-## 13. Persistence and resume
+## 14. Persistence and resume
 
 Every task is persisted as an **append-only JSONL event log** plus an **atomically written** (temp file + rename) snapshot, both under Electron's `userData`, keyed by codebase. A crash or force-quit mid-task loses at most the in-flight step.
 
@@ -582,7 +752,7 @@ The one honest limitation: backtrack points live in memory, so after a resume a 
 
 ---
 
-## 14. Trade-offs and rejected alternatives
+## 15. Trade-offs and rejected alternatives
 
 Every row is a decision where the obvious approach was tried or seriously considered and rejected for a stated reason.
 
@@ -611,7 +781,7 @@ Every row is a decision where the obvious approach was tried or seriously consid
 
 ---
 
-## 15. Challenges and solutions
+## 16. Challenges and solutions
 
 Real problems that came up while building, and what they changed. Each of these changed the design rather than just being patched.
 
@@ -637,7 +807,7 @@ Real problems that came up while building, and what they changed. Each of these 
 
 ---
 
-## 16. Testing
+## 17. Testing
 
 ```bash
 npm test          # everything below, ~1 min
@@ -674,7 +844,7 @@ npm run verify:models                                                       # re
 
 ---
 
-## 17. Building desktop installers
+## 18. Building desktop installers
 
 Packaging targets are native per OS: NSIS on Windows, DMG + ZIP on macOS, AppImage + DEB on Linux. Run the matching command **on that platform** so native dependencies such as `node-pty` are rebuilt correctly:
 
@@ -692,10 +862,10 @@ The repository ships a **GitHub Actions workflow** ([`.github/workflows/build.ym
 
 ---
 
-## 18. Known limitations
+## 19. Known limitations
 
 - **Retrieval degrades to keyword-only without its Python dependencies.** No AST chunking, no vector search, no reranking. This no longer happens quietly: the app auto-selects `retrieval-service/.venv`, and if it ends up on a bare interpreter anyway the startup log says `DEGRADED` and the status bar reads `keyword-only` in amber. The remaining failure mode is forgetting to create the venv or run `pip install` (§2.3).
-- **The packaged app does not bundle `.venv`.** On a machine without a suitable interpreter it uses `python3` from `PATH`; set `NEXIDE_PYTHON` or install the requirements there (§17).
+- **The packaged app does not bundle `.venv`.** On a machine without a suitable interpreter it uses `python3` from `PATH`; set `NEXIDE_PYTHON` or install the requirements there (§18).
 - **Backtracking covers `propose_edit` writes only** — the only write path the orchestrator controls. Files mutated by an approved `run_command` (a formatter, a build step, a generator) are not captured and survive a rollback. The intervention names exactly which files it did revert, so it never claims a clean tree it cannot deliver. Undo points also live in memory, so after a resume a rollback only reaches edits made since that resume.
 - **Ollama models need a local server** the judges' machine may not have running; keep a Groq/OpenRouter fallback in any demo.
 - **Provider catalogues churn.** Run `npm run verify:models` before a demo. The Gemini entry is unverifiable without a key and is marked as such.
@@ -703,7 +873,7 @@ The repository ships a **GitHub Actions workflow** ([`.github/workflows/build.ym
 
 ---
 
-## 19. Repo map
+## 20. Repo map
 
 ```
 next-electron-ide/
@@ -731,7 +901,7 @@ next-electron-ide/
 ├── src/                   Next.js renderer
 │   ├── components/        Editor, Chat, DiffReview, Dashboard, Settings, …
 │   └── lib/trace.ts       The pure reducer behind both dashboard modes
-├── tests/                 Node test suites (see §16)
+├── tests/                 Node test suites (see §17)
 ├── docs/local-models.md   Running on Ollama
 └── scripts/verify-models.mjs
 ```
