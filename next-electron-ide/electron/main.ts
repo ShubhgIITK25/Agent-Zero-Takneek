@@ -1,7 +1,7 @@
 import { app, BrowserWindow, ipcMain, dialog, Menu, shell } from "electron";
 import * as path from "path";
 import * as fs from "fs/promises";
-import { Dirent } from "fs";
+import { Dirent, existsSync } from "fs";
 import * as net from "net";
 import * as crypto from "crypto";
 import { spawn, ChildProcessWithoutNullStreams } from "child_process";
@@ -11,6 +11,7 @@ import {
   orchestratorScriptPath,
 } from "./orchestrator-bridge";
 import { checkModelHealth, HealthCheckRequest } from "./model-health";
+import { resolvePythonInterpreter } from "./python-interpreter";
 import type { IPty } from "node-pty";
 
 const isDev = process.env.NODE_ENV === "development";
@@ -66,6 +67,20 @@ let retrievalPort: number | null = null;
 let retrievalReady = false;
 let currentCodebaseId: string | null = null;
 
+/**
+ * What the retrieval service can actually do right now, read from its
+ * /health response once it comes up. `null` until the first successful probe.
+ * When any of these is false the pipeline is running degraded — usually
+ * because it was spawned with a Python that lacks the dependencies — and the
+ * status bar says so instead of quietly serving worse results.
+ */
+let retrievalCapabilities: {
+  vectorSearch: boolean;
+  astChunking: boolean;
+  reranker: boolean;
+  interpreter: string;
+} | null = null;
+
 function codebaseIdFor(rootPath: string): string {
   return crypto
     .createHash("sha256")
@@ -95,11 +110,14 @@ function findFreePort(): Promise<number> {
   });
 }
 
-function pythonExecutable(): string {
-  return (
-    process.env.NEXIDE_PYTHON ||
-    (process.platform === "win32" ? "python" : "python3")
-  );
+function pythonExecutable(): { command: string; source: string; isFallback: boolean } {
+  return resolvePythonInterpreter({
+    serviceDir: retrievalServiceDir(),
+    env: process.env,
+    platform: process.platform,
+    exists: existsSync,
+    join: path.join,
+  });
 }
 
 async function startRetrievalService() {
@@ -120,8 +138,22 @@ async function startRetrievalService() {
   const serverScript = path.join(retrievalServiceDir(), "server.py");
   const dataDir = path.join(app.getPath("userData"), "retrieval-index");
 
+  const python = pythonExecutable();
+  console.log(
+    `[retrieval] python interpreter: ${python.command} (via ${python.source})`,
+  );
+  if (python.isFallback) {
+    console.warn(
+      "[retrieval] no virtualenv found — spawning a bare PATH interpreter. " +
+        "If tree-sitter / fastembed / sqlite-vec are not installed there, " +
+        "retrieval runs in keyword-only mode (no AST chunking, no vector " +
+        "search, no reranking). Create retrieval-service/.venv or set " +
+        "NEXIDE_PYTHON — see README section 2.3.",
+    );
+  }
+
   const proc = spawn(
-    pythonExecutable(),
+    python.command,
     [serverScript, "--port", String(retrievalPort), "--data-dir", dataDir],
     {
       cwd: retrievalServiceDir(),
@@ -164,7 +196,37 @@ async function startRetrievalService() {
       const res = await fetch(`http://127.0.0.1:${retrievalPort}/health`);
       if (res.ok) {
         retrievalReady = true;
-        mainWindow?.webContents.send("retrieval:status", { state: "idle" });
+        const health = (await res.json().catch(() => ({}))) as Record<
+          string,
+          unknown
+        >;
+        retrievalCapabilities = {
+          // Vector search needs both the embedder (to make vectors) and the
+          // sqlite-vec extension (to store and query them). Either missing
+          // means BM25 + graph only.
+          vectorSearch:
+            health.embeddings === true && health.sqlite_vec === true,
+          astChunking: health.ast_chunking === true,
+          reranker: health.reranker === true,
+          interpreter:
+            typeof health.python === "string" ? health.python : "unknown",
+        };
+        const c = retrievalCapabilities;
+        if (!c.vectorSearch || !c.astChunking || !c.reranker) {
+          console.warn(
+            `[retrieval] running DEGRADED — vector_search=${c.vectorSearch} ` +
+              `ast_chunking=${c.astChunking} reranker=${c.reranker}. ` +
+              `Interpreter in use: ${c.interpreter}. ` +
+              `Install retrieval-service/requirements.txt into that interpreter.`,
+          );
+        } else {
+          console.log("[retrieval] full pipeline available");
+        }
+        mainWindow?.webContents.send("retrieval:status", {
+          state: "idle",
+          degraded: !c.vectorSearch || !c.astChunking || !c.reranker,
+          vector_search: c.vectorSearch,
+        });
         console.log(retrievalPort, "retrievalPort");
         if (openFolderPath) indexCurrentFolder();
         return;
@@ -178,6 +240,7 @@ async function startRetrievalService() {
 
 function stopRetrievalService() {
   retrievalReady = false;
+  retrievalCapabilities = null;
   if (retrievalProc) {
     try {
       retrievalProc.kill();
@@ -226,6 +289,14 @@ async function indexCurrentFolder() {
       state: "ready",
       codebaseId,
       ...result,
+      // The /index response reports vector_search for this run; fold in the
+      // process-wide capability picture so the status bar can say "keyword
+      // only" when the interpreter is missing dependencies.
+      degraded:
+        retrievalCapabilities != null &&
+        (!retrievalCapabilities.vectorSearch ||
+          !retrievalCapabilities.astChunking ||
+          !retrievalCapabilities.reranker),
     });
   }
 }
@@ -272,6 +343,11 @@ function watchFolder(folderPath: string) {
               state: "ready",
               codebaseId: currentCodebaseId,
               ...result,
+              degraded:
+                retrievalCapabilities != null &&
+                (!retrievalCapabilities.vectorSearch ||
+                  !retrievalCapabilities.astChunking ||
+                  !retrievalCapabilities.reranker),
             });
           }
         });

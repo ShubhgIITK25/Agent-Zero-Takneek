@@ -370,6 +370,16 @@ button:hover {
   background: #6fcf7f;
 }
 
+/* Service is up but running without vector search / AST chunking / rerank —
+   amber, not green: it works, but it is not the pipeline you think it is. */
+.status-retrieval-degraded::before {
+  background: #f0c645;
+}
+
+.status-retrieval-degraded {
+  color: #f0c645;
+}
+
 .status-retrieval-error::before,
 .status-retrieval-unavailable::before {
   background: #e5686e;

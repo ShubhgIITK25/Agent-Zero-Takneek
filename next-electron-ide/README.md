@@ -1,105 +1,399 @@
 # NEXide
 
-An agentic coding IDE built for the Takneek PS (IIT Kanpur Programming Club). Electron + Next.js shell around a standalone multi-agent orchestrator that plans, routes, executes, verifies, and retries coding subtasks against a curated roster of ≤80B-parameter models — with a live observability dashboard, block-level diff review, and full crash-safe resume.
+An agentic coding IDE built for the Takneek PS (IIT Kanpur Programming Club). Electron + Next.js shell around a standalone multi-agent orchestrator that plans, routes, executes, verifies, backtracks and re-plans coding subtasks against a curated roster of **≤80B-parameter** models — with a live observability dashboard, block-level diff review, and crash-safe resume.
 
-## Getting started
+The design premise, taken from the PS: no single small open-weight model can carry a hard multi-step coding task. So nothing here assumes one can. Every part of the system is built around the limits of a 27B model rather than around the capabilities of a frontier one.
+
+---
+
+## Documentation map
+
+| If you want to… | Read |
+|---|---|
+| Get it running on a clean Linux box | [2. Setup from scratch on Linux](#2-setup-from-scratch-on-linux) |
+| Understand the system in one picture | [3. Architecture](#3-architecture) |
+| Follow a task from prompt to result | [4. The orchestration pipeline](#4-the-orchestration-pipeline) |
+| Know how a model gets chosen | [5. Smart routing](#5-smart-routing) |
+| Know how code is found | [6. Code retrieval](#6-code-retrieval) |
+| Know how agents call tools | [7. Tool calling](#7-tool-calling) |
+| See what we chose and what we rejected | [14. Trade-offs and rejected alternatives](#14-trade-offs-and-rejected-alternatives) |
+| See what actually went wrong while building | [15. Challenges and solutions](#15-challenges-and-solutions) |
+| Run a local model | [docs/local-models.md](docs/local-models.md) |
+
+**Contents:** [1. Quick start](#1-quick-start) · [2. Setup on Linux](#2-setup-from-scratch-on-linux) · [3. Architecture](#3-architecture) · [4. Orchestration](#4-the-orchestration-pipeline) · [5. Routing](#5-smart-routing) · [6. Retrieval](#6-code-retrieval) · [7. Tool calling](#7-tool-calling) · [8. Model roster](#8-model-roster-and-eligibility) · [9. Settings](#9-settings) · [10. Context control](#10-manual-context-control) · [11. Diff review](#11-diff-review) · [12. Dashboard](#12-observability-dashboard) · [13. Persistence](#13-persistence-and-resume) · [14. Trade-offs](#14-trade-offs-and-rejected-alternatives) · [15. Challenges](#15-challenges-and-solutions) · [16. Testing](#16-testing) · [17. Builds](#17-building-desktop-installers) · [18. Limitations](#18-known-limitations) · [19. Repo map](#19-repo-map)
+
+---
+
+## 1. Quick start
+
+Already have Node 20+, Python 3.10+ and the repo cloned:
 
 ```bash
 npm install
+python3 -m venv retrieval-service/.venv
+retrieval-service/.venv/bin/pip install -r retrieval-service/requirements.txt
 npm run dev
 ```
 
-`npm run dev` starts the Next.js renderer (`http://localhost:3210`) and, once it's up, compiles and launches the Electron shell. The orchestrator is spawned by Electron's main process as a separate child process the first time you send a task — you don't start it manually.
+The app finds `retrieval-service/.venv` on its own — no environment variable needed. Then open **Settings** and paste at least one provider key (§2.4). For a clean machine, or if any of that failed, follow §2 in order.
 
-### Building desktop installers
+---
 
-The packaging targets are native to each desktop OS: NSIS on Windows, DMG and
-ZIP on macOS, and AppImage and DEB on Linux. Run the matching command on that
-platform so native dependencies such as `node-pty` are rebuilt correctly:
+## 2. Setup from scratch on Linux
+
+Written for someone who has never seen this codebase, on a fresh Ubuntu/Debian or Fedora install. Every step says what it is for, so a failure is diagnosable rather than mysterious.
+
+### 2.1 System prerequisites
 
 ```bash
-npm run dist:win
-npm run dist:mac
-npm run dist:linux
+# Debian / Ubuntu
+sudo apt update
+sudo apt install -y git curl build-essential python3 python3-venv python3-pip
+
+# Fedora
+sudo dnf install -y git curl @development-tools python3 python3-virtualenv python3-pip
 ```
 
-The installers are written to `release/`. The repository's GitHub Actions
-workflow runs the same build on native Windows, macOS, and Linux runners and
-uploads each platform's artifacts from every `main` push or manual run. CI
-artifacts are unsigned; production signing and macOS notarization require
-platform certificates and secrets.
+`build-essential` / `@development-tools` is not optional: `node-pty` (the integrated terminal) is a native module and is compiled during `npm install`.
 
-### Required API keys
+**Node 20 or newer.** Check with `node -v`. If your distro ships something older, install via [nvm](https://github.com/nvm-sh/nvm):
 
-Open **Settings** in the app and enter keys for whichever providers you want available:
+```bash
+curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash
+exec "$SHELL"
+nvm install 20 && nvm use 20
+```
 
-- **Groq** — `GROQ_API_KEY`. Free tier, fastest of the three, and the default for most subtasks.
-- **OpenRouter** — `OPENROUTER_API_KEY`. Free-tier routes, used both as its own provider and as Groq's failover target.
-- **Ollama** — no key; point it at a local `ollama serve` (default `http://127.0.0.1:11434`). Zero marginal cost, useful when you want to keep a demo running without burning free-tier quota. See **[Running on a local model](docs/local-models.md)** for setup, which model fits which machine, and why the local context windows are deliberately small.
+**Python 3.10 or newer.** Check with `python3 -V`. Needed for the retrieval service.
 
-A model is only offered to the router once its provider has a saved, valid key (or, for Ollama, a reachable local server). Keys are stored locally, never bundled or committed.
+**Electron on Linux needs a display.** Over SSH, either use X11 forwarding (`ssh -X`) or run under `xvfb-run`. On a headless CI box, `npm run dev` will start Next.js and then fail to open a window — that is expected, not a broken install.
 
-## The agent system
+### 2.2 Clone and install
 
-Every task goes through the same pipeline, checkpointed after each step so a task can be killed and resumed without losing progress:
+```bash
+git clone <your-repo-url>
+cd Agent-Zero-Takneek/next-electron-ide
+npm install
+```
 
-**decompose → route → execute → verify → retry → aggregate**
+`npm install` also runs `electron-builder install-app-deps`, which rebuilds `node-pty` against Electron's own Node ABI. If it fails, you are missing a compiler — go back to §2.1.
 
-1. **Decompose** — a planning-tier model breaks the prompt into subtasks with explicit dependencies.
-2. **Route** — each subtask is assigned a model by deterministic scoring, not another LLM call: capability fit (does this model's `good_at` list cover the subtask's category), context-window fit, cost pressure (scaled by how much of the budget is already spent), with speed as a tiebreak.
-3. **Execute** — the assigned model runs with tool access (read/write/run_command), gated by three independent stuck-detection caps per subtask: 3 retries, 12 steps, 60k tokens, plus a guard that aborts after 3 identical repeated tool calls.
-4. **Verify** — a separate verification-tier model checks the subtask's output against its stated goal.
-5. **Retry, with backtracking** — a failed verification **rolls the workspace back** to its state before the subtask ran, *then* re-queues the subtask (up to its retry cap) with the verifier's reason fed into the conversation.
+### 2.3 The Python retrieval service
 
-   The rollback is the part that matters. Without it, attempt 2 starts from a tree the verifier has already rejected and attempt 3 compounds it — and when the retries run out, the union of every broken attempt is left on disk under a subtask marked `failed`, with its dependents blocked so nothing downstream ever cleans up. The undo point is captured lazily: the first time a subtask writes to a file, that file's prior content is stashed (creating a file records "did not exist", so undoing it is a delete). Restoring costs one write per touched file and needs no VCS — deliberately *not* `git stash`/`git checkout .`, because the project root isn't guaranteed to be a repo, and an agent reaching into the user's index to undo its own mistake is a worse failure than the one it's fixing.
+The IDE runs a small local HTTP service that indexes and searches your codebase. **It is optional but heavily degraded without its dependencies** — skip this and you get line-window chunks and keyword search only: no AST-aware chunking, no vector search, no reranking.
 
-   Rollback fires on all four terminal failures: verification failed with retries left, retries exhausted, the agent reported `BLOCKED`, and no model available. It never fires on a pass — verified work drops its undo point immediately, so no later failure can reach back and revert a subtask that succeeded. Because a rollback can undo edits **you approved by hand**, it's always reported as a `workspace_restored` intervention naming every file, and the retry prompt explicitly tells the model its edits were reverted (otherwise it assumes they survived and writes half a fix).
+```bash
+python3 -m venv retrieval-service/.venv
+retrieval-service/.venv/bin/pip install -r retrieval-service/requirements.txt
+```
 
-6. **Re-plan, bounded** — when a subtask has spent *every* retry, the system stops retrying and changes the plan instead.
+This pulls `tree-sitter` + per-language grammars, `fastembed` (ONNX, ~120MB of models on first use — no PyTorch), `sqlite-vec` and `pathspec`. See [retrieval-service/requirements.txt](retrieval-service/requirements.txt), which documents why each one was picked.
 
-   The retry ladder has already re-run that subtask on a stronger model with the verifier's complaint fed back in. If three of those failed, the model isn't the problem — **the subtask is**, and a fourth retry is precisely the "blindly retrying the same action" the PS penalises. So a re-planner is asked to *diagnose* the failure and either decompose the subtask into 2–3 genuinely different steps, or say it's impossible. `abandon` is a first-class answer: a re-planner that always produces a new decomposition is one that spends the remaining budget rewording the same impossible subtask.
+**The app finds this virtualenv automatically.** Interpreter resolution ([`electron/python-interpreter.ts`](electron/python-interpreter.ts)) tries, in order: `$NEXIDE_PYTHON` if you set it, then `retrieval-service/.venv`, then an activated `$VIRTUAL_ENV`, then bare `python3` on `PATH`. So creating the venv at that path is all you need — no environment variable, no shell-rc edit.
 
-   The replaced subtask becomes `replaced` — a status distinct from `failed` on purpose, because the work is still being attempted under new ids, and counting it as incomplete would make a *successful* re-plan report failure. Anything that depended on it is rewired to the last replacement; without that rewire the dependents wait forever on an id that can never be `done`.
+Only set `NEXIDE_PYTHON` if your interpreter lives somewhere else:
 
-   **Every bound is a hard stop, checked before the planner call so a disallowed re-plan costs nothing:**
+```bash
+export NEXIDE_PYTHON=/path/to/your/python
+```
 
-   | Bound | Value | Why |
-   |---|---|---|
-   | Re-plans per task | 2 | Whole-task budget, not per-subtask — stops a struggling task rewriting its own plan indefinitely |
-   | Re-plan depth | 1 | Only original subtasks may be re-planned. A replacement that fails is simply failed — no recursive tree of re-plans |
-   | Replacements per re-plan | 3 | Caps how far one re-plan can widen the DAG |
-   | Cost remaining | ≥25% | A re-plan buys a planner call **plus** a fresh round of subtask work |
-   | Time remaining | ≥20% | Same |
+**Confirming it worked.** On startup the Electron log prints the interpreter it chose and `full pipeline available`, or `DEGRADED — missing: …` if that interpreter lacks the packages. The status bar shows `Index ready (… )` normally, or `Index ready (… ) · keyword-only` in amber when degraded. If you see degraded, the venv either was not created at `retrieval-service/.venv` or the `pip install` did not finish.
 
-   The budget gates use `fractionRemaining`, not `canAfford` — `canAfford` answers "can I pay for this one call", which is the wrong question for a decision that commits to a whole extra round of work. Starting a re-plan at 90% spent reliably converts a partial result into a **ceiling breach, which scores zero** — strictly worse than accepting one failed subtask. Every refusal emits a `replan_declined` intervention naming which bound stopped it, so "we could have re-planned but didn't" is never silent.
-7. **Aggregate** — once every subtask has resolved to `done`, `failed`, `skipped`, or `replaced`, results are summarized back to the user.
+Verify the service independently of the IDE:
 
-**Parallel subtasks.** Subtasks whose dependencies are already satisfied run concurrently — up to the limit set in Settings (default 3; `1` is strictly sequential). The dependency graph is unchanged; the only difference is that more than one *ready* subtask may be in flight. Three things had to be made concurrency-safe first, and each is a real failure mode rather than a hypothetical one:
+```bash
+retrieval-service/.venv/bin/python retrieval-service/verify.py .
+```
+
+### 2.4 API keys, per provider
+
+Launch the app (`npm run dev`), open **Settings**, and paste keys for whichever providers you want. Keys are stored locally in Electron's `userData` directory; they are never committed, bundled, or sent anywhere except that provider's own API. A model is only offered to the router once its provider has a working key — the health pill next to each model tells you which.
+
+| Provider | Env var | Where to get it | Cost | Notes |
+|---|---|---|---|---|
+| **Groq** | `GROQ_API_KEY` | [console.groq.com/keys](https://console.groq.com/keys) — sign in, *Create API Key*, copy the `gsk_…` value | Free tier | Fastest provider; the default for most subtasks. Free tier is rate-limited per minute, which the router handles by cooling the provider down and failing over. |
+| **OpenRouter** | `OPENROUTER_API_KEY` | [openrouter.ai/keys](https://openrouter.ai/keys) — sign in, *Create Key*, copy the `sk-or-…` value | Free routes + PAYG | Serves the free-tier models in the roster and acts as Groq's failover target. No card needed for the `:free` routes. |
+| **Ollama** | *(none)* | Install from [ollama.com/download](https://ollama.com/download), then `ollama serve` | $0 | Local models, zero marginal cost. See §2.5 and [docs/local-models.md](docs/local-models.md). |
+| **Gemini** *(optional)* | `GEMINI_API_KEY` | [aistudio.google.com/apikey](https://aistudio.google.com/apikey) | Free tier | Optional extra route. This is the one entry `npm run verify:models` cannot verify without a key. |
+
+Optional overrides, only if you are proxying a provider: `GROQ_BASE_URL`, `OPENROUTER_BASE_URL`, `GEMINI_BASE_URL`, `OLLAMA_BASE_URL` (default `http://127.0.0.1:11434`).
+
+> **The settings screen is mandatory per the PS** — it exists so evaluators can paste their own keys without touching the code. Nothing in this repo hardcodes a key or reads one from a checked-in file.
+
+### 2.5 Optional — local models with Ollama
+
+```bash
+curl -fsSL https://ollama.com/install.sh | sh
+ollama serve &                     # leave running
+ollama pull qwen2.5-coder:7b       # ~4.7GB, fits 8GB VRAM
+```
+
+The roster's Ollama entries appear as `working` in Settings once the server is reachable and the model is pulled. [docs/local-models.md](docs/local-models.md) covers which model fits which machine, why tool-calling support is the deciding factor, and why the local context windows are deliberately small.
+
+### 2.6 Verify the whole install
+
+```bash
+npm run typecheck     # all three tsconfigs, no emit
+npm test              # full suite, ~1 min
+npm run verify:models # checks every registry entry against live provider catalogues
+npm run dev           # launches the IDE
+```
+
+If `npm test` is green and `npm run dev` opens a window, the install is good. In the `npm run dev` output, look for `[retrieval] python interpreter: …/retrieval-service/.venv/bin/python` and `full pipeline available` — if it says `DEGRADED` instead, revisit §2.3.
+
+---
+## 3. Architecture
+
+### 3.1 Process topology
+
+Four processes, three trust boundaries. Nothing in the renderer can touch the filesystem, a provider key, or a model directly.
+
+```mermaid
+flowchart LR
+  subgraph RND["Renderer — Next.js (sandboxed)"]
+    UI["Editor · Chat · Diff review<br/>Dashboard · Settings · Terminal"]
+  end
+
+  subgraph MAIN["Electron main (Node)"]
+    BRIDGE["preload contextBridge<br/>(the only renderer ↔ system door)"]
+    KEYS[["API keys<br/>userData"]]
+    HEALTH["Model health probe"]
+    WATCH["Workspace watcher"]
+    PTY["node-pty terminal"]
+  end
+
+  subgraph ORCH["Orchestrator — separate Node child process"]
+    SCHED["Scheduler + budget"]
+    ROUTER["Deterministic router"]
+    AGENTS["Planner · Implementer<br/>Verifier · Tie-break<br/>Compactor · Isolated"]
+    TOOLS["Tool runtime"]
+    STORE[["events.jsonl<br/>+ snapshot.json"]]
+  end
+
+  subgraph PY["Retrieval service — Python child process"]
+    CHUNK["tree-sitter AST chunker"]
+    INDEX[("Per-project SQLite<br/>FTS5 + sqlite-vec + call graph")]
+  end
+
+  EXT(["Groq · OpenRouter · Ollama · Gemini"])
+
+  UI <--> BRIDGE
+  BRIDGE <-->|"NDJSON over stdio"| SCHED
+  MAIN -.->|spawn| ORCH
+  MAIN -.->|spawn| PY
+  TOOLS <-->|"HTTP on 127.0.0.1"| CHUNK
+  AGENTS -->|HTTPS| EXT
+  HEALTH -->|HTTPS| EXT
+  SCHED --> STORE
+  CHUNK --> INDEX
+```
+
+### 3.2 Why these boundaries
+
+**Why the orchestrator is a separate process, not a module in Electron's main process.** An agent loop is unbounded work: a runaway tool call, a 60-second provider timeout, a JSON parse over a 200KB response. Running that on the main process blocks the UI thread, and a frozen IDE during a judged demo is indistinguishable from a crash. As a child process it can spin, hang or die without the window noticing. It is spawned via `process.execPath` with `ELECTRON_RUN_AS_NODE=1`, so the end user needs no separate Node install. The cost is one extra IPC hop per event, which is nothing against a model call.
+
+**Why the retrieval service is Python, and separate again.** The whole retrieval stack that matters — `tree-sitter` grammars, `fastembed`, `sqlite-vec` — is Python-first. Reimplementing AST chunking in Node meant either a worse chunker or shipping a second native toolchain. Keeping it out-of-process also means a segfault in a native grammar takes down a restartable helper, not the IDE.
+
+**Why two different transports.** The orchestrator channel is long-lived and *stream-shaped*: it emits hundreds of ordered events per task. NDJSON over stdio gives ordering for free (the pipe guarantees it), needs no port allocation or firewall prompt, and makes the watchdog trivially correct — EOF on stdout means the orchestrator is gone, full stop. An HTTP client cannot distinguish "crashed" from "slow" without inventing timeouts. The retrieval service is the opposite shape — request/response, no streaming — so plain HTTP on a loopback port is the simpler fit. Different problem, different transport.
+
+**Why the renderer never sees a key.** `contextBridge` exposes a fixed method list (`src/lib/electron-api.ts`) and nothing else; `nodeIntegration` is off. Provider calls happen in the orchestrator, health probes in main. A renderer `fetch` to a provider would also be CORS-blocked anyway — but the real reason is that a rendered page should never hold a credential.
+
+### 3.3 The wire protocol
+
+Newline-delimited JSON, one object per line, defined in [`orchestrator/protocol.ts`](orchestrator/protocol.ts). Two families share the channel, distinguished by `kind`:
+
+- **Command** (main → orchestrator): `start_task`, `resume_task`, `cancel_task`, `approval_response`, `isolated_query`, `revert_latest`, `ping`. Carries an `id`; answered by a `reply`.
+- **Event** (orchestrator → main → renderer): everything the dashboard renders.
+
+Every event carries `taskId`, a monotonic `seq`, and `ts`. `seq` lets the renderer detect a dropped or reordered frame instead of silently rendering a hole; `ts` is the orchestrator's own clock, so a replayed trace shows *real* timing rather than render timing.
+
+---
+
+## 4. The orchestration pipeline
+
+Every task follows the same path, checkpointed after each step so it can be killed and resumed without losing progress.
+
+```mermaid
+flowchart TD
+  PROMPT([User prompt]) --> PLANNER["<b>Planner</b><br/>decompose into a subtask DAG"]
+  PLANNER --> SCHED{"<b>Scheduler</b><br/>which ready subtasks run now?"}
+
+  SCHED -->|"critical path first<br/>no declared-file conflict<br/>up to N in parallel"| ROUTE["<b>Router</b> — deterministic scoring<br/>(no LLM call)"]
+  ROUTE --> IMPL["<b>Implementer</b> + tools"]
+  IMPL --> SIDE{"Side-effecting?"}
+  SIDE -->|"write / shell / git mutate"| HITL["<b>Human approval</b><br/>block-level diff"]
+  SIDE -->|"read only"| VERIFY
+  HITL --> VERIFY["<b>Verifier</b> — separate model,<br/>separate context"]
+
+  VERIFY -->|pass| DONE["subtask <b>done</b>"]
+  VERIFY -->|"fail, low confidence"| TIE["<b>Tie-break</b> — third model"]
+  TIE --> RETRYQ
+  VERIFY -->|"fail, confident"| RETRYQ{"Retries left?<br/>(cap 3)"}
+
+  RETRYQ -->|yes| ROLL["<b>Backtrack</b><br/>roll workspace back to<br/>pre-subtask state"]
+  ROLL --> ROUTE
+  RETRYQ -->|no| REPLANQ{"Re-plan allowed?<br/>(≤2/task, depth ≤1,<br/>≥25% cost, ≥20% time)"}
+  REPLANQ -->|yes| PLANNER
+  REPLANQ -->|"no / abandon"| FAILED["subtask <b>failed</b>"]
+
+  DONE --> SCHED
+  FAILED --> SCHED
+  SCHED -->|"all subtasks resolved"| AGG["<b>Aggregate</b> → summary"]
+  AGG --> OUT([Result])
+
+  CAPS["<b>Stuck detection</b> (always on)<br/>3 retries · 12 steps · 60k tokens<br/>3 identical repeated calls<br/>cost + time ceilings"] -.->|"halts and reports"| SCHED
+```
+
+**decompose → route → execute → verify → backtrack → re-plan → aggregate**
+
+### 4.1 Decompose
+
+A planning-tier model turns the prompt into 1–6 subtasks with explicit dependencies, a category (`analysis` / `codegen` / `simple_edit` / `verification`) and a declared list of files each expects to modify.
+
+Three rules in the planner prompt exist purely to make the plan *cheap to execute*, and each was a measured problem first:
+
+- **`dependsOn` defaults to empty.** A dependency is a cost, not documentation — it serialises two subtasks that could have run at once. The prompt makes the planner justify each edge ("would this fail if the other had not run?") rather than listing them out of tidiness.
+- **`touchesFiles` is declared.** Two parallel subtasks editing one file is not a correctness problem (the stale-write guard catches it) but it *is* a cost problem: the loser's proposal is refused and it must re-read and re-propose — a whole wasted round-trip. Declaring files lets the scheduler avoid the collision, which is what makes aggressive independence safe to declare.
+- **No trailing "verify everything" subtask.** Every subtask is already checked by a separate verifier the moment it finishes. A final verification step that depends on all the others is a duplicate check *and* a barrier that forces every parallel branch to finish before it can start.
+
+If the request is genuinely one-shot, the planner returns a single subtask with `trivial: true` — the system does not manufacture steps to look busy.
+
+### 4.2 Route
+
+Deterministic scoring, not another model call. See §5.
+
+### 4.3 Execute
+
+The assigned model runs with tool access, under three independent per-subtask caps — **3 retries, 12 steps, 60k tokens** — plus a guard that aborts after **3 identical repeated tool calls**. Each cap answers a different runaway: a task that keeps failing, one that keeps working without converging, and one that loops on the same call. Every cap firing is surfaced as an `intervention` event, never a silent stop.
+
+### 4.4 Verify
+
+A separate verification-tier model, in its own context, checks the subtask's output against its stated goal. It is shown only the files *its own subtask* changed — under parallelism the global changed-set would invite it to fail work it was never asked to judge. When the verifier fails a subtask with low confidence, a third model breaks the tie rather than one model's bad day ending the subtask.
+
+### 4.5 Backtrack
+
+A failed verification **rolls the workspace back** to its state before the subtask ran, *then* re-queues it with the verifier's reason fed into the conversation.
+
+The rollback is the part that matters. Without it, attempt 2 starts from a tree the verifier already rejected and attempt 3 compounds it — and when retries run out, the union of every broken attempt is left on disk under a `failed` subtask whose dependents are blocked, so nothing downstream ever cleans up.
+
+The undo point is captured lazily: the first time a subtask writes to a file, that file's prior content is stashed (creating a file records "did not exist", so undoing it is a delete). Restoring costs one write per touched file and needs no VCS — deliberately **not** `git stash` / `git checkout .`, because the project root is not guaranteed to be a repo, and an agent reaching into your index or stash to undo its own mistake is a far worse failure mode than the one it is fixing.
+
+Rollback fires on all four terminal failures: verification failed with retries left, retries exhausted, the agent reported `BLOCKED`, and no model available. It never fires on a pass — verified work drops its undo point immediately, so no later failure can reach back and revert a subtask that succeeded. Because a rollback can undo edits **you approved by hand**, it is always reported as a `workspace_restored` intervention naming every file, and the retry prompt explicitly tells the model its edits were reverted (otherwise it assumes they survived and writes half a fix).
+
+Undo points are **per subtask**: rolling back one must not revert a parallel sibling's approved edits.
+
+### 4.6 Re-plan, bounded
+
+When a subtask has spent *every* retry, the system stops retrying and changes the plan instead.
+
+The retry ladder has already re-run that subtask on a stronger model with the verifier's complaint fed back in. If three of those failed, the model is not the problem — **the subtask is**, and a fourth retry is precisely the "blindly retrying the same action" the PS penalises. So a re-planner is asked to *diagnose* the failure and either decompose the subtask into 2–3 genuinely different steps, or say it is impossible. `abandon` is a first-class answer: a re-planner that always produces a new decomposition is one that spends the remaining budget rewording the same impossible subtask.
+
+The replaced subtask becomes `replaced` — a status distinct from `failed` on purpose, because the work is still being attempted under new ids, and counting it as incomplete would make a *successful* re-plan report failure. Anything that depended on it is rewired to the last replacement; without that rewire the dependents wait forever on an id that can never be `done`.
+
+**Every bound is a hard stop, checked before the planner call so a disallowed re-plan costs nothing:**
+
+| Bound | Value | Why |
+|---|---|---|
+| Re-plans per task | 2 | Whole-task budget, not per-subtask — stops a struggling task rewriting its own plan indefinitely |
+| Re-plan depth | 1 | Only original subtasks may be re-planned. A replacement that fails is simply failed — no recursive tree of re-plans |
+| Replacements per re-plan | 3 | Caps how far one re-plan can widen the DAG |
+| Cost remaining | ≥25% | A re-plan buys a planner call **plus** a fresh round of subtask work |
+| Time remaining | ≥20% | Same |
+
+The budget gates use `fractionRemaining`, not `canAfford` — `canAfford` answers "can I pay for this one call", which is the wrong question for a decision that commits to a whole extra round of work. Starting a re-plan at 90% spent reliably converts a partial result into a **ceiling breach, which scores zero** — strictly worse than accepting one failed subtask. Every refusal emits a `replan_declined` intervention naming which bound stopped it.
+
+### 4.7 Aggregate
+
+Once every subtask has resolved to `done`, `failed`, `skipped` or `replaced`, results are summarised back to the user. A task ends `done` only if **every** subtask ended `done` — any `failed` (retries exhausted) or `skipped` (its dependency failed) makes the whole task `failed`, with the specific subtasks and reasons named. A partially-successful run is never reported as a plain success.
+
+### 4.8 Parallel subtasks
+
+Subtasks whose dependencies are satisfied run concurrently, up to the limit in Settings (default 3; `1` is strictly sequential and is the escape hatch if parallelism ever misbehaves in front of a judge). The dependency graph is unchanged — the only difference is that more than one *ready* subtask may be in flight.
+
+**Which ready subtask goes first is not arbitrary.** Ready subtasks are ordered by how much work hangs off them (1 + the longest chain of dependents). With 3 slots and 5 ready subtasks, plan order would happily start three leaves while the one subtask that unblocks the other half of the plan waits — and total time is set by the critical path. This is ordinary list scheduling; it changes only *which* ready subtask runs first, never *whether* one may run.
+
+**Which two may run together is also not arbitrary.** Two subtasks whose declared `touchesFiles` overlap are never co-scheduled. Deferring costs nothing — the subtask takes the next free slot — and it avoids a guaranteed wasted round-trip. With nothing running there is nothing to conflict with, so this can never deadlock.
+
+Four things had to be made concurrency-safe first, each a real failure mode rather than a hypothetical:
 
 - **Approvals are serialised.** The review pane holds exactly one pending diff, so a second concurrent approval request would replace the first in the UI — and the first, which an agent is blocked on, would never resolve. That is a permanent hang. One approval is outstanding at a time, task-wide.
 - **Every write re-checks the file.** A diff is computed against the file as it was when the agent proposed it. If the bytes moved since — a parallel subtask's approved edit, or you typing in the editor while the review sat open — the write is refused and the agent is told to re-read and re-propose. Serialising the prompt is not enough to prevent a lost update; only comparing against what was actually read is.
-- **Undo points are per subtask.** Rolling back a failed subtask must not revert a sibling's approved edits, so each subtask owns its own backtrack map, and the verifier is shown only the files its own subtask changed.
+- **Undo points are per subtask**, so a rollback cannot revert a sibling's approved edits.
+- **Changed-file sets are per subtask**, so a verifier only judges its own subtask's work.
 
-Concurrency also drops back to one automatically once spending passes 75% of the cost ceiling: concurrent dispatches can each pass the affordability check and still breach together, and a breach scores zero.
+Concurrency drops back to one automatically once spending passes **75% of the cost ceiling**: concurrent dispatches can each pass the affordability check and still breach together, and a breach scores zero.
 
-A task only ends in `done` if **every** subtask ended `done`. Any subtask left `failed` (retries exhausted) or `skipped` (its dependency failed) makes the whole task end `failed`, with the specific subtask(s) and reasons named in the failure message — a partially-successful run is never reported as a plain success.
+### 4.9 Compaction
 
-Long-running context is kept in check by compaction: at 70% of the active model's real context window, older turns are summarized; at 88%, compaction is forced. Anything marked as a pinned fact is re-injected verbatim after compaction rather than being re-summarized, so constraints and decisions from earlier in the task don't drift.
+At **70%** of the active model's real context window, older turns are summarised; at **88%**, compaction is forced. Anything marked a pinned fact — the restated goal, `AGENTS.md` rules, user-pinned context — is re-injected **verbatim** after compaction rather than re-summarised, so constraints and decisions from earlier in the task do not drift. Compaction is emitted as an event with before/after token counts and the list of preserved facts, so the dashboard shows exactly what was dropped.
 
-Writes, deletes, and shell commands never execute unmediated — they go through the approval gate described below.
+---
+## 5. Smart routing
 
-## Code retrieval
+Every subtask is assigned a model by **deterministic scoring in `orchestrator/router.ts`** — no LLM call. Routing with a model would put a model call in front of every model call, on the cost term the PS weights ~2× time, and would make the same subtask route differently on two runs, which destroys reproducibility of the trace.
 
-A codebase is chunked on **AST boundaries** (tree-sitter): one chunk per function/class/method, with its signature, docstring and body kept together — never a fixed-token window that starts mid-function. Each project gets its own SQLite index keyed by `sha256(absolute path)[:16]`, so retrieval and agent memory cannot leak between projects.
+```mermaid
+flowchart TD
+  IN(["Subtask + signals<br/>category · context size · attempt<br/>budget left · time left · cooldowns"]) --> F
 
-A query runs four stages:
+  subgraph F["Hard filters — disqualify, never penalise"]
+    F1["> 80B total params"] --> F2["provider key missing / unhealthy"]
+    F2 --> F3["context window too small"]
+    F3 --> F4["provider in rate-limit cooldown"]
+    F4 --> F5["model already failed this subtask"]
+  end
 
-1. **Recall** — BM25 and vector search, unioned. Two independent retrievers over different representations.
-2. **Expand** — 1-hop call/import-graph neighbours of the strongest vector hits, so a structurally-relevant chunk that doesn't *sound* like the query still surfaces.
-3. **Rerank** — a local cross-encoder cuts the pool to the k chunks worth spending the calling model's tokens on. Fused with **Reciprocal Rank Fusion**, which combines *ranks* rather than raw scores: BM25 scores, cosine distances and cross-encoder logits live on incomparable scales, and averaging them directly would be arithmetic on units that don't share a zero.
-4. **Recover** — described below.
+  F --> S
 
-### Making natural language match identifiers
+  subgraph S["Soft scoring — weighted sum"]
+    S1["capability fit for category"]
+    S2["quality index<br/>(weighted per category)"]
+    S3["cost pressure<br/>(scales with budget spent)"]
+    S4["context headroom"]
+    S5["speed"]
+    S6["escalation bonus on retry"]
+    S7["free-tier preference"]
+  end
+
+  S --> PICK["Highest score wins"]
+  PICK --> EV["<b>routing_decision</b> event<br/>chosen model · reason · all signals<br/>+ every rejected candidate and why"]
+  EV --> UI["Dashboard Routing tab<br/>+ expandable chip in the chat panel"]
+```
+
+**Hard filters disqualify; they never merely penalise.** A model over 80B is not "expensive", it is *ineligible* — the PS makes it disqualifying, so it can never be outweighed by being cheap or fast.
+
+**Failover preserves progress.** If a call fails or a rate limit is hit, the provider goes into cooldown, the failed model is excluded from this subtask's candidate set, and the subtask is re-routed to the next best model **with its conversation intact** — the subtask is not restarted and nothing already approved is undone. This is emitted as a `provider_failover` intervention so a failover is visible rather than looking like an unexplained model change.
+
+**The routing decision is never hidden.** One `routing_decision` event feeds two views: the dashboard's per-node **Routing** tab, and an expandable row in the agent panel itself. The panel row is a one-liner by default (`⇄ north-mini-code · fits codegen, zero marginal cost · 3 not picked`); clicking it drops down the full reason, the decision signals, and every candidate that lost with the reason it lost (`llama-3.3-70b — scored 41.3 vs 58.7`, `gemma-4-31b — context ~60000 tok exceeds its 262144 window`).
+
+**Why the quality index is weighted per category.** The cost of being wrong is not flat. A bad `simple_edit` is caught on the next line; a bad *plan* is only caught after every subtask under it has been paid for; a bad *verification verdict* is never caught at all — it ships. So `analysis` (which is how the planner and tie-break both route) and `verification` weight quality ~4× harder than `simple_edit` does. Cost still dominates overall — the cost penalty reaches 45 against quality's ~23 — so a free model that fits still wins early in a task, which is correct when C is weighted ~2× T in `S_task`. Quality decides between models of *similar* price, and decides the tie-break outright.
+
+---
+
+## 6. Code retrieval
+
+Each project gets its own SQLite index keyed by `sha256(absolute path)[:16]`, so **retrieval and agent memory cannot leak between projects** — isolation is "which file are we opening", not "which server are we trusting".
+
+```mermaid
+flowchart LR
+  Q(["Query"]) --> SP["Identifier split<br/><i>getUserById → get user by id</i>"]
+  SP --> BM["BM25 · FTS5"]
+  SP --> VE["Vector · sqlite-vec<br/>bge-small 384d"]
+  BM --> RRF["<b>Reciprocal Rank Fusion</b><br/>fuses <i>ranks</i>, not raw scores"]
+  VE --> RRF
+  VE --> GR["1-hop call/import graph"]
+  GR --> RRF
+  RRF --> RR["Cross-encoder rerank<br/>ms-marco-MiniLM"]
+  RR --> AS{"<b>Assess</b><br/>retriever agreement?<br/>reranker floor?<br/>pool size vs index?"}
+  AS -->|confident| OUT(["Top-k chunks<br/>+ why_relevant"])
+  AS -->|weak| WID["Widen: recall 25→60,<br/>graph 8→16, k×2 (≤16)<br/>+ narrow the query"]
+  WID --> BM
+  AS -->|"bounded: 2 variants max"| OUT
+```
+
+Indexing chunks on **AST boundaries** (tree-sitter): one chunk per function/class/method with its signature, docstring and body kept together — never a fixed-token window that starts mid-function.
+
+### 6.1 Making natural language match identifiers
 
 SQLite's FTS5 tokeniser treats `computeDelinquencyGraceWindow` as **one atomic token**. So "delinquency grace window" — or any natural-language phrasing — could never match it through BM25, no matter how the query was worded, because the *indexed* form was atomic. Verified directly:
 
@@ -108,15 +402,15 @@ FTS5 MATCH 'computeDelinquencyGraceWindow'  -> 1 hit
 FTS5 MATCH 'delinquency'                    -> 0 hits
 ```
 
-So at index time every identifier in a chunk's symbol and code is **also** stored split into sub-words, in a dedicated `tokens` FTS column (`identifiers.py`). Raw code is still indexed verbatim, so exact-identifier search is unchanged; the split column is pure additional recall. The same split runs on the query, so a pasted `getUserById` also searches as `get user by id`.
+So at index time every identifier in a chunk's symbol and code is **also** stored split into sub-words, in a dedicated `tokens` FTS column (`identifiers.py`). Raw code is still indexed verbatim, so exact-identifier search is unchanged; the split column is pure additional recall. The same split runs on the query.
 
-**Why not a custom FTS5 tokeniser** — the "correct" answer, and it needs a C extension compiled per platform: exactly the dependency this service was built to avoid (it's why `sqlite-vec` was chosen over a standalone vector DB). A pre-split column is pure Python, costs one pass per chunk at index time, and is inspectable in any DB browser.
+**Why not a custom FTS5 tokeniser** — the "correct" answer, and it needs a C extension compiled per platform: exactly the dependency this service was built to avoid (it is why `sqlite-vec` was chosen over a standalone vector DB). A pre-split column is pure Python, costs one pass per chunk at index time, and is inspectable in any DB browser.
 
 This is a schema change, so the index carries an `INDEX_FORMAT_VERSION` in `PRAGMA user_version`. An index written by an older format is dropped and rebuilt from source rather than migrated in place — rebuilding is fast and cannot leave a half-migrated file.
 
-### Detecting and recovering from a weak retrieval
+### 6.2 Detecting and recovering from a weak retrieval
 
-Even with that, a first attempt can come back weak. Detection uses signals that are each independently interpretable — **deliberately not the `score` field**, which is an RRF *rank* score whose maximum here is ≈0.074 and whose absolute value carries no semantic meaning. Thresholding on it would look like a confidence measure and be numerology.
+Detection uses signals that are each independently interpretable — **deliberately not the `score` field**, which is an RRF *rank* score whose maximum here is ≈0.074 and whose absolute value carries no semantic meaning. Thresholding on it would look like a confidence measure and be numerology.
 
 The anchor signal is **retriever agreement**. BM25 and vector search are independent — different representation, different algorithm — so a chunk both rank highly is corroborated by two methods that fail differently. Agreement requires a **majority** of the top results, not one: a single lexical coincidence is not evidence.
 
@@ -137,19 +431,11 @@ There is a wide empty band between ≈−9 and ≈−4 separating "the model is 
 | Most results graph-expansion only | contributing | contributing |
 | Fewer results than requested | contributing | contributing |
 
-Three of these came out of testing against a real index and would have been wrong otherwise:
-
-- **The cross-encoder cannot outvote two agreeing retrievers** — `ms-marco-MiniLM` is web-trained and systematically under-scores code, so treating its nominal 0 boundary as decisive flagged *correct* results weak.
-- **…but below −8 it wins anyway.** With agreement as a blanket veto, `kubernetes ingress controller helm values` scored 0.7 and passed as strong against a codebase containing no Kubernetes — a single lexical hit on the word "values" counted as corroboration. Hence the majority rule and the second threshold.
-- **Pool size is relative to index size.** An absolute "fewer than 6 candidates" floor fires on every query in a small repo, where matching most of the index is a *complete* retrieval, not a failed one.
+Three of these came out of testing against a real index and would have been wrong otherwise — see §15.
 
 Current accuracy on the real orchestrator source: **10/10 answerable queries not flagged, 5/5 unanswerable queries flagged**. That check runs in `test_recovery_e2e.py` so a regression in the thresholds fails a test rather than quietly degrading.
 
-When a result is weak, retrieval retries itself before the caller ever sees it: recall widens (25 → 60), graph expansion widens (8 → 16), k doubles (capped 16), and the query is **narrowed** — filler words stripped, then optionally reduced to its most distinctive nouns.
-
-Reformulation is deliberately conservative, and that too is a test result. An earlier version synthesised identifier spellings (`userSession`, `user_session`, `usersession`, …) and ORed a dozen guesses into the FTS query. Once the index-level split landed that bought nothing — and it started **manufacturing false agreement**: a query with no real answer would OR enough guesses together to look corroborated, so `terraform kubernetes helm chart` came back "confident". Narrowing only removes terms; it cannot invent matches.
-
-**Why not ask a model to rewrite the query.** It puts a model round-trip inside the most-called tool in the system, on the cost term weighted ~2× time. The deterministic path costs nothing, has no latency variance, and is *reproducible* — the same weak query always escalates identically, which a rewrite model couldn't guarantee and which would make the dashboard trace unrepeatable. If it still comes back weak the tool hands the problem **up** to the agent, which is already a model in a loop and can rephrase semantically — paid for by a call we were making anyway.
+**Why not ask a model to rewrite the query.** It puts a model round-trip inside the most-called tool in the system, on the cost term weighted ~2× time. The deterministic path costs nothing, has no latency variance, and is *reproducible* — the same weak query always escalates identically, which a rewrite model could not guarantee and which would make the dashboard trace unrepeatable. If it still comes back weak the tool hands the problem **up** to the agent, which is already a model in a loop and can rephrase semantically — paid for by a call we were making anyway.
 
 Three properties that could have gone wrong:
 
@@ -157,22 +443,43 @@ Three properties that could have gone wrong:
 - **Bounded** — at most `MAX_VARIANTS_TRIED` (2) retries, exiting at the first that clears the bar.
 - **Never silent** — every attempt (query, k, confidence, reasons) is recorded in `attempts` and surfaced as a `retrieval_weak` intervention. A result that *stays* weak reaches the agent with a `[retrieval confidence 0.15 — LOW]` header naming the queries already tried, so its next move is genuinely different. Silently returning low-confidence snippets is how an agent ends up confidently editing the wrong file.
 
-### Testing retrieval
+---
 
-```bash
-python3 -m venv retrieval-service/.venv
-retrieval-service/.venv/bin/pip install -r retrieval-service/requirements.txt
+## 7. Tool calling
 
-npm run test:retrieval                                    # fast, stubbed, in npm test
-retrieval-service/.venv/bin/python retrieval-service/test_recovery_e2e.py   # real index
-retrieval-service/.venv/bin/python retrieval-service/verify.py .            # inspect a real run
-```
+### 7.1 The format, and why
 
-`test_recovery.py` stubs `store` and `embeddings` to test the escalation control flow cheaply — no model download, no index on disk — and runs inside `npm test`. `test_recovery_e2e.py` builds a **real** index with real tree-sitter chunking, real embeddings and a real cross-encoder, and asserts behaviour a stub cannot: that natural-language queries now match atomic identifiers on the first attempt, that good results are *not* escalated (wasted latency), and that a query with no answer stays weak. It's ~30s on first run, so it isn't in `npm test`.
+Tools are declared as **JSON Schema** and invoked through the provider's native **OpenAI-compatible `tools` / `tool_calls`** field — not a hand-rolled text protocol like `ACTION: read_file("x")` parsed out of prose.
 
-## Model roster and eligibility
+That choice is not cosmetic. Every provider in the roster (Groq, OpenRouter, and Ollama's `/api/chat`) speaks the OpenAI tool-calling shape, so one adapter serves all three and adding a provider is a base-URL change rather than a new parser. More importantly, the *model* has been fine-tuned to emit that shape: a hand-rolled format asks a 27B model to be reliable at something it was never trained on, and small models are exactly where a fragile format breaks first. Schema-validated arguments also fail *loudly* — a malformed call is a parse error we can feed back, not a plausible-looking string that silently reads the wrong path.
 
-The PS constraint is 80B **total** parameters (not active parameters — this matters for MoE models, where total and active can differ by an order of magnitude). The registry (`orchestrator/models.ts`) is the single source of truth for eligibility, and it deliberately carries four models that fail the rule so the constraint is visibly enforced rather than just assumed. Each fails in a different way, because each is a different way of being fooled:
+The one place we constrain the schema harder than the obvious design: the `git` tool takes `args` as an **array of strings**, never one command line. A single string would have to be shell-split somewhere, and shell-splitting attacker- or model-controlled text is how argument injection happens. An array goes straight to `execFile` with no shell.
+
+### 7.2 The tools
+
+| Tool | Side-effecting | Notes |
+|---|---|---|
+| `retrieve_context` | no | The primary way to see code. Returns ranked chunks with a confidence header, never whole files. |
+| `read_file` | no | Explicit read, honours `.nexideignore`. |
+| `list_dir` | no | Honours `.nexideignore`. |
+| `git` | no | Read-only subcommands only: `status`, `log`, `diff`, `show`, `branch`, `blame`, `ls-files`, `rev-parse`. Anything state-changing is refused with a pointer to `run_command`. |
+| `web_search` | no | DuckDuckGo Lite, HTML stripped to text. For current docs, API signatures, compiler errors. No key required. |
+| `propose_edit` | **yes** | The only write path the orchestrator controls. Always goes to block-level human review. |
+| `run_command` | **yes** | Arbitrary shell, always approval-gated. This is also how state-changing git (`commit`, `branch`, `merge`) runs. |
+
+### 7.3 The approval gate
+
+**Nothing with a side effect executes without human approval.** `propose_edit` renders a real unified diff for block-level accept/reject; `run_command` renders the exact command as a single yes/no. Read-only tools run freely — gating them would make the agent unusable without making it safer.
+
+Two consequences worth stating because they are easy to get wrong:
+
+- **Partial approval is a first-class outcome, not a failure.** When you accept some hunks and reject others, the tool result tells the agent *exactly what landed on disk*, and it continues from that reality — working around the rejected parts rather than assuming its whole edit applied.
+- **State-changing git deliberately has no fast path.** It would have been easy to let the `git` tool commit directly. Routing it through `run_command` means a commit gets the same explicit approval as any other side effect, and there is exactly one gate to audit instead of two.
+
+---
+## 8. Model roster and eligibility
+
+The PS constraint is 80B **total** parameters (not active — this matters for MoE models, where total and active differ by an order of magnitude). The registry (`orchestrator/models.ts`) is the single source of truth, and it deliberately carries four models that **fail** the rule so the constraint is visibly enforced rather than assumed. Each fails a different way, because each is a different way of being fooled:
 
 | Model | Provider | Total | Active | Why it's blocked |
 |---|---|---|---|---|
@@ -181,7 +488,7 @@ The PS constraint is 80B **total** parameters (not active parameters — this ma
 | Llama 4 Maverick 17B-128E | Groq | 400B | 17B | The api id itself says `17b`. Filtering on the model **name** ships a 400B model. |
 | Mistral Small 4 | OpenRouter | 119B | — | Called "Small". "Small" is a product line, not a size — the published repo is `Mistral-Small-4-119B-2603`. |
 
-A model whose provider doesn't publish a parameter count is treated as ineligible by default (unverifiable, not "probably fine").
+A model whose provider does not publish a parameter count is treated as ineligible by default (unverifiable, not "probably fine"). Blocked models are filtered out of the Settings roster entirely and can never be enabled or routed to; they exist in the registry as documented trap cases.
 
 ### Eligible roster
 
@@ -197,16 +504,14 @@ A model whose provider doesn't publish a parameter count is treated as ineligibl
 | GPT-OSS 20B | Groq | 20B | $0.075 → $0.30 | 15.2 | Cheapest hosted model that still calls tools reliably |
 | North Mini Code 30B-A3B | OpenRouter | 30B | **free** | 20.2 | Free agentic *coding* model (coding index 36.5) |
 | Nemotron 3 Nano 30B-A3B | OpenRouter | 30B | **free** | 13.8 | Cheap third opinion |
-| Llama 3.3 70B | Groq | 70B | $0.59 → $0.79 | — | Long-context analysis only; **not** tagged for codegen (see below) |
+| Llama 3.3 70B | Groq | 70B | $0.59 → $0.79 | — | Long-context analysis only; **not** tagged for codegen |
 | Llama 3.1 8B Instant | Groq | 8B | $0.05 → $0.08 | — | Cheap floor |
 | LFM 2.5 2.6B | OpenRouter | 2.6B | **free** | — | Trivial classification only |
 | Qwen2.5 Coder 7B · Granite 4 7B-A1B · Qwen2.5 Coder 14B · Gemma 3 12B · Qwen3 Coder 30B-A3B | Ollama | 7–30B | **$0** | — | [Local models →](docs/local-models.md) |
 
-¹ Artificial Analysis intelligence index, as published in the OpenRouter catalogue. Omitted where the model hasn't been benchmarked.
+¹ Artificial Analysis intelligence index, as published in the OpenRouter catalogue. Omitted where the model has not been benchmarked.
 
-**Why quality index and not parameter count.** Size used to be the router's proxy for "more capable", and it has aged badly: Llama 3.3 70B is 2.6× the size of Qwen 3.8 27B and scores 11.9 against its 68.1 on coding. So the router escalates on the published benchmark index, falling back to size (capped) only for models nobody has scored. That's also why Llama 3.3 70B is no longer tagged for `codegen` — keeping it there meant the biggest model kept winning work it's now bad at.
-
-**Where the quality actually gets spent.** The index is weighted per subtask category (`QUALITY_WEIGHT` in `orchestrator/router.ts`), not flatly, because the cost of being wrong isn't flat. A bad `simple_edit` is caught on the next line; a bad plan is only caught after every subtask under it has been paid for, and a bad verification verdict is never caught at all — it ships. So `analysis` (which is how the planner and the tie-break both route) and `verification` weight quality ~4× harder than `simple_edit` does. Cost still dominates overall — the cost penalty reaches 45 against quality's ~23 — so a free model that fits still wins early in a task, which is correct when C is weighted ~2× T in `S_task`. Quality decides between models of *similar* price, and decides the tie-break outright.
+**Why quality index and not parameter count.** Size used to be the router's proxy for "more capable", and it has aged badly: Llama 3.3 70B is 2.6× the size of Qwen 3.8 27B and scores 11.9 against its 68.1 on coding. So the router escalates on the published benchmark index, falling back to size (capped) only for models nobody has scored. That is also why Llama 3.3 70B is no longer tagged for `codegen` — keeping it there meant the biggest model kept winning work it is now bad at.
 
 ### Keeping the registry honest
 
@@ -214,66 +519,221 @@ A model whose provider doesn't publish a parameter count is treated as ineligibl
 npm run verify:models
 ```
 
-Every id, price, context window and parameter count in the registry is a factual claim about a catalogue that churns every few weeks, and a stale claim doesn't fail at build time — it fails as a 404 mid-demo. `scripts/verify-models.mjs` re-derives those claims from the live sources (`openrouter.ai/api/v1/models`, `console.groq.com/docs/models`, `ollama.com/library/<model>/tags`) and exits non-zero if a model has disappeared. A price or context drift is reported as a warning; a missing id is a failure. Last full run: **2026-08-30 — 21 verified, 0 missing.**
+Every id, price, context window and parameter count is a factual claim about a catalogue that churns every few weeks, and a stale claim does not fail at build time — it fails as a 404 mid-demo. `scripts/verify-models.mjs` re-derives those claims from the live sources (`openrouter.ai/api/v1/models`, `console.groq.com/docs/models`, `ollama.com/library/<model>/tags`) and exits non-zero if a model has disappeared. Price/context drift is a warning; a missing id is a failure. **Last full run: 2026-08-30 — 21 verified, 0 missing.** The Gemini route is the one entry it cannot check (that listing needs a key), so it is reported `skip`/UNVERIFIABLE rather than quietly counted OK.
 
-The one entry it can't check is the Gemini route, because listing `generativelanguage.googleapis.com` requires a key — so it's reported as `skip`/UNVERIFIABLE rather than being quietly counted as OK.
+---
 
-## Settings
+## 9. Settings
 
-- **API keys** per provider, with inline validation.
-- **Model roster**, showing every registry entry with its parameter count, context window, pricing, and eligibility — including the blocked models above, with the reason shown rather than hidden.
-- **Live health pill** on every eligible model, checked on open and on demand: `working`, `invalid key`, `rate-limited`, `unavailable`, `offline`. This is a *different question* from eligibility — a model can be perfectly eligible and completely dead — so the two badges sit side by side rather than being merged. Hovering a pill gives what was actually observed plus the fix (`ollama pull qwen2.5-coder:7b`, `ollama serve`, the provider's own error text).
+- **API keys** per provider, with inline validation. See §2.4.
+- **Model roster** — every *eligible* registry entry with its parameter count, context window and pricing. Ineligible models are filtered out entirely rather than shown greyed: the list is exactly the set the router may pick from.
+- **Live health pill** on every model, checked on open and on demand: `working`, `invalid key`, `rate-limited`, `unavailable`, `offline`. This is a *different question* from eligibility — a model can be perfectly eligible and completely dead. Hovering gives what was actually observed plus the fix (`ollama pull qwen2.5-coder:7b`, `ollama serve`, the provider's own error text).
 
-  It costs **one catalogue request per provider**, not one per model: each provider's `/models` listing answers all five questions at once — network up, key valid, quota intact, id still served — for every model of that provider simultaneously. Probing 23 models individually would burn free-tier quota to render a settings screen and would be likelier to trip the rate limit it's meant to report. Deliberately *not* a real completion call: that would be the most faithful test and it's what the orchestrator actually does, but it costs tokens every time someone opens Settings. A model that lists but errors on inference isn't caught here — it surfaces at run time as the `provider_failover` intervention that already exists. The probe runs in the main process (renderer `fetch` to provider APIs is CORS-blocked, and the keys live there), and it reads the keys **currently typed into the form**, so you can paste one and press *Re-check* before saving.
-- **Budget ceiling**, checked *before* dispatch (not after) with a reserve margin, so a task can't blow past the limit mid-run.
-- **Approval mode** for the diff/command gate (always ask, or auto-approve below a size threshold).
+  It costs **one catalogue request per provider**, not one per model: each provider's `/models` listing answers all five questions at once — network up, key valid, quota intact, id still served — for every model of that provider simultaneously. Probing 20 models individually would burn free-tier quota to render a settings screen and would be likelier to trip the rate limit it is meant to report. Deliberately *not* a real completion call: that would be the most faithful test and it is what the orchestrator actually does, but it costs tokens every time someone opens Settings. A model that lists but errors on inference is not caught here — it surfaces at run time as the `provider_failover` intervention that already exists. The probe runs in the main process (renderer `fetch` to provider APIs is CORS-blocked, and the keys live there) and reads the keys **currently typed into the form**, so you can paste one and press *Re-check* before saving.
+- **Budget ceiling**, checked *before* dispatch (not after) with a reserve margin.
+- **Max parallel subtasks** (default 3, `1` = strictly sequential).
+- **Approval mode** for the diff/command gate.
 
-## Manual context control
+---
+
+## 10. Manual context control
 
 `AGENTS.md` in your project root is loaded automatically and its rules are pinned through compaction, the same as any other pinned fact.
 
-**Pinning files and code into context.** In the AI Agent panel, `@path/to/file.ts` pins a whole file and `@path/to/file.ts:20-40` pins just that line range; `+ current file` pins whatever's open in the editor. Pinned items show as removable chips above the input box — click the `×` on any chip to unpin it, or its label to jump straight to that file. Pins are read fresh off disk at send time, so a pinned file always reflects what's currently on it.
+**Pinning files and code.** In the AI Agent panel, `@path/to/file.ts` pins a whole file and `@path/to/file.ts:20-40` pins just that line range; `+ current file` pins whatever is open in the editor. Pinned items show as removable chips above the input box — click the `×` to unpin, or the label to jump to that file. Pins are read fresh off disk at send time, so a pinned file always reflects what is currently on it.
 
-**Both directions are clickable.** Typing `@path:line` in the input box turns it into a pin; anywhere the agent writes `path:line` or `path:line-line` in its reply, the chat renders it as a link that opens that file at that line — so the agent can point back at exact code just as easily as you can point it at some.
+**Both directions are clickable.** Typing `@path:line` in the input turns it into a pin; anywhere the agent writes `path:line` or `path:line-line` in its reply, the chat renders it as a link that opens that file at that line — so the agent can point back at exact code as easily as you can point it at some.
 
-**`.nexideignore` (or `.ignore`) — keeping noise out of context.** Drop a gitignore-syntax file named `.nexideignore` in the project root (a plain `.ignore` also works, if that's the name already in use) to stop matching paths from ever entering *automatic* context — `retrieve_context`, `read_file`, and `list_dir`, as called by an agent. `node_modules/`, build output, lockfiles, and anything holding secrets are good candidates. This does **not** touch a file you pin explicitly with `@path` — an explicit pin is a direct instruction, and letting a blanket ignore rule silently override it would be the more surprising behavior (the same asymmetry `.gitignore` has: `git add -f` still works on an ignored path). `.git` is always excluded, ignore file or not.
+**`.nexideignore`.** A gitignore-syntax file in the project root keeps matching paths out of *automatic* context — `retrieve_context`, `read_file`, `list_dir`. It does **not** override an explicit `@path` pin: an explicit pin is a direct instruction, and letting a blanket rule silently veto it would be the more surprising behaviour (the same asymmetry `.gitignore` has, where `git add -f` still works). `.git` is always excluded.
 
-## Commands
+### Commands
 
-- `/bytheway <question>` — an isolated one-off query that runs in its own two-message exchange, sharing no history or tool state with the active task. Use it for a quick side question without polluting the running task's context.
+- `/bytheway <question>` (alias `/btw`) — an isolated one-off query in its own two-message exchange, sharing no history, no tools and no project context with the active task. The answer is shown inline and is **not** added to the task's context, so the running task returns to exactly the context it had.
 
-## Diff review
+---
 
-File edits are presented as Git-generated unified diffs with **partial approval**: you can accept individual hunks and reject others in the same diff, and only the accepted hunks are applied — rejected ones are dropped and the file is rebuilt from the original plus whatever you accepted. The proposal is compared with `git diff --no-index` against temporary files outside the project, so the real file is untouched until approval. Shell commands go through the same approval gate as a single yes/no.
+## 11. Diff review
 
-## Observability dashboard
+File edits are presented as Git-generated unified diffs with **partial approval**: accept individual hunks and reject others in the same diff, and only the accepted hunks are applied — rejected ones are dropped and the file is rebuilt from the original plus what you accepted. The proposal is compared with `git diff --no-index` against temporary files *outside* the project, so the real file is untouched until approval. Shell commands go through the same gate as a single yes/no.
 
-**Parallel execution.** A swimlane per subtask on a shared time axis, plus a live "N agents running" badge and the peak-vs-configured slot count. Bars that overlap horizontally ran concurrently — overlap is a geometric fact on a shared axis, not a claim in a status list. The lanes are drawn from recorded start/finish timestamps and the orchestrator's own `concurrency` events, never inferred from interleaved event ordering, so the dashboard cannot report parallelism that did not happen.
+---
 
-**Call hierarchy.** Every model call records the call that *caused* it, so the dashboard draws the real tree rather than a flat list: the planner is the root, each subtask's implementer turns hang off it, the verifier hangs off the implementer whose claim it judges, and a retry hangs off the verifier that rejected the previous attempt. Read top-down it explains *why* the task did what it did — something a time-ordered list can't show, since there "attempt 2" and "the verifier that forced attempt 2" are just two adjacent rows. Branches collapse, and a collapsed one reports the calls and cost it is hiding. **Full tree** shows the whole causal chain including edges that cross subtask boundaries; **By subtask** keeps the per-subtask grouping (status, category, retries, dependencies) with each group drawn as its own tree.
+## 12. Observability dashboard
 
-The live dashboard and the post-hoc "replay a finished task" dashboard are driven by the same pure reducer folding over the same event stream — one from live IPC events, the other from the task's persisted `events.jsonl` — so what you see live and what you see on replay can never diverge into two different renderings of the same run.
+**Call hierarchy.** Every model call records the call that *caused* it, so the dashboard draws the real tree rather than a flat list: the planner is the root, each subtask's implementer turns hang off it, the verifier hangs off the implementer whose claim it judges, and a retry hangs off the verifier that rejected the previous attempt. Read top-down it explains *why* the task did what it did — something a time-ordered list cannot show, since there "attempt 2" and "the verifier that forced attempt 2" are just two adjacent rows. Branches collapse, and a collapsed one reports the calls and cost it is hiding. **Full tree** shows the whole causal chain including cross-subtask edges; **By subtask** keeps per-subtask grouping (status, category, retries, dependencies).
 
-The dashboard's **Execution graph** is the compact causal view of that stream: thoughts, model calls, tool calls, approvals, checkpoints, interventions, and controlled file changes appear as connected event nodes. Each `propose_edit` write stores its before-state outside the project folder, so after a task stops the user can use **Revert latest**. Revert is guarded by a content hash and refuses to overwrite a file that changed after the agent; shell commands remain outside this tracked-write boundary because they can mutate arbitrary paths.
+**Per-node detail.** Click any node for its exact input and output, token counts, cost, latency, the model and provider that served it, the routing decision that chose it, and a `context_snapshot` listing exactly which files and chunks were in that agent's context at that step.
 
-Every task is persisted as an append-only JSONL event log plus an atomically-written (temp file + rename) snapshot, so a crash or force-quit mid-task loses at most the in-flight step, and the task list lets you resume from the last checkpoint.
+**Parallel execution.** A swimlane per subtask on a shared time axis, plus a live "N agents running" badge and peak-vs-configured slots. Bars that overlap horizontally ran concurrently — overlap is a geometric fact on a shared axis, not a claim in a status list. Lanes are drawn from recorded start/finish timestamps and the orchestrator's own `concurrency` events, never inferred from interleaved event ordering, so the dashboard cannot report parallelism that did not happen.
 
-Routing decisions surface in two places from the one `routing_decision` event: the dashboard's per-node **Routing** tab, and — new — an expandable row in the agent panel itself. The panel row is a one-liner by default (`⇄ north-mini-code · fits codegen, zero marginal cost · 3 not picked`); clicking it drops down the full reason, the decision signals (category, attempt, budget/time remaining, context size), and every candidate that lost with the reason it lost (`llama-3.3-70b — scored 41.3 vs 58.7`, `gemma-4-31b — context ~60000 tok exceeds its 262144 window`). So the "why not the other models" is one click away, not buried in a separate panel.
+**Live and post-hoc are the same component.** Both are driven by the same pure reducer folding the same event stream — one from live IPC, the other from the task's persisted `events.jsonl` — so what you see live and what you see on replay can never diverge into two renderings of the same run.
 
-## Testing
+**Execution graph.** The compact causal view: thoughts, model calls, tool calls, approvals, checkpoints, interventions and controlled file changes as connected nodes. Each `propose_edit` write stores its before-state outside the project folder, so after a task stops you can **Revert latest**. Revert is guarded by a content hash and refuses to overwrite a file that changed after the agent.
+
+---
+
+## 13. Persistence and resume
+
+Every task is persisted as an **append-only JSONL event log** plus an **atomically written** (temp file + rename) snapshot, both under Electron's `userData`, keyed by codebase. A crash or force-quit mid-task loses at most the in-flight step.
+
+On resume, subtasks left `running` or `verifying` are rolled back to `pending` and re-run — a subtask that was mid-flight when the process died has unknown-but-probably-partial effects, and re-running it is the only state we can actually reason about. Completed subtasks are restored as-is. The rollback is reported as a `resume_rollback` intervention naming what it re-queued, and a `resumed` event carries the note the dashboard shows.
+
+The one honest limitation: backtrack points live in memory, so after a resume a rollback can only undo edits made **since** that resume. The intervention text says exactly which files it reverted rather than claiming a clean tree it cannot deliver.
+
+---
+
+## 14. Trade-offs and rejected alternatives
+
+Every row is a decision where the obvious approach was tried or seriously considered and rejected for a stated reason.
+
+| Decision | Chosen | Rejected | Why |
+|---|---|---|---|
+| Routing | Deterministic weighted scoring | An LLM router | A model call before every model call, on the cost term weighted ~2× time — and non-reproducible traces. |
+| Rank fusion | Reciprocal Rank Fusion | Weighted sum of raw scores | BM25 scores, cosine distances and cross-encoder logits have no shared zero or scale. Averaging them is arithmetic on incompatible units. |
+| Weak-retrieval detection | Interpretable signals (agreement, reranker floor, relative pool size) | Threshold on the fused `score` | The RRF score maxes at ≈0.074 here and means nothing absolute. A threshold on it would *look* principled and be numerology. |
+| Query recovery | Deterministic widen + narrow | LLM query rewriting | Cost and latency inside the most-called tool, and unrepeatable traces. The agent above is already a model and can rephrase semantically. |
+| Identifier matching | Pre-split `tokens` FTS column | Custom FTS5 tokeniser | The tokeniser is "correct" but needs a C extension compiled per platform — the exact dependency class this service avoids. |
+| Vector store | `sqlite-vec` in the same file | LanceDB / Chroma / a vector server | One file per project means project isolation is "which file did we open", not "which server collection do we trust". One dependency, no daemon. |
+| Embeddings | `fastembed` (ONNX) | `sentence-transformers` | Avoids pulling multi-GB PyTorch for a 33M-param model, on a 16GB RAM budget shared with the IDE. |
+| Chunking | AST boundaries (tree-sitter) | Fixed-token windows | A window that starts mid-function gives the model a fragment with no signature and no name to cite. |
+| Grammars | Official per-language wheels | A bundled "language pack" meta-package | Language packs change API shape between majors; the official packages have one stable contract across tree-sitter 0.23+. |
+| Backtracking | Own lazy per-file snapshots | `git stash` / `git checkout .` | The project root may not be a repo, and an agent reaching into the user's index to undo its own mistake is worse than the bug it fixes. |
+| Orchestrator location | Separate Node child process | Inside Electron main | An unbounded agent loop on the UI thread freezes the IDE. Costs one IPC hop per event. |
+| Orchestrator transport | NDJSON over stdio | Local HTTP | Ordering for free, no port allocation or firewall prompt, and EOF == dead process makes the watchdog trivially correct. |
+| Retrieval transport | Local HTTP | stdio | Request/response with no streaming — the simpler fit for the opposite shape of problem. |
+| Tool-call format | Native JSON-Schema `tools` | Hand-rolled `ACTION:` text | Small models are fine-tuned on the native shape and are exactly where a fragile format breaks first; schema violations fail loudly. |
+| `git` tool args | Array of strings | One command string | A single string must be shell-split somewhere, and shell-splitting model-controlled text is argument injection. |
+| State-changing git | Through approval-gated `run_command` | A dedicated committing `git` tool | One side-effect gate to audit instead of two. |
+| Model health probe | One catalogue call per *provider* | One probe per model | 20 probes to render a settings screen would burn free-tier quota and trip the very rate limit it reports. |
+| Model capability signal | Published quality index | Parameter count | Llama 3.3 70B is 2.6× Qwen 3.8 27B's size and scores 11.9 vs 68.1 on coding. Size has stopped being a proxy for capability. |
+| Stale index handling | Drop and rebuild from source | In-place migration | Rebuilding is fast and cannot leave a half-migrated file. |
+| Failed-subtask recovery | Bounded re-plan after retries | More retries | A 4th retry of a subtask three models failed is the "blindly retrying" the PS penalises — the subtask, not the model, is wrong. |
+
+---
+
+## 15. Challenges and solutions
+
+Real problems that came up while building, and what they changed. Each of these changed the design rather than just being patched.
+
+**1. Keyword search could not match any natural-language query.** BM25 looked implemented and correct, but FTS5 indexes `computeDelinquencyGraceWindow` as one atomic token, so `delinquency` scored zero hits — retrieval was silently vector-only for every phrased query. Found by querying the index directly instead of trusting end-to-end results. Fixed with the pre-split `tokens` column (§6.1); the index format was versioned in the same change.
+
+**2. Stub-based tests hid four wrong assumptions.** The retrieval recovery logic passed a full stubbed suite. Installing the real dependencies and running against a real index broke it four different ways: an absolute "fewer than 6 candidates" weakness floor fired on *every* query in a small repo; flat additive signal weights meant "decisive" signals scored 0.60–0.70 and never crossed the 0.5 bar; a single lexical coincidence on the word "values" let `kubernetes ingress controller helm values` pass as *strong* against a codebase with no Kubernetes; and the cross-encoder's nominal 0 boundary flagged correct code results as weak. Fixes: pool size relative to index size, a decisive/contributing split, majority agreement, and two empirically-measured reranker thresholds (§6.2).
+
+**3. Query reformulation was manufacturing false confidence.** An early version synthesised identifier spellings (`userSession`, `user_session`, `usersession`, …) and ORed a dozen guesses into the FTS query. Once index-level splitting landed this bought nothing — and it actively *created* agreement where none existed, so a query with no real answer came back "confident". Reformulation is now strictly subtractive: it can only remove terms, never invent matches.
+
+**4. `Keep`/`Deny` buttons in the inline diff were unclickable.** The cursor turned into a text I-beam over them. Monaco appends `.view-zones` (where the toolbars live) *before* `.view-lines` in the same stacking context with no z-index, so the text layer sat on top and swallowed the clicks. Diagnosed by reading Monaco's `view.js` rather than guessing at CSS; fixed with a scoped `pointer-events` rule instead of a z-index war.
+
+**5. Local models were silently truncated.** Ollama defaults `num_ctx` to 2048 regardless of the model's real window, so long contexts were being cut with no error — the model just answered as if the rest was never sent. Fixed by passing the registry's `contextWindow` explicitly on every Ollama call.
+
+**6. Parallelism silently broke backtracking.** When backtracking became per-subtask, one line — `this.backtrack = new Map()` — was left resetting the *whole* map. So one subtask's rollback disarmed every parallel sibling's undo point, and because capture bails when a subtask has no map, the subtask stopped recording too: attempt 2 captured nothing and attempt 3 built on a tree attempt 2 had already been rejected for. Caught by a failing `backtrack.js`; fixed to re-arm only the rolling-back subtask. The regression test written for the parallel half of this initially *passed with the bug reintroduced* — both subtasks rolled back at nearly the same moment, so the sibling restored before the wipe. Only after forcing one subtask to still be in flight did the test actually discriminate. A regression test that has not been checked against the bug is not evidence.
+
+**7. A stale index rebuild gate that never fired.** Index versioning was gated on `if (have && have < VERSION)` — so `user_version = 0`, which is precisely the pre-versioning marker and the *most* stale case, was read as "no version recorded, leave it alone". Worse, the version stamp further down ran unconditionally, so a skipped v1 index was relabelled v2 while keeping the v1 schema and could never be repaired by a version check again. Fixed by treating 0 as stale *and* verifying the actual schema, since the stamp can no longer be trusted on existing files.
+
+**8. A vanished directory could kill the whole app.** Git's transient `.git/.gitstatus.XXXXXX` directories disappear while Node's recursive watcher is mid-walk; `readdirSync` throws `ENOENT` and the watcher re-emits it as an `error` event. `for await` installs no `error` listener, and an EventEmitter with none rethrows — surfacing as a fatal Electron dialog that the `try/catch` around the loop could never intercept. Verified by measuring `listenerCount('error')` during iteration, then fixed with an explicit listener that treats `ENOENT` as benign churn and surfaces anything else (`ENOSPC` — the inotify watch limit — being the one that matters on Linux).
+
+**9. Model ids that looked hallucinated were real.** An early pass "corrected" several registry entries that did not exist in the assistant's training data. They were all live. The lesson generalised into `npm run verify:models`: registry claims are checked against live provider catalogues rather than against anyone's memory.
+
+**10. The retrieval service ran degraded on every machine but the author's.** Electron spawned bare `python3` from `PATH` — which does not have `tree-sitter`, `fastembed` or `sqlite-vec` unless someone `pip install`ed them globally. The service started fine, answered `/health`, indexed without error, and returned `vector_search: False` — so retrieval was keyword-only over line-window chunks and nothing said so. The author only had the full pipeline because they had exported `NEXIDE_PYTHON` months earlier and forgotten. Fixed two ways: interpreter resolution now prefers `retrieval-service/.venv` before `PATH` ([`electron/python-interpreter.ts`](electron/python-interpreter.ts)), and `/health` now reports which pipeline stages are actually available so the startup log and the status bar both say `DEGRADED` / `keyword-only` instead of pretending.
+
+---
+
+## 16. Testing
 
 ```bash
-npm test
+npm test          # everything below, ~1 min
+npm run typecheck # all three tsconfigs (root, electron/, orchestrator/), --noEmit
 ```
 
-Runs, in order: `model-health.js` (the settings-screen provider probe, with `fetch` stubbed so all five health states are pinned deterministically and offline), `execution-graph.js` (durable controlled-file history, exact revert, and refusal to overwrite a later human edit), `unit.js` (router scoring, budget math, diff/compaction unit tests), `ignore.js`, `review-buffer.js`, `task-completion.js` (an end-to-end regression test through the real `TaskRunner`, with the model boundary mocked, proving a task with any non-`done` subtask ends `failed` — not `done` — and emits `task_failed` with the specific subtask(s) named), `backtrack.js` (same harness over a real temp project: every attempt fails verification, and the workspace must end byte-identical to how it started — an overwritten file restored, a created file deleted), `replan.js` (four scenarios through the real scheduler: a decomposed subtask recovers and the task still reports `done`; a failing replacement is *not* re-planned again; an abandoning re-planner leaves the failure standing; dependents are rewired to the replacements instead of deadlocking), `protocol.js` (JSON-RPC message round-trip tests), and `resume.js` (crash recovery from a hand-crafted checkpoint). `npm run test:retrieval` then runs `retrieval-service/test_recovery.py` — reformulation, the weak-detection signals, and the escalation control flow, with `store` and `embeddings` stubbed so it needs no tree-sitter, no fastembed, no model download and no index on disk. It is skipped with a notice if `python3` is unavailable.
+| Suite | What it pins |
+|---|---|
+| `watcher.js` | A vanished directory cannot kill the main process; `ENOENT` is absorbed, `ENOSPC` surfaced, abort still ends the loop cleanly |
+| `python-interpreter.js` | Interpreter resolution prefers `NEXIDE_PYTHON` → `retrieval-service/.venv` → `$VIRTUAL_ENV` → `PATH`; the PATH fallback is flagged; a missing override path is skipped, not spawned |
+| `unit.js` | Router scoring, budget math, diff and compaction units |
+| `ignore.js` | `.nexideignore` semantics, including that an explicit pin overrides it |
+| `review-buffer.js` | Block-level accept/reject and file reconstruction |
+| `tree.js` · `health.js` | File tree behaviour; provider health-state mapping |
+| `model-health.js` | All five health states, with `fetch` stubbed so it is deterministic and offline |
+| `execution-graph.js` | Durable controlled-file history, exact revert, refusal to overwrite a later human edit |
+| `parallel.js` | Independent subtasks *measurably* overlap; dependencies still respected; approvals never overlap; `maxParallelSubtasks: 1` reproduces sequential exactly |
+| `scheduling.js` | Critical-path dispatch order; declared-file conflicts never co-scheduled; the file rule cannot deadlock; one subtask's rollback does not disarm a parallel sibling |
+| `task-completion.js` | A task with any non-`done` subtask ends `failed`, not `done`, and names the subtasks |
+| `backtrack.js` | Over a real temp project: every attempt fails verification and the workspace ends byte-identical — overwritten file restored, created file deleted, every attempt rolled back |
+| `replan.js` | A decomposed subtask recovers and the task reports `done`; a failing replacement is not re-planned again; an abandoning re-planner leaves the failure standing; dependents rewire instead of deadlocking |
+| `protocol.js` · `resume.js` | Wire-protocol round-trip; crash recovery from a hand-crafted checkpoint |
+| `test_recovery.py` | Reformulation, weak-detection signals, escalation control flow — `store` and `embeddings` stubbed, so no model download and no index on disk |
 
-`npm run typecheck` runs all three `tsconfig.json`s (root, `electron/`, `orchestrator/`) with `--noEmit`.
+Most of these run a **real `TaskRunner`** with only `providers.callModel` mocked, so they exercise the actual scheduler, approval gate and file writes rather than a reimplementation of them.
 
-## Known limitations
+Not in `npm test` (too slow, needs the venv):
 
-- Ollama models require a local server the judges' machine may not have running; keep a Groq/OpenRouter fallback path in the demo. See [docs/local-models.md](docs/local-models.md).
-- Provider catalogues change. Run `npm run verify:models` before a demo — it checks every id against the live catalogues. The Gemini entry is the one it can't check (that listing needs a key), so it's marked UNVERIFIABLE in the registry with the OpenRouter route to the same weights as its fallback.
-- Backtracking covers files written through `propose_edit`, which is the only write path the orchestrator controls. Files mutated by an approved `run_command` (a formatter, a build step, a generator) are **not** captured and will survive a rollback — the intervention names exactly which files it did revert, so it never claims a clean tree it can't deliver. The undo point also lives in memory, so after a resume a rollback can only undo edits made since that resume.
-- `qualityIndex` values come from Artificial Analysis via the OpenRouter catalogue. They're a published third-party benchmark, not our own measurement, and they're only comparable *between* the models listed here.
-- The orchestrator is a separate Node child process (spawned via `process.execPath` with `ELECTRON_RUN_AS_NODE=1`, so no separate Node install is required on the end-user machine) rather than running inside Electron's main process — this keeps a runaway agent from ever blocking the UI thread, at the cost of one extra IPC hop per event.
+```bash
+retrieval-service/.venv/bin/python retrieval-service/test_recovery_e2e.py   # real index, real embeddings, real reranker (~30s)
+retrieval-service/.venv/bin/python retrieval-service/verify.py .            # inspect a real retrieval run
+npm run verify:models                                                       # registry vs live catalogues (needs network)
+```
+
+---
+
+## 17. Building desktop installers
+
+Packaging targets are native per OS: NSIS on Windows, DMG + ZIP on macOS, AppImage + DEB on Linux. Run the matching command **on that platform** so native dependencies such as `node-pty` are rebuilt correctly:
+
+```bash
+npm run dist:linux
+npm run dist:win
+npm run dist:mac
+```
+
+Installers are written to `release/`. The Python retrieval service is copied in via `build.extraResources` (excluding `.venv` and `__pycache__`), and the packaged app resolves it from `process.resourcesPath`.
+
+The repository ships a **GitHub Actions workflow** ([`.github/workflows/build.yml`](../.github/workflows/build.yml), at the repo root) that runs `npm ci && npm run build` and then `electron-builder` on native `ubuntu-latest`, `windows-latest` and `macos-latest` runners on every push to `main` and on manual dispatch, uploading each platform's installer as a build artifact. CI artifacts are unsigned (`CSC_IDENTITY_AUTO_DISCOVERY: false`); production signing and macOS notarization would need the platform certificates added as repository secrets.
+
+> **One thing to know before shipping a build.** `.venv` is deliberately not bundled (233 MB, and tied to one OS and Python minor version). So a packaged app on a machine with no matching interpreter falls through to `python3` on `PATH`; if that lacks the retrieval packages, the pipeline runs keyword-only — visibly (the status bar says `keyword-only`, the log says `DEGRADED`), not silently. For a real deployment, ship the requirements alongside the installer or set `NEXIDE_PYTHON` in the launch environment.
+
+---
+
+## 18. Known limitations
+
+- **Retrieval degrades to keyword-only without its Python dependencies.** No AST chunking, no vector search, no reranking. This no longer happens quietly: the app auto-selects `retrieval-service/.venv`, and if it ends up on a bare interpreter anyway the startup log says `DEGRADED` and the status bar reads `keyword-only` in amber. The remaining failure mode is forgetting to create the venv or run `pip install` (§2.3).
+- **The packaged app does not bundle `.venv`.** On a machine without a suitable interpreter it uses `python3` from `PATH`; set `NEXIDE_PYTHON` or install the requirements there (§17).
+- **Backtracking covers `propose_edit` writes only** — the only write path the orchestrator controls. Files mutated by an approved `run_command` (a formatter, a build step, a generator) are not captured and survive a rollback. The intervention names exactly which files it did revert, so it never claims a clean tree it cannot deliver. Undo points also live in memory, so after a resume a rollback only reaches edits made since that resume.
+- **Ollama models need a local server** the judges' machine may not have running; keep a Groq/OpenRouter fallback in any demo.
+- **Provider catalogues churn.** Run `npm run verify:models` before a demo. The Gemini entry is unverifiable without a key and is marked as such.
+- **`qualityIndex` is a third-party benchmark** (Artificial Analysis via OpenRouter), not our own measurement, and is only comparable between the models listed here.
+
+---
+
+## 19. Repo map
+
+```
+next-electron-ide/
+├── electron/              Main process: window, IPC, spawning, key storage,
+│   ├── main.ts            workspace watcher, terminal
+│   ├── model-health.ts    Settings-screen provider probe
+│   └── python-interpreter.ts   Resolve the retrieval service's Python (venv-first)
+├── orchestrator/          Standalone Node child process — the agent system
+│   ├── orchestrator.ts    Scheduler, subtask lifecycle, backtrack, re-plan
+│   ├── router.ts          Deterministic model selection
+│   ├── models.ts          Registry — single source of truth for eligibility
+│   ├── agents.ts          Every prompt: planner, re-planner, verifier, …
+│   ├── tools.ts           Tool schemas + implementations
+│   ├── providers.ts       Groq / OpenRouter / Ollama / Gemini adapters
+│   ├── budget.ts          Cost + time ceilings
+│   ├── compaction.ts      Context compaction with pinned-fact preservation
+│   ├── store.ts           events.jsonl + atomic snapshots
+│   └── protocol.ts        The wire protocol (start here to read the system)
+├── retrieval-service/     Python: index + search
+│   ├── chunker.py         tree-sitter AST chunking
+│   ├── identifiers.py     Identifier ↔ word-list splitting
+│   ├── store.py           SQLite schema, FTS5, sqlite-vec, versioning
+│   ├── retrieval.py       RRF, rerank, weak detection, escalation
+│   └── server.py          Local HTTP surface
+├── src/                   Next.js renderer
+│   ├── components/        Editor, Chat, DiffReview, Dashboard, Settings, …
+│   └── lib/trace.ts       The pure reducer behind both dashboard modes
+├── tests/                 Node test suites (see §16)
+├── docs/local-models.md   Running on Ollama
+└── scripts/verify-models.mjs
+```
+
+**Reading the system for the first time:** `orchestrator/protocol.ts` (the vocabulary) → `orchestrator/orchestrator.ts` (the loop) → `orchestrator/router.ts` (the choice) → `retrieval-service/retrieval.py` (the search).

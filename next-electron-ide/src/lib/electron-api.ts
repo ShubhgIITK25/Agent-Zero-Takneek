@@ -84,6 +84,13 @@ export type RetrievalStatus = {
   files_updated?: number;
   chunks_updated?: number;
   vector_search?: boolean;
+  /**
+   * The retrieval service is up but running without part of its pipeline —
+   * almost always because it was spawned with a Python that lacks
+   * tree-sitter / fastembed / sqlite-vec. Retrieval still works (BM25 over
+   * line-window chunks) but returns worse results, so the status bar says so.
+   */
+  degraded?: boolean;
 };
 
 export interface ElectronAPI {

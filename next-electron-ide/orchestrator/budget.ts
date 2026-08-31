@@ -6,11 +6,15 @@
  * Breaching either scores A=0 for that task "regardless of partial progress".
  *
  * The important design consequence: a ceiling check AFTER a call has already
- * been made is useless, because the money is already spent. So this ledger
- * exposes `canAfford()`, which the orchestrator consults BEFORE dispatching,
- * using a conservative estimate of what the call will cost. If the estimate
- * does not fit, the router is asked for a cheaper model instead, and only if
- * nothing fits does the task stop.
+ * been made is useless, because the money is already spent. So the cost of a
+ * call is estimated BEFORE it is dispatched, in two independent places:
+ *   - the router (`orchestrator/router.ts`) drops any candidate model whose
+ *     projected call cost exceeds `costRemaining`, so an unaffordable model is
+ *     never even scored; and
+ *   - the orchestrator re-checks `canAfford()` against this live ledger in
+ *     `dispatch()`, immediately before `callModel`, to catch the case where a
+ *     parallel subtask spent budget after the router's snapshot was taken.
+ * If neither the chosen model nor any cheaper fallback fits, the step stops.
  *
  * We stop at a fraction of the ceiling (RESERVE), not at the ceiling itself,
  * because the orchestrator still needs budget to write out a final answer and

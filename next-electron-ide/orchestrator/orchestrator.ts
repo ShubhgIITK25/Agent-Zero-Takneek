@@ -37,8 +37,8 @@ import {
   TaskConfig,
 } from './protocol';
 import { Budget } from './budget';
-import { Router, RateLimitTracker, HealthRegistry } from './router';
-import { ModelEntry, findModel, eligibleModels } from './models';
+import { Router, RateLimitTracker, HealthRegistry, ASSUMED_COMPLETION_TOKENS } from './router';
+import { ModelEntry, findModel, eligibleModels, costOf } from './models';
 import { callModel, ChatMessage, estimateMessageTokens, estimateTokens, ProviderError, ToolCall } from './providers';
 import { TaskStore, TaskSnapshot } from './store';
 import { TOOLS, TOOL_SCHEMAS, VERIFIER_TOOL_SCHEMAS, findTool, ToolContext } from './tools';
@@ -525,6 +525,31 @@ export class TaskRunner {
         return null;
       }
 
+      // PRE-DISPATCH BUDGET GATE. The router already drops candidates whose
+      // projected cost exceeds the budget in `opts.signals`, but that snapshot
+      // is taken once per implementer step and goes stale the moment a PARALLEL
+      // subtask records a spend. This re-checks against the live ledger, right
+      // before the only line in the system that actually costs money. A breach
+      // scores zero regardless of partial progress, so the last dollar is never
+      // worth gambling — the reserve (12% of the ceiling) is deliberately left
+      // for the wrap-up summary and never spent here.
+      const projected = costOf(
+        route.model,
+        estimateMessageTokens(opts.messages),
+        ASSUMED_COMPLETION_TOKENS,
+      );
+      if (!this.budget.canAfford(projected)) {
+        tried.push(route.model.id);
+        this.emit({
+          type: 'intervention',
+          subtaskId: opts.subtaskId,
+          cause: 'cost_ceiling',
+          detail: `${route.model.label} projected at $${projected.toFixed(4)}; only $${this.budget.costRemaining.toFixed(4)} spendable before the reserve.`,
+          action: 'Excluding it and trying a cheaper model; the step fails if none fits.',
+        });
+        continue;
+      }
+
       const nodeId = newNodeId();
       this.emit({
         type: 'routing_decision',
@@ -723,13 +748,61 @@ export class TaskRunner {
       const configuredParallel = Math.max(1, Math.min(6, this.config.maxParallelSubtasks ?? 1));
       const running = new Map<string, Promise<void>>();
 
+      // How much work each subtask is holding up: 1 + the longest chain of
+      // subtasks that transitively depend on it. Computed once per plan — the
+      // dependency graph does not change while the scheduler runs, and a
+      // re-plan rebuilds the scheduler's view anyway.
+      //
+      // WHY THIS MATTERS. With a limit of 3 and 5 subtasks ready, taking them
+      // in array order can start three leaves while the one subtask that
+      // unblocks the other half of the plan waits for a slot. Total time is
+      // set by the critical path, so the subtask with the most work behind it
+      // is the one that must start first. This is ordinary list scheduling,
+      // and it changes only WHICH ready subtask goes first — never whether a
+      // subtask is allowed to run, which stays entirely the dependency graph's
+      // decision.
+      const depWeight = new Map<string, number>();
+      const weightOf = (id: string, seen = new Set<string>()): number => {
+        const cached = depWeight.get(id);
+        if (cached != null) return cached;
+        // A cycle would recurse forever. The plan parser already drops forward
+        // and unknown dependencies, so this is belt-and-braces for a re-plan.
+        if (seen.has(id)) return 1;
+        seen.add(id);
+        const dependents = this.snapshot.subtasks.filter((s) => s.dependsOn.includes(id));
+        const w = dependents.length === 0 ? 1 : 1 + Math.max(...dependents.map((d) => weightOf(d.id, seen)));
+        seen.delete(id);
+        depWeight.set(id, w);
+        return w;
+      };
+
+      // Two subtasks that mean to edit the same file must not run at once.
+      // Not for safety — the stale-proposal guard already refuses a write
+      // computed against bytes that have moved — but for cost: that refusal
+      // forces the losing agent to re-read and propose again, which is a whole
+      // extra round-trip. Deferring here costs nothing, because the subtask
+      // stays ready and takes the next free slot.
+      const conflictsWithRunning = (s: Subtask): boolean => {
+        const mine = s.touchesFiles;
+        if (!mine || mine.length === 0) return false;
+        for (const id of running.keys()) {
+          const other = this.snapshot.subtasks.find((x) => x.id === id)?.touchesFiles;
+          if (other && other.some((f) => mine.includes(f))) return true;
+        }
+        return false;
+      };
+
       const readyNow = (): Subtask[] =>
-        this.snapshot.subtasks.filter(
-          (s) =>
-            (s.status === 'pending' || s.status === 'blocked') &&
-            !running.has(s.id) &&
-            s.dependsOn.every((d) => this.snapshot.subtasks.find((x) => x.id === d)?.status === 'done')
-        );
+        this.snapshot.subtasks
+          .filter(
+            (s) =>
+              (s.status === 'pending' || s.status === 'blocked') &&
+              !running.has(s.id) &&
+              s.dependsOn.every((d) => this.snapshot.subtasks.find((x) => x.id === d)?.status === 'done')
+          )
+          // Longest critical path first; ties keep plan order so a plan with no
+          // dependencies at all behaves exactly as it did before.
+          .sort((a, b) => weightOf(b.id) - weightOf(a.id));
 
       const drain = async (): Promise<void> => {
         await Promise.allSettled([...running.values()]);
@@ -752,13 +825,22 @@ export class TaskRunner {
         const tight = this.budget.fractionRemaining.cost < PARALLEL_BUDGET_FLOOR;
         const limit = tight ? 1 : configuredParallel;
 
-        for (const next of readyNow().slice(0, Math.max(0, limit - running.size))) {
+        // The slot check and the conflict check both have to happen INSIDE this
+        // loop, against the live `running` map. Filtering the batch up front
+        // instead would compare every candidate against the same starting set
+        // and happily dispatch two subtasks that conflict with each other,
+        // since neither is running yet at the moment the filter looks.
+        for (const next of readyNow()) {
+          if (running.size >= limit) break;
           // A dependency failed permanently — this subtask can never run.
+          // Retired before the conflict check: it is never going to write
+          // anything, so holding it back behind a file would strand it.
           if (next.status === 'blocked') {
             next.status = 'skipped';
             this.emit({ type: 'subtask_finished', subtaskId: next.id, status: 'skipped', note: 'dependency failed' });
             continue;
           }
+          if (conflictsWithRunning(next)) continue;
           const id = next.id;
           const inFlight = this.runSubtask(next)
             .catch((err) => {
@@ -786,6 +868,11 @@ export class TaskRunner {
         if (running.size === 0) {
           // Nothing in flight. If skipping a blocked subtask above freed
           // something, go round again; otherwise the queue is genuinely dry.
+          //
+          // Note this uses readyNow(), NOT the conflict-filtered list: with
+          // nothing running there is nothing to conflict with, so a subtask
+          // deferred for a file overlap is always dispatchable here. That is
+          // what stops the file rule from ever deadlocking the scheduler.
           if (readyNow().length > 0) continue;
           // Some subtasks never reached a terminal state: a dependency
           // deadlock — a cycle, a dependency that failed without its
@@ -1018,19 +1105,15 @@ export class TaskRunner {
         : 'The next attempt starts from a clean tree instead of building on a rejected one.',
     });
 
-    // Spend THIS subtask's undo point, and only this one.
-    //
-    // It was `this.backtrack = new Map()` when there was a single global undo
-    // map. Left as-is under per-subtask maps it wiped the outer map — erasing
-    // every OTHER in-flight subtask's undo point as a side effect of one
-    // subtask rolling back, and (because captureBacktrackPoint returns early
-    // when a subtask has no map at all) silently disabling this subtask's own
-    // rollback on every later attempt.
-    //
-    // Clearing rather than deleting is deliberate: the next attempt's first
-    // write re-captures, and since the tree was just restored, what it
-    // captures is the original content again.
-    own.clear();
+    // Re-arm THIS subtask only. Replacing the whole map — as this did when
+    // backtracking was global, before it was keyed by subtask — had two
+    // effects, both silent. It disarmed every OTHER subtask running in
+    // parallel, so a sibling that failed later could no longer roll back at
+    // all. And because captureBacktrackPoint bails when a subtask has no map,
+    // this subtask stopped recording too: attempt 2 captured nothing, so
+    // attempt 3 built on the tree attempt 2 had already been rejected for, and
+    // the debris of the final attempt was left on disk.
+    this.backtrack.set(subtask.id, new Map());
     return restored.length;
   }
 
