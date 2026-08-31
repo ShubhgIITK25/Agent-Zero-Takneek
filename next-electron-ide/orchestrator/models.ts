@@ -148,40 +148,6 @@ export const MODEL_REGISTRY: ModelEntry[] = [
     notes:
       "Biggest model here but no longer the best: it predates the current Qwen/Gemma generation and scores 11.9 on coding against qwen3.8-27b's 68.1. Kept for long-context analysis; deliberately NOT tagged for codegen.",
   },
-  {
-    id: "groq:gpt-oss-120b",
-    apiId: "openai/gpt-oss-120b",
-    label: "GPT-OSS 120B",
-    provider: "groq",
-    paramsBTotal: 120,
-    contextWindow: 131072,
-    pricing: { inputPerM: 0.15, outputPerM: 0.75 },
-    tier: "payg",
-    qualityIndex: 24.1,
-    good_at: ["planning", "codegen", "analysis"],
-    speed: "medium",
-    notes:
-      "INELIGIBLE: 120B dense, over the 80B ceiling. Listed so the block is visible.",
-  },
-  {
-    // The sharpest version of the trap: the API id itself says "17b". A team
-    // that filtered on the model name rather than the published total would
-    // ship a 400B model and lose the round.
-    id: "groq:llama-4-maverick",
-    apiId: "meta-llama/llama-4-maverick-17b-128e-instruct",
-    label: "Llama 4 Maverick 17B-128E",
-    provider: "groq",
-    paramsBTotal: 400,
-    paramsBActive: 17,
-    contextWindow: 131072,
-    pricing: { inputPerM: 0.2, outputPerM: 0.6 },
-    tier: "payg",
-    qualityIndex: 14.5,
-    good_at: ["codegen", "analysis"],
-    speed: "fast",
-    notes:
-      "INELIGIBLE: 400B total across 128 experts. The api id advertises the 17B ACTIVE count, which is exactly the number the rule does not use.",
-  },
 
   // ---------------------------------------------------------- OpenRouter ---
   // Second provider exists mainly so failover is real: when Groq 429s, the
@@ -310,40 +276,6 @@ export const MODEL_REGISTRY: ModelEntry[] = [
     good_at: ["simple"],
     speed: "fast",
     notes: "Floor model. Only worth routing trivial classification/edits here.",
-  },
-  {
-    id: "openrouter:nemotron-super-120b",
-    apiId: "nvidia/nemotron-3-super-120b-a12b:free",
-    label: "Nemotron 3 Super 120B-A12B",
-    provider: "openrouter",
-    paramsBTotal: 120,
-    paramsBActive: 12,
-    contextWindow: 262144,
-    pricing: { inputPerM: 0, outputPerM: 0 },
-    tier: "free",
-    qualityIndex: 25.7,
-    good_at: ["planning", "codegen"],
-    speed: "medium",
-    notes:
-      "INELIGIBLE: 120B TOTAL despite only 12B active. This is the exact trap the rule targets.",
-  },
-  {
-    // Third face of the same trap, and the one that catches people who check
-    // the vendor's own size language instead of the weights: it is shipped as
-    // "Mistral Small", and the repo it publishes is Mistral-Small-4-119B-2603.
-    id: "openrouter:mistral-small-4",
-    apiId: "mistralai/mistral-small-2603",
-    label: "Mistral Small 4 (119B)",
-    provider: "openrouter",
-    paramsBTotal: 119,
-    contextWindow: 262144,
-    pricing: { inputPerM: 0.15, outputPerM: 0.6 },
-    tier: "payg",
-    qualityIndex: 19.7,
-    good_at: ["codegen", "analysis"],
-    speed: "medium",
-    notes:
-      'INELIGIBLE: 119B dense. The word "Small" is a product-line name, not a size — the published repo is Mistral-Small-4-119B-2603.',
   },
 
   // -------------------------------------------------------------- Ollama ---
