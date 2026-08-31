@@ -49,10 +49,10 @@ jobs:
         with:
           name: App-Binaries-${{ matrix.os }}
           path: |
-            next-electron-ide/dist/*.exe
-            next-electron-ide/dist/*.dmg
-            next-electron-ide/dist/*.AppImage
-            next-electron-ide/dist/*.deb
-            next-electron-ide/dist/*.rpm
-            next-electron-ide/dist/*.pacman
+            next-electron-ide/release/*.exe
+            next-electron-ide/release/*.dmg
+            next-electron-ide/release/*.AppImage
+            next-electron-ide/release/*.deb
+            next-electron-ide/release/*.rpm
+            next-electron-ide/release/*.pacman
           retention-days: 7
