@@ -1,7 +1,30 @@
 'use client';
 
 import { useState, useCallback, useEffect, useRef } from 'react';
+import {
+  ChevronRight,
+  File,
+  FileCode,
+  FileJson,
+  FilePlus,
+  FileText,
+  Folder,
+  FolderPlus,
+  Pencil,
+  RefreshCw,
+  Trash2,
+  Palette,
+  Globe,
+  Image,
+  Terminal as LucideTerminal,
+  Lock,
+  GitBranch,
+  X,
+  FileSliders,
+} from 'lucide-react';
 import type { FileNode } from '../lib/electron-api';
+
+const ICON = { size: 14, strokeWidth: 1.75 } as const;
 
 type TreeNodeProps = {
   node: FileNode;
@@ -101,7 +124,7 @@ function TreeNode({ node, depth, activePath, onOpenFile, onRefresh, refreshToken
 
   // Cascade a refresh into already-expanded folders (re-fetch their
   // children) without collapsing them or touching folders that were never
-  // opened — those pick up fresh content naturally whenever they first
+  // opened - those pick up fresh content naturally whenever they first
   // expand. Skips the very first render so mounting doesn't double-fetch.
   const mounted = useRef(false);
   useEffect(() => {
@@ -167,11 +190,13 @@ function TreeNode({ node, depth, activePath, onOpenFile, onRefresh, refreshToken
         title={node.path}
       >
         {node.isDirectory ? (
-          <span className={`chevron${expanded ? ' open' : ''}`}>▸</span>
+          <span className={`chevron${expanded ? ' open' : ''}`}>
+            <ChevronRight {...ICON} />
+          </span>
         ) : (
           <span className="chevron-spacer" />
         )}
-        <span className="node-icon">{node.isDirectory ? '📁' : fileIcon(node.name)}</span>
+        <span className="node-icon">{node.isDirectory ? <Folder {...ICON} /> : fileIcon(node.name)}</span>
         {editor === 'rename' ? (
           <NameEntry
             initialValue={node.name}
@@ -187,15 +212,19 @@ function TreeNode({ node, depth, activePath, onOpenFile, onRefresh, refreshToken
           {node.isDirectory && (
             <>
               <button type="button" onClick={() => setEditor('create-file')} title="New File">
-                <span className="button-icon">📄</span>
+                <FilePlus {...ICON} />
               </button>
               <button type="button" onClick={() => setEditor('create-folder')} title="New Folder">
-                <span className="button-icon">📁</span>
+                <FolderPlus {...ICON} />
               </button>
             </>
           )}
-          <button type="button" onClick={() => setEditor('rename')} title="Rename">✎</button>
-          <button type="button" onClick={() => void remove()} title="Delete">🗑</button>
+          <button type="button" onClick={() => setEditor('rename')} title="Rename">
+            <Pencil {...ICON} />
+          </button>
+          <button type="button" onClick={() => void remove()} title="Delete">
+            <Trash2 {...ICON} />
+          </button>
         </span>
       </div>
       {editor === 'create-file' && (
@@ -240,24 +269,52 @@ function TreeNode({ node, depth, activePath, onOpenFile, onRefresh, refreshToken
   );
 }
 
-function fileIcon(name: string): string {
+function fileIcon(name: string) {
+  if (name.includes('.env')) return <Lock {...ICON} />;
+  if (name.endsWith('.lock')) return <Lock {...ICON} />;
+  if (name === '.gitignore' || name === '.gitattributes') return <GitBranch {...ICON} />;
+
   const ext = name.split('.').pop()?.toLowerCase();
   switch (ext) {
     case 'ts':
     case 'tsx':
-      return '🔷';
     case 'js':
     case 'jsx':
-      return '🟨';
+    case 'py':
+      return <FileCode {...ICON} />;
     case 'json':
-      return '🧾';
+      return <FileJson {...ICON} />;
     case 'md':
-      return '📝';
+    case 'txt':
+      return <FileText {...ICON} />;
     case 'css':
     case 'scss':
-      return '🎨';
+    case 'sass':
+    case 'less':
+      return <Palette {...ICON} />;
+    case 'html':
+    case 'htm':
+      return <Globe {...ICON} />;
+    case 'svg':
+    case 'png':
+    case 'jpg':
+    case 'jpeg':
+    case 'gif':
+    case 'ico':
+    case 'webp':
+      return <Image {...ICON} />;
+    case 'yml':
+    case 'yaml':
+    case 'toml':
+      return <FileSliders {...ICON} />;
+    case 'sh':
+    case 'bash':
+    case 'bat':
+    case 'cmd':
+    case 'ps1':
+      return <LucideTerminal {...ICON} />;
     default:
-      return '📄';
+      return <File {...ICON} />;
   }
 }
 
@@ -306,9 +363,15 @@ export default function FileTree({
       <div className="file-tree-header">
         <span>EXPLORER</span>
         {rootPath && <div className="file-tree-header-actions">
-          <button className="file-tree-refresh-btn" onClick={() => setRootEditor('file')} title="New File">📄</button>
-          <button className="file-tree-refresh-btn" onClick={() => setRootEditor('folder')} title="New Folder">📁</button>
-          <button className="file-tree-refresh-btn" onClick={onRefresh} title="Refresh Files (Ctrl+R)">⟳</button>
+          <button className="file-tree-refresh-btn" onClick={() => setRootEditor('file')} title="New File">
+            <FilePlus {...ICON} />
+          </button>
+          <button className="file-tree-refresh-btn" onClick={() => setRootEditor('folder')} title="New Folder">
+            <FolderPlus {...ICON} />
+          </button>
+          <button className="file-tree-refresh-btn" onClick={onRefresh} title="Refresh Files (Ctrl+R)">
+            <RefreshCw {...ICON} />
+          </button>
         </div>}
       </div>
       {!rootPath ? (

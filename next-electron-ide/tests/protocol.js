@@ -4,7 +4,7 @@
  *
  * Spawns the orchestrator exactly the way electron/main.ts does and drives the
  * real protocol: handshake -> ping -> start_task. The task is started with an
- * EMPTY model roster on purpose — the assertion is that this fails gracefully
+ * EMPTY model roster on purpose - the assertion is that this fails gracefully
  * with a visible intervention and a written checkpoint, rather than hanging or
  * crashing the process. Silent hangs are the failure mode that matters here.
  */

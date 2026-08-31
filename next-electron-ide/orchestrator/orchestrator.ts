@@ -1,6 +1,6 @@
 /**
  * ============================================================================
- *  ORCHESTRATOR — the pipeline
+ *  ORCHESTRATOR - the pipeline
  * ============================================================================
  *   ingest -> decompose -> [ route -> execute -> verify -> retry? ]* -> aggregate
  *   with a checkpoint written at every step boundary.
@@ -12,7 +12,7 @@
  * A single step cap misses the third case entirely: 40 cheap steps and 6
  * expensive ones both hit "6 steps" at wildly different costs. They are
  * genuinely different failure modes, so they get genuinely different limits.
- * Whichever fires first halts the subtask and EMITS AN INTERVENTION — never a
+ * Whichever fires first halts the subtask and EMITS AN INTERVENTION - never a
  * silent stop, because a failsafe nobody can see is a failsafe nobody trusts.
  *
  * ESCALATION, NOT REPETITION: when a subtask fails, the retry does not re-run
@@ -38,7 +38,7 @@ import {
 } from './protocol';
 import { Budget } from './budget';
 import { Router, RateLimitTracker, HealthRegistry, ASSUMED_COMPLETION_TOKENS } from './router';
-import { ModelEntry, findModel, eligibleModels, costOf } from './models';
+import { ModelEntry, checkEligibility, findModel, eligibleModels, costOf } from './models';
 import { callModel, ChatMessage, estimateMessageTokens, estimateTokens, ProviderError, ToolCall } from './providers';
 import { TaskStore, TaskSnapshot } from './store';
 import { TOOLS, TOOL_SCHEMAS, VERIFIER_TOOL_SCHEMAS, findTool, ToolContext } from './tools';
@@ -67,7 +67,7 @@ const MAX_IDENTICAL_REPEATS = 3;
 //
 // Why re-plan at all: the retry ladder already re-runs a subtask on a stronger
 // model with the verifier's complaint fed back in. If all three of those fail,
-// the model is not the problem — the subtask is. A fourth retry is exactly the
+// the model is not the problem - the subtask is. A fourth retry is exactly the
 // "blindly retrying the same action" the PS penalises; changing the plan is the
 // only remaining lever.
 
@@ -81,14 +81,14 @@ const PARALLEL_BUDGET_FLOOR = 0.25;
 
 const MAX_REPLANS_PER_TASK = 2;
 /** Only original (depth-0) subtasks may be re-planned, so replacements that
- *  fail are simply failed — no recursive tree of re-plans. */
+ *  fail are simply failed - no recursive tree of re-plans. */
 const MAX_REPLAN_DEPTH = 1;
 /** Cap on how far one re-plan may widen the DAG. */
 const MAX_REPLACEMENTS_PER_REPLAN = 3;
 /** Do not START a re-plan unless this share of each ceiling is still in hand.
  *  A re-plan buys a planner call plus a fresh round of subtask work; beginning
  *  one at 90% spent reliably converts a partial result into a ceiling breach,
- *  and a breach scores zero — strictly worse than accepting the failure. */
+ *  and a breach scores zero - strictly worse than accepting the failure. */
 const REPLAN_MIN_COST_FRACTION = 0.25;
 const REPLAN_MIN_TIME_FRACTION = 0.2;
 
@@ -96,6 +96,10 @@ export type Emit = (body: EventBody) => void;
 
 let nodeCounter = 0;
 const newNodeId = () => `n${++nodeCounter}`;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 export class TaskRunner {
   private budget: Budget;
@@ -111,7 +115,7 @@ export class TaskRunner {
   private notes: string[] = [];
   private changedFiles = new Set<string>();
   /**
-   * BACKTRACK POINT — the workspace as it stood before the subtask now running
+   * BACKTRACK POINT - the workspace as it stood before the subtask now running
    * touched it. Captured lazily: the first time a subtask writes a given file,
    * that file's prior content is stashed here (`content: null` == the file did
    * not exist yet). Restoring this map undoes every edit the subtask made.
@@ -146,7 +150,7 @@ export class TaskRunner {
    *
    * This is not a nicety. The review UI holds exactly one pending diff, so a
    * second concurrent approval_request would replace the first in the
-   * renderer — and the first request's promise, which an agent is blocked on,
+   * renderer - and the first request's promise, which an agent is blocked on,
    * would never resolve. That is a permanent hang, not a glitch. Serialising
    * here also makes propose -> approve -> write a critical section, which is
    * half of what keeps two subtasks from interleaving writes to one file.
@@ -159,13 +163,13 @@ export class TaskRunner {
    *
    * Without this, three parallel subtasks hitting the same spent free tier
    * produce three identical notices, and a long task produces one per subtask
-   * — turning a single fact ("this provider is out of quota today") into a
+   * - turning a single fact ("this provider is out of quota today") into a
    * wall of repetition that buries everything else.
    */
   private reportedRateLimits = new Set<string>();
   /** Re-plans spent on this task. Bounded by MAX_REPLANS_PER_TASK. */
   private replansUsed = 0;
-  /** .nexideignore / .ignore — loaded once per task, not re-read on every tool call. */
+  /** .nexideignore / .ignore - loaded once per task, not re-read on every tool call. */
   private ignore: ReturnType<typeof loadIgnoreMatcher>;
   /**
    * CALL HIERARCHY. Every node the dashboard draws hangs off one of these two.
@@ -175,7 +179,7 @@ export class TaskRunner {
    * subtasks; a verifier hangs off the implementer whose claim it is judging;
    * a retry hangs off the verifier that rejected the previous attempt. Read
    * top-down that spells out *why* the task did what it did, which a flat list
-   * ordered by time cannot express — in a flat list, attempt 2 and the verifier
+   * ordered by time cannot express - in a flat list, attempt 2 and the verifier
    * that forced it are just two adjacent rows.
    *
    * Steps within one attempt stay SIBLINGS rather than chaining into each
@@ -183,7 +187,7 @@ export class TaskRunner {
    * chaining them would bury a 12-step loop twelve levels deep for no gain.
    */
   private planNodeId: string | null = null;
-  /** Most recent successful node per subtask — the anchor the next call hangs off. */
+  /** Most recent successful node per subtask - the anchor the next call hangs off. */
   private lastNodeBySubtask = new Map<string, string>();
 
   constructor(
@@ -206,7 +210,7 @@ export class TaskRunner {
       0
     );
     this.health = new HealthRegistry(config.modelHealth ?? {});
-    this.router = new Router(config.enabledModelIds, this.rateLimits, this.health);
+    this.router = new Router(config.enabledModelIds, this.rateLimits, this.health, config.customModels ?? [], config.coreModelId);
 
     const agentsMd = loadAgentsMd(config.rootPath);
     this.ignore = loadIgnoreMatcher(config.rootPath);
@@ -214,7 +218,7 @@ export class TaskRunner {
       emit({
         type: 'log',
         level: 'info',
-        message: `Context ignore: ${this.ignore.patternCount} pattern(s) loaded from ${this.ignore.sourceFile} — matching paths are excluded from retrieve_context, read_file and list_dir.`,
+        message: `Context ignore: ${this.ignore.patternCount} pattern(s) loaded from ${this.ignore.sourceFile} - matching paths are excluded from retrieve_context, read_file and list_dir.`,
       });
     }
     this.snapshot = resumeFrom ?? {
@@ -263,7 +267,7 @@ export class TaskRunner {
 
   /**
    * Announce which subtasks are executing right now, but only when the SET
-   * changes — a per-tick heartbeat would bury the dashboard in noise and still
+   * changes - a per-tick heartbeat would bury the dashboard in noise and still
    * not say anything a changed set does not.
    */
   private emitConcurrency(runningIds: string[], maxParallel: number): void {
@@ -404,7 +408,7 @@ export class TaskRunner {
 
       let acceptedHere = explicit ? blockIds.filter((id) => explicit.includes(id)) : blockIds;
 
-      // Approved, but nothing here matched — an id/serialisation mismatch, not
+      // Approved, but nothing here matched - an id/serialisation mismatch, not
       // a real rejection (the UI disables "Accept" at zero selected). Landing
       // nothing on disk after an approval is exactly what makes the agent
       // re-propose forever, so apply the whole change and say so.
@@ -418,7 +422,8 @@ export class TaskRunner {
       }
 
       const finalContent = applyAcceptedBlocks(d, acceptedHere);
-      const full = path.resolve(this.config.rootPath, d.path);
+      const cleanPath = d.path.replace(/^[a-zA-Z]:/, '').replace(/^\/+/, '');
+      const full = path.resolve(this.config.rootPath, cleanPath);
       let beforeContent: string | null = null;
       try {
         beforeContent = await fs.readFile(full, 'utf8');
@@ -427,8 +432,8 @@ export class TaskRunner {
       }
       // THE READ-MODIFY-WRITE RACE. The diff was computed against the file as
       // it looked when the agent proposed it. If the bytes on disk have moved
-      // since — a parallel subtask's approved edit, or the user typing in the
-      // editor while the review sat open — then these hunks describe a file
+      // since - a parallel subtask's approved edit, or the user typing in the
+      // editor while the review sat open - then these hunks describe a file
       // that no longer exists, and writing them would silently revert whoever
       // got there first. Serialising approvals is not enough to prevent this;
       // only comparing against what was actually read is.
@@ -440,12 +445,12 @@ export class TaskRunner {
           subtaskId,
           cause: 'stale_proposal',
           detail: `${d.path} changed on disk after this edit was proposed, so the approved hunks no longer match the file.`,
-          action: 'Refusing the write and telling the agent to re-read the file and propose again — applying it would silently undo the other change.',
+          action: 'Refusing the write and telling the agent to re-read the file and propose again - applying it would silently undo the other change.',
         });
         continue;
       }
       // Stash what is there now, BEFORE overwriting it, so a failed
-      // verification can put it back. Must happen on the write path — this is
+      // verification can put it back. Must happen on the write path - this is
       // the only point at which the pre-edit content still exists.
       await this.captureBacktrackPoint(subtaskId, d.path, full);
       const changeId = `chg_${this.taskId}_${Date.now()}_${++nodeCounter}`;
@@ -516,17 +521,37 @@ export class TaskRunner {
     contextItems?: { path: string; lines?: string; tokens: number; source: 'retrieval' | 'manual' | 'agents_md' | 'plan' | 'history' }[];
   }): Promise<{ nodeId: string; text: string; toolCalls: ToolCall[]; model: ModelEntry } | null> {
     const tried: string[] = [];
+    const MAX_ATTEMPTS = 8;
+    const MAX_WAITS = 4;
+    let waits = 0;
 
-    for (let attempt = 0; attempt < 3; attempt++) {
-      const route = attempt === 0 ? this.router.route(opts.signals) : this.router.routeFallback(opts.signals, tried);
+    for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+      if (this.cancelled) return null;
+      const route = tried.length === 0 ? this.router.route(opts.signals) : this.router.routeFallback(opts.signals, tried);
       if (!route) {
+        const waitMs = this.rateLimits.soonestReadyMs();
+        if (waitMs > 0 && waits < MAX_WAITS) {
+          const sleepMs = Math.min(Math.max(waitMs + 250, 500), 20_000);
+          this.emit({
+            type: 'intervention',
+            subtaskId: opts.subtaskId,
+            cause: 'rate_limited',
+            severity: 'info',
+            detail: `Every remaining route is cooling down (tried: ${tried.join(', ') || 'none'}).`,
+            action: `Waiting ${Math.ceil(sleepMs / 1000)}s then retrying. No work is lost.`,
+          });
+          await sleep(sleepMs);
+          waits++;
+          attempt--;
+          continue;
+        }
         this.emit({
           type: 'intervention',
           subtaskId: opts.subtaskId,
           cause: 'provider_failover',
           severity: 'error',
           detail: `No eligible model available (tried: ${tried.join(', ') || 'none'})`,
-          action: 'Aborting this step — every enabled model is excluded, over budget, or rate-limited.',
+          action: 'All enabled routes are unavailable. In Settings, test and enable another curated or custom provider/model ID, then retry the task.',
         });
         return null;
       }
@@ -537,7 +562,7 @@ export class TaskRunner {
       // subtask records a spend. This re-checks against the live ledger, right
       // before the only line in the system that actually costs money. A breach
       // scores zero regardless of partial progress, so the last dollar is never
-      // worth gambling — the reserve (12% of the ceiling) is deliberately left
+      // worth gambling - the reserve (12% of the ceiling) is deliberately left
       // for the wrap-up summary and never spent here.
       const projected = costOf(
         route.model,
@@ -596,7 +621,7 @@ export class TaskRunner {
         if (this.cancelled || controller.signal.aborted) {
           return null;
         }
-        this.rateLimits.clear(route.model.provider);
+        this.rateLimits.recordSuccess(route.model.provider, route.model.id, route.model.tier);
         this.budget.record(result.promptTokens, result.completionTokens, result.costUsd);
 
         this.emit({
@@ -612,11 +637,11 @@ export class TaskRunner {
         this.emitBudget();
 
         // Only a call that actually returned becomes an anchor. A failover
-        // attempt that threw is still a node in the tree — a sibling under the
-        // same parent, which is exactly right ("tried A, then B") — but it
+        // attempt that threw is still a node in the tree - a sibling under the
+        // same parent, which is exactly right ("tried A, then B") - but it
         // caused nothing, so nothing should hang off it.
         if (opts.subtaskId) this.lastNodeBySubtask.set(opts.subtaskId, nodeId);
-        // Proof this model works — outranks any stale health snapshot.
+        // Proof this model works - outranks any stale health snapshot.
         this.health.recordSuccess(route.model.id, route.model.provider);
 
         return { nodeId, text: result.text, toolCalls: result.toolCalls, model: route.model };
@@ -627,11 +652,14 @@ export class TaskRunner {
         const pe = err instanceof ProviderError ? err : new ProviderError(String(err), { retryable: true, rateLimited: false });
         this.emit({ type: 'agent_call_end', nodeId, promptTokens: 0, completionTokens: 0, costUsd: 0, latencyMs: 0, output: '', error: pe.message });
 
-        tried.push(route.model.id);
+        // Rate-limited models stay out via cooldown, not via `tried`, so they
+        // can be retried after the wait. A hard failure (404, bad key, bad
+        // request) must never be retried on the same id.
+        if (!pe.rateLimited) tried.push(route.model.id);
 
         // A permanent failure is evidence about the MODEL or the KEY, not a
         // reason to abandon the step. Recording it takes the offender out of
-        // the running for the rest of the task, and then we re-route — a
+        // the running for the rest of the task, and then we re-route - a
         // retired model id on Groq must not stop a task when OpenRouter can
         // serve the same request. Only when nothing healthy is left does the
         // step fail, and by then the loop above has said why.
@@ -648,8 +676,8 @@ export class TaskRunner {
             detail: `${route.model.label} (${route.model.provider}): ${pe.message}`,
             action:
               scope === 'provider'
-                ? `Excluding every ${route.model.provider} model for the rest of this task — the key is being rejected, so retrying it just burns time.`
-                : `Excluding ${route.model.id} for the rest of this task — the provider does not serve that id, so no retry can succeed.`,
+                ? `Excluding every ${route.model.provider} model for the rest of this task - the key is being rejected, so retrying it just burns time.`
+                : `Excluding ${route.model.id} for the rest of this task - the provider does not serve that id, so no retry can succeed.`,
           });
         }
 
@@ -659,21 +687,28 @@ export class TaskRunner {
             subtaskId: opts.subtaskId,
             cause: 'provider_failover',
             detail: pe.message,
-            action: 'Not retryable on this model — re-routing the same context to another one.',
+            action: 'Not retryable on this model - re-routing the same context to another one.',
           });
           continue;
         }
 
         const provider = route.model.provider;
+        const cooldownScope =
+          pe.cooldownScope ??
+          (pe.rateLimited ? 'model' : 'model');
         this.rateLimits.penalise(provider, pe.rateLimited, {
           quotaScope: pe.quotaScope,
           retryAfterMs: pe.retryAfterMs,
+          scope: cooldownScope,
+          modelId: route.model.id,
           note:
             pe.quotaScope === 'day'
-              ? 'daily quota spent'
+              ? cooldownScope === 'free-tier'
+                ? 'free-tier daily quota spent'
+                : 'daily quota spent'
               : pe.quotaScope === 'minute'
                 ? 'per-minute quota hit'
-                : undefined,
+                : pe.humanMessage ?? undefined,
         });
 
         if (pe.rateLimited) {
@@ -681,16 +716,22 @@ export class TaskRunner {
           // as documented, and the router is built to route around it. Saying
           // it once, calmly, as information is the honest report; a red block
           // per occurrence tells the user something is broken when nothing is.
-          const key = `${provider}:${pe.quotaScope ?? 'unknown'}`;
+          const key = `${provider}:${cooldownScope}:${pe.quotaScope ?? 'unknown'}`;
           if (!this.reportedRateLimits.has(key)) {
             this.reportedRateLimits.add(key);
-            const secs = this.rateLimits.cooldownRemainingSeconds(provider);
+            const secs = this.rateLimits.cooldownRemainingSeconds(provider, route.model.id, route.model.tier);
             const when =
               secs >= 3600
                 ? `about ${Math.round(secs / 3600)}h`
                 : secs >= 60
                   ? `about ${Math.round(secs / 60)} min`
                   : `${secs}s`;
+            const who =
+              cooldownScope === 'model'
+                ? route.model.label
+                : cooldownScope === 'free-tier'
+                  ? `${provider} free routes`
+                  : provider;
             this.emit({
               type: 'intervention',
               subtaskId: opts.subtaskId,
@@ -698,12 +739,14 @@ export class TaskRunner {
               severity: 'info',
               detail:
                 pe.quotaScope === 'day'
-                  ? `${provider} has used up its quota for today (${pe.humanMessage ?? pe.message}).`
-                  : `${provider} is rate limited (${pe.humanMessage ?? pe.message}).`,
+                  ? `${who} has used up its quota for today (${pe.humanMessage ?? pe.message}).`
+                  : `${who} is rate limited (${pe.humanMessage ?? pe.message}).`,
               action:
-                pe.quotaScope === 'day'
-                  ? `Skipping ${provider} for the rest of this task and using the other providers. Nothing is lost — enable a Groq or local Ollama model in Settings if you want more headroom.`
-                  : `Pausing ${provider} for ${when} and continuing on another model. No work is lost.`,
+                cooldownScope === 'model'
+                  ? `Skipping this model for ${when} and continuing on another. No work is lost.`
+                  : pe.quotaScope === 'day'
+                    ? `Skipping ${who} for the rest of this task and using the other routes. Nothing is lost - add and test another provider/model ID in Settings for more headroom.`
+                    : `Pausing ${who} for ${when} and continuing on another model. No work is lost.`,
             });
           }
           continue;
@@ -714,8 +757,8 @@ export class TaskRunner {
           subtaskId: opts.subtaskId,
           cause: 'provider_failover',
           severity: 'warn',
-          detail: `${route.model.label} (${provider}) failed: ${pe.message}`,
-          action: 'Re-routing the same context to another model — no work is lost.',
+          detail: `${route.model.label} (${provider}) failed: ${pe.humanMessage ?? pe.message}`,
+          action: 'Re-routing the same context to another model - no work is lost.',
         });
       } finally {
         if (this.activeAbortController === controller) {
@@ -747,7 +790,7 @@ export class TaskRunner {
       if (this.snapshot.subtasks.length === 0) {
         const plan = await this.plan();
         if (this.cancelled) return this.cancelledOut();
-        if (!plan) return this.fail('Planning failed — no eligible model could produce a plan.');
+        if (!plan) return this.fail('Planning failed - no eligible model could produce a plan.');
         this.snapshot.subtasks = plan.subtasks;
         this.snapshot.pinnedFacts = [
           `Overall goal: ${plan.restatedGoal}`,
@@ -759,8 +802,8 @@ export class TaskRunner {
 
       // ---- scheduling: run every ready subtask, up to the parallel limit ----
       //
-      // "Ready" is unchanged from the sequential version — all dependencies
-      // done — so the plan's dependency graph is still the only thing that
+      // "Ready" is unchanged from the sequential version - all dependencies
+      // done - so the plan's dependency graph is still the only thing that
       // decides what may run. The single change is that more than one ready
       // subtask may be in flight at a time. Everything that made sequential
       // execution safe (the undo point, the approval prompt, the file write)
@@ -769,7 +812,7 @@ export class TaskRunner {
       const running = new Map<string, Promise<void>>();
 
       // How much work each subtask is holding up: 1 + the longest chain of
-      // subtasks that transitively depend on it. Computed once per plan — the
+      // subtasks that transitively depend on it. Computed once per plan - the
       // dependency graph does not change while the scheduler runs, and a
       // re-plan rebuilds the scheduler's view anyway.
       //
@@ -778,7 +821,7 @@ export class TaskRunner {
       // unblocks the other half of the plan waits for a slot. Total time is
       // set by the critical path, so the subtask with the most work behind it
       // is the one that must start first. This is ordinary list scheduling,
-      // and it changes only WHICH ready subtask goes first — never whether a
+      // and it changes only WHICH ready subtask goes first - never whether a
       // subtask is allowed to run, which stays entirely the dependency graph's
       // decision.
       const depWeight = new Map<string, number>();
@@ -797,8 +840,8 @@ export class TaskRunner {
       };
 
       // Two subtasks that mean to edit the same file must not run at once.
-      // Not for safety — the stale-proposal guard already refuses a write
-      // computed against bytes that have moved — but for cost: that refusal
+      // Not for safety - the stale-proposal guard already refuses a write
+      // computed against bytes that have moved - but for cost: that refusal
       // forces the losing agent to re-read and propose again, which is a whole
       // extra round-trip. Deferring here costs nothing, because the subtask
       // stays ready and takes the next free slot.
@@ -840,7 +883,7 @@ export class TaskRunner {
 
         // Near the ceiling, collapse to one at a time. Each dispatch checks
         // affordability before it fires, but N checks can each pass and still
-        // overshoot together — and a breach scores zero, so the last stretch
+        // overshoot together - and a breach scores zero, so the last stretch
         // of the budget is not where to spend concurrency.
         const tight = this.budget.fractionRemaining.cost < PARALLEL_BUDGET_FLOOR;
         const limit = tight ? 1 : configuredParallel;
@@ -852,7 +895,7 @@ export class TaskRunner {
         // since neither is running yet at the moment the filter looks.
         for (const next of readyNow()) {
           if (running.size >= limit) break;
-          // A dependency failed permanently — this subtask can never run.
+          // A dependency failed permanently - this subtask can never run.
           // Retired before the conflict check: it is never going to write
           // anything, so holding it back behind a file would strand it.
           if (next.status === 'blocked') {
@@ -895,7 +938,7 @@ export class TaskRunner {
           // what stops the file rule from ever deadlocking the scheduler.
           if (readyNow().length > 0) continue;
           // Some subtasks never reached a terminal state: a dependency
-          // deadlock — a cycle, a dependency that failed without its
+          // deadlock - a cycle, a dependency that failed without its
           // dependents being marked, or a stale in-flight state from a crash.
           // Surface it and skip the stranded work rather than "finishing"
           // with silent holes.
@@ -916,7 +959,7 @@ export class TaskRunner {
       // Terminal by construction: the scheduling loop above only exits once
       // every subtask is 'done', 'failed', 'skipped' or 'replaced' (a 'blocked'
       // subtask is converted to 'skipped' as soon as it is selected). So "did
-      // the task actually succeed" is exactly "did every subtask end 'done'" —
+      // the task actually succeed" is exactly "did every subtask end 'done'" -
       // a failed subtask, or one skipped because its dependency failed, both
       // mean the task did NOT complete, even if most subtasks passed.
       //
@@ -946,7 +989,7 @@ export class TaskRunner {
         this.checkpoint();
         this.emit({
           type: 'task_failed',
-          reason: `${incomplete.length}/${this.snapshot.subtasks.length} subtask(s) did not complete — ${detail}\n\n${summary}`,
+          reason: `${incomplete.length}/${this.snapshot.subtasks.length} subtask(s) did not complete - ${detail}\n\n${summary}`,
         });
       }
     } catch (err) {
@@ -1067,7 +1110,7 @@ export class TaskRunner {
    * This is the actual backtracking step. Without it a failed verification
    * retries ON TOP of the edits that just failed verification, so attempt 2
    * starts from a tree the verifier already rejected and attempt 3 compounds
-   * it — and if all attempts fail, the union of every broken attempt is left
+   * it - and if all attempts fail, the union of every broken attempt is left
    * on disk with the subtask marked `failed` and nobody cleaning up.
    */
   private async restoreBacktrackPoint(subtask: Subtask, why: string): Promise<number> {
@@ -1094,7 +1137,7 @@ export class TaskRunner {
         restored.push(rel);
         // A file this subtask created is no longer a changed file. One it
         // merely edited may still be changed by an EARLIER subtask, and its
-        // stashed content already includes that earlier change — so leave it.
+        // stashed content already includes that earlier change - so leave it.
         if (!prior.wasTracked) this.changedFiles.delete(rel);
         this.changedBySubtask.get(subtask.id)?.delete(rel);
       } catch (err) {
@@ -1125,12 +1168,12 @@ export class TaskRunner {
         `${approvedByHand.join(', ')}.` +
         (failures.length ? ` Could NOT revert: ${failures.join('; ')}.` : ''),
       action: failures.length
-        ? 'The workspace is only partially rolled back — the files listed as un-revertable still hold the failed edit.'
+        ? 'The workspace is only partially rolled back - the files listed as un-revertable still hold the failed edit.'
         : 'The next attempt starts from a clean tree instead of building on a rejected one.',
     });
 
-    // Re-arm THIS subtask only. Replacing the whole map — as this did when
-    // backtracking was global, before it was keyed by subtask — had two
+    // Re-arm THIS subtask only. Replacing the whole map - as this did when
+    // backtracking was global, before it was keyed by subtask - had two
     // effects, both silent. It disarmed every OTHER subtask running in
     // parallel, so a sibling that failed later could no longer roll back at
     // all. And because captureBacktrackPoint bails when a subtask has no map,
@@ -1148,7 +1191,7 @@ export class TaskRunner {
     // On a RESUME this is necessarily empty: the pre-edit contents lived in
     // memory and that process is gone. So a rollback after a resume can only
     // undo edits made since the resume, and the intervention it emits names
-    // exactly which files it did revert — it never claims a clean tree it
+    // exactly which files it did revert - it never claims a clean tree it
     // cannot deliver.
     this.beginBacktrackPoint(subtask.id);
 
@@ -1200,7 +1243,7 @@ export class TaskRunner {
       }
 
       // Read-only analysis with no edits does not need an independent verifier
-      // call — there is no repository state to check, and the call would cost
+      // call - there is no repository state to check, and the call would cost
       // real money to confirm that nothing happened.
       const worthVerifying = subtask.category !== 'analysis' || this.changedFiles.size > 0;
       if (!worthVerifying) {
@@ -1237,18 +1280,18 @@ export class TaskRunner {
           subtaskId: subtask.id,
           cause: 'disagreement',
           detail: `Implementer claims done; verifier says fail at confidence ${verdict.confidence.toFixed(2)}.`,
-          action: 'Neither side wins by default — spending one call on a third model to break the tie.',
+          action: 'Neither side wins by default - spending one call on a third model to break the tie.',
         });
         const verifierLast = this.lastNodeBySubtask.get(subtask.id) ?? implementerLast;
         const tie = await this.tiebreak(subtask, outcome.claim, verdict, verifierLast);
         if (tie) {
           finalVerdict = tie.verdict;
-          this.notes.push(`Tie-break on "${subtask.title}": ${tie.verdict} — ${tie.reason}`);
+          this.notes.push(`Tie-break on "${subtask.title}": ${tie.verdict} - ${tie.reason}`);
         }
       }
 
       if (finalVerdict === 'pass') {
-        // The tie-break overrode the verifier's fail — so this work stands and
+        // The tie-break overrode the verifier's fail - so this work stands and
         // must not be rolled back either.
         this.dropBacktrackPoint(subtask.id);
         subtask.status = 'done';
@@ -1268,8 +1311,8 @@ export class TaskRunner {
         // BACKTRACK, then retry. The rejected edits come off disk first, so the
         // next attempt re-solves the original problem rather than trying to
         // patch a tree the verifier already refused.
-        // Whatever spoke last on this subtask — the verifier, or the tie-break
-        // that upheld it — is what forced the retry, so the next attempt hangs
+        // Whatever spoke last on this subtask - the verifier, or the tie-break
+        // that upheld it - is what forced the retry, so the next attempt hangs
         // off it.
         attemptParent = this.lastNodeBySubtask.get(subtask.id) ?? implementerLast;
         const reverted = await this.restoreBacktrackPoint(
@@ -1277,7 +1320,7 @@ export class TaskRunner {
           `Verification failed on attempt ${attempt}.`
         );
         // Feed the failure into the next attempt so it is a different attempt,
-        // not the same one again — and tell it the tree was rolled back, or it
+        // not the same one again - and tell it the tree was rolled back, or it
         // will assume its earlier edits are still there and write half a fix.
         const convo = this.snapshot.conversations[subtask.id] ?? [];
         convo.push({
@@ -1286,7 +1329,7 @@ export class TaskRunner {
             `Your previous attempt was rejected by an independent verifier: ${verdict.reason}\n` +
             `Evidence: ${verdict.evidence}\n` +
             (reverted
-              ? `Your edits from that attempt have been REVERTED — the ${reverted} file(s) you changed are back to their original contents. Start from the original code, not from your previous edit.\n`
+              ? `Your edits from that attempt have been REVERTED - the ${reverted} file(s) you changed are back to their original contents. Start from the original code, not from your previous edit.\n`
               : '') +
             `Fix this specifically. Do not repeat the same approach.`,
         });
@@ -1307,7 +1350,7 @@ export class TaskRunner {
       // Last resort before declaring failure: the retry ladder has already
       // re-run this on a stronger model with the verifier's complaint fed in.
       // If that failed three times the subtask itself is the problem, so ask
-      // the re-planner whether a different decomposition would work. Bounded —
+      // the re-planner whether a different decomposition would work. Bounded -
       // see tryReplan.
       if (await this.tryReplan(subtask, `Verification failed ${subtask.attempts}x. Last reason: ${verdict.reason}`)) {
         return;
@@ -1337,7 +1380,7 @@ export class TaskRunner {
    *
    * The bounds are all checked BEFORE the planner call, so a re-plan that is
    * not allowed costs nothing. Every refusal is emitted as a `replan_declined`
-   * intervention naming which bound stopped it — a silent "we could have
+   * intervention naming which bound stopped it - a silent "we could have
    * re-planned but didn't" is exactly the kind of invisible decision this
    * system is built to avoid.
    */
@@ -1359,7 +1402,7 @@ export class TaskRunner {
     if (this.replansUsed >= MAX_REPLANS_PER_TASK) {
       return decline(
         `Both re-plans for this task are already spent (limit ${MAX_REPLANS_PER_TASK}).`,
-        'Accepting the failure — further re-planning is capped to stop a task rewriting its own plan indefinitely.'
+        'Accepting the failure - further re-planning is capped to stop a task rewriting its own plan indefinitely.'
       );
     }
 
@@ -1367,7 +1410,7 @@ export class TaskRunner {
     if (frac.cost < REPLAN_MIN_COST_FRACTION || frac.time < REPLAN_MIN_TIME_FRACTION) {
       return decline(
         `Only ${(frac.cost * 100).toFixed(0)}% of the cost ceiling and ${(frac.time * 100).toFixed(0)}% of the time ceiling remain.`,
-        `Re-planning needs at least ${REPLAN_MIN_COST_FRACTION * 100}% / ${REPLAN_MIN_TIME_FRACTION * 100}% in hand — a breach scores zero, which is worse than one failed subtask.`
+        `Re-planning needs at least ${REPLAN_MIN_COST_FRACTION * 100}% / ${REPLAN_MIN_TIME_FRACTION * 100}% in hand - a breach scores zero, which is worse than one failed subtask.`
       );
     }
 
@@ -1405,12 +1448,12 @@ export class TaskRunner {
     if (!res) return decline('No model was available to re-plan.', 'Accepting the original failure.');
 
     const plan = agents.parseReplan(res.text, MAX_REPLACEMENTS_PER_REPLAN);
-    this.replansUsed++; // the call is spent either way — count it, or a stream
+    this.replansUsed++; // the call is spent either way - count it, or a stream
                         // of abandons could bypass MAX_REPLANS_PER_TASK.
 
     if (plan.abandon) {
       return decline(
-        `Re-planner diagnosis: ${plan.diagnosis} — ${plan.reason}`,
+        `Re-planner diagnosis: ${plan.diagnosis} - ${plan.reason}`,
         'It judged no decomposition would help, so the subtask stays failed rather than burning budget on a reworded retry.'
       );
     }
@@ -1437,7 +1480,7 @@ export class TaskRunner {
 
     // Anything that depended on the failed subtask now depends on the LAST
     // replacement. Without this rewire the dependents stay waiting on an id
-    // that can never be `done`, and the deadlock detector would skip them —
+    // that can never be `done`, and the deadlock detector would skip them -
     // turning a successful re-plan into a task that still fails.
     for (const s of this.snapshot.subtasks) {
       if (s.dependsOn.includes(subtask.id)) {
@@ -1478,7 +1521,7 @@ export class TaskRunner {
    * died: `running` (implementer loop) or `verifying` (verifier call). The
    * scheduler only ever starts `pending` / `blocked` work, so these would be
    * stranded and the task would "complete" with a hole. Roll them back to
-   * `pending` — their checkpointed conversation is reused, and `attempts` is
+   * `pending` - their checkpointed conversation is reused, and `attempts` is
    * untouched, so the retry ladder is not reset. Returns how many were rolled
    * back. */
   private reconcileResumedState(): number {
@@ -1502,8 +1545,8 @@ export class TaskRunner {
 
   /**
    * Called when the scheduler can find no runnable subtask but non-terminal
-   * subtasks remain. Every such subtask is genuinely unreachable — the
-   * scheduler has already exhausted everything whose dependencies are `done` —
+   * subtasks remain. Every such subtask is genuinely unreachable - the
+   * scheduler has already exhausted everything whose dependencies are `done` -
    * so mark them `skipped` with a diagnosis of why. */
   private resolveDeadlockedSubtasks(): void {
     const terminal = new Set(['done', 'failed', 'skipped', 'replaced']);
@@ -1523,7 +1566,7 @@ export class TaskRunner {
         subtaskId: s.id,
         cause: 'dependency_deadlock',
         detail,
-        action: 'Skipping it — its dependencies cannot be satisfied.',
+        action: 'Skipping it - its dependencies cannot be satisfied.',
       });
       s.status = 'skipped';
       this.emit({ type: 'subtask_finished', subtaskId: s.id, status: 'skipped', note: 'dependency deadlock' });
@@ -1573,7 +1616,7 @@ export class TaskRunner {
           subtaskId: subtask.id,
           cause: 'token_cap',
           detail: `${subtaskTokens} tokens spent on this subtask (cap ${MAX_TOKENS_PER_SUBTASK}).`,
-          action: 'Halting the subtask — this is the "many cheap steps" runaway, which a step cap alone misses.',
+          action: 'Halting the subtask - this is the "many cheap steps" runaway, which a step cap alone misses.',
         });
         return { claim: 'Token cap reached before completion.', blocked: true };
       }
@@ -1599,7 +1642,7 @@ export class TaskRunner {
           messages = outcome.messages;
           this.emit({
             type: 'compaction',
-            // Attributed to the last call on this subtask — that is the context
+            // Attributed to the last call on this subtask - that is the context
             // that grew too large, so that is where the compaction belongs in
             // the tree rather than floating free at task level.
             nodeId: this.lastNodeBySubtask.get(subtask.id) ?? null,
@@ -1647,7 +1690,7 @@ export class TaskRunner {
             subtaskId: subtask.id,
             cause: 'identical_repeat',
             detail: `${call.name} called with identical arguments ${MAX_IDENTICAL_REPEATS}x in a row.`,
-            action: 'Halting the subtask — the agent is looping, not progressing.',
+            action: 'Halting the subtask - the agent is looping, not progressing.',
           });
           messages.push({ role: 'tool', toolCallId: call.id, name: call.name, content: 'Loop guard: identical call refused.' });
           return { claim: 'Stopped: the agent repeated the same tool call without progressing.', blocked: true };
@@ -1726,8 +1769,8 @@ export class TaskRunner {
 
   private cheapestModel(): ModelEntry | null {
     const enabled = this.config.enabledModelIds
-      .map((id) => findModel(id))
-      .filter((m): m is ModelEntry => !!m && eligibleModels().some((e) => e.id === m.id));
+      .map((id) => this.config.customModels?.find((m) => m.id === id) ?? findModel(id))
+      .filter((m): m is ModelEntry => !!m && checkEligibility(m).eligible);
     if (!enabled.length) return null;
     return enabled.reduce((a, b) => (a.pricing.inputPerM + a.pricing.outputPerM <= b.pricing.inputPerM + b.pricing.outputPerM ? a : b));
   }
@@ -1752,21 +1795,22 @@ export class TaskRunner {
     };
 
     let convo = [...messages];
-    // The verifier gets a short tool budget of its own — enough to actually
-    // look at the repo, not enough to turn into a second implementer.
-    for (let step = 0; step < 4; step++) {
+    // The verifier gets a tool budget to look at the repo before giving a verdict.
+    const maxVerifierSteps = 6;
+    for (let step = 0; step < maxVerifierSteps; step++) {
+      const isLastStep = step === maxVerifierSteps - 1;
       const res = await this.dispatch({
         role: 'verifier',
         subtaskId: subtask.id,
         parentId,
         messages: convo,
-        tools: VERIFIER_TOOL_SCHEMAS,
+        tools: isLastStep ? [] : VERIFIER_TOOL_SCHEMAS,
         signals,
       });
       if (!res) {
         return { verdict: 'fail', confidence: 0.3, reason: 'Verifier could not run (no model available).', evidence: '' };
       }
-      if (res.toolCalls.length === 0) return agents.parseVerdict(res.text);
+      if (res.toolCalls.length === 0 || isLastStep) return agents.parseVerdict(res.text);
 
       convo = [...convo, { role: 'assistant', content: res.text || null, toolCalls: res.toolCalls }];
       for (const call of res.toolCalls) {

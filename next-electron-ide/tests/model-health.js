@@ -9,7 +9,7 @@
  * mapping must not depend on anyone's network or quota on the day.
  *
  * Every one of the five user-visible states is pinned here, because each one
- * tells the user to do something different — "invalid key" means fix the key,
+ * tells the user to do something different - "invalid key" means fix the key,
  * "unavailable" means the model is gone and the roster needs editing, and
  * "rate-limited" means wait. Collapsing any two of them into one pill would
  * send the user to the wrong fix.
@@ -106,7 +106,7 @@ async function main() {
   });
 
   await t('OpenRouter validates the key separately from the public catalogue', async () => {
-    // /models is public and answers 200 even for a bad key — if the probe only
+    // /models is public and answers 200 even for a bad key - if the probe only
     // read the catalogue it would wrongly report "working".
     stubFetch({
       '/key': { status: 401, body: {} },

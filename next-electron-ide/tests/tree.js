@@ -4,9 +4,9 @@
  *
  * The dashboard recurses over `children`, so a cycle or a dangling parent in
  * the node list would hang the UI rather than merely look wrong. Both are
- * reachable in practice — replaying a truncated events.jsonl, or building the
+ * reachable in practice - replaying a truncated events.jsonl, or building the
  * tree for one subtask's nodes in isolation, leaves children whose parent is
- * not in the set — so the builder must degrade to a forest instead of
+ * not in the set - so the builder must degrade to a forest instead of
  * trusting the data.
  *
  * The two properties asserted everywhere below: every input node appears
@@ -64,7 +64,7 @@ function collect(roots, cap = 10000) {
   const stack = [...roots];
   let steps = 0;
   while (stack.length) {
-    if (++steps > cap) throw new Error('tree walk did not terminate — cycle survived buildCallTree');
+    if (++steps > cap) throw new Error('tree walk did not terminate - cycle survived buildCallTree');
     const item = stack.pop();
     seen.push(item.node.nodeId);
     for (const c of item.children) stack.push(c);

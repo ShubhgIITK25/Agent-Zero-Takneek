@@ -7,7 +7,7 @@ import { languageFromPath } from '../lib/language';
 type EditorPaneProps = {
   filePath: string | null;
   content: string;
-  /** Scroll to and highlight this line — set when a clickable file:line tag
+  /** Scroll to and highlight this line - set when a clickable file:line tag
    *  in the agent chat is followed. */
   revealLine?: number;
   onChange: (value: string) => void;

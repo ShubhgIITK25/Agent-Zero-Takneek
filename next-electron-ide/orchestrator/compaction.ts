@@ -1,28 +1,28 @@
 /**
  * ============================================================================
- *  CONTEXT COMPACTION — decide when, and never lose the load-bearing facts
+ *  CONTEXT COMPACTION - decide when, and never lose the load-bearing facts
  * ============================================================================
  * Requirement: the system decides on its own when to compress, must recognise
  * when compaction is unavoidable to stay under a context limit, and must not
  * lose or misremember earlier information afterwards.
  *
- * TRIGGER — two thresholds against the ACTIVE model's real window, not a
+ * TRIGGER - two thresholds against the ACTIVE model's real window, not a
  * constant. A fixed "compact every 20 messages" rule is wrong in both
  * directions: it compacts a tiny conversation on a 262k model for no reason,
  * and it sails past the limit on a 32k local model.
  *   SOFT (70%): compact opportunistically at a message boundary. Cheap, and
- *               it keeps the next call's prompt cost down — which matters
+ *               it keeps the next call's prompt cost down - which matters
  *               because input tokens are billed on every single turn.
  *   HARD (88%): compact or the next call fails outright.
  *
- * WHAT SURVIVES — this is the part that makes it not lossy:
+ * WHAT SURVIVES - this is the part that makes it not lossy:
  *   1. The system prompt, verbatim.
- *   2. `pinnedFacts` — AGENTS.md rules, the task goal, file paths already
+ *   2. `pinnedFacts` - AGENTS.md rules, the task goal, file paths already
  *      modified, decisions taken. Re-injected VERBATIM as a system message
  *      after every compaction, so they cannot degrade through repeated
  *      summarisation. This is the concrete answer to "does a stated preference
  *      still hold after a compaction event".
- *   3. The last KEEP_RECENT messages, verbatim — recent tool results are what
+ *   3. The last KEEP_RECENT messages, verbatim - recent tool results are what
  *      the model is actively reasoning about.
  *   4. Everything older becomes ONE summary message produced by a cheap model.
  *
@@ -31,7 +31,7 @@
  * then re-derives them wrongly. Summarising costs one small call; dropping
  * costs correctness. We pay the call.
  *
- * A tool-call/tool-result pair is never split across the boundary — most APIs
+ * A tool-call/tool-result pair is never split across the boundary - most APIs
  * reject an assistant tool_call whose matching tool message is missing.
  */
 
@@ -138,10 +138,10 @@ export async function compact(
   } catch {
     // Summarising failed (provider down, rate limit). A forced compaction still
     // has to shed tokens or the next call dies, so fall back to a truncated
-    // mechanical digest. Degraded, but honest about being degraded — and the
+    // mechanical digest. Degraded, but honest about being degraded - and the
     // pinned facts below still survive intact, which is the part that matters.
     summaryText =
-      '[Automatic summary unavailable — mechanical digest]\n' +
+      '[Automatic summary unavailable - mechanical digest]\n' +
       older
         .map((m) => (m.role === 'tool' ? `tool ${m.name}: ${m.content.slice(0, 200)}` : `${m.role}: ${(m.role === 'assistant' ? m.content ?? '' : m.content).slice(0, 200)}`))
         .join('\n')
@@ -160,7 +160,7 @@ export async function compact(
     rebuilt.push({
       role: 'system',
       content:
-        'These constraints remain in force and were NOT summarised — follow them exactly:\n' +
+        'These constraints remain in force and were NOT summarised - follow them exactly:\n' +
         pinnedFacts.map((f) => `- ${f}`).join('\n'),
     });
   }

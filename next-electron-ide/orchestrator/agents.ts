@@ -1,6 +1,6 @@
 /**
  * ============================================================================
- *  AGENT ROLES — prompts and output parsing for each role in the pipeline
+ *  AGENT ROLES - prompts and output parsing for each role in the pipeline
  * ============================================================================
  * Roles, and why each exists as a separate call rather than one big agent:
  *
@@ -14,7 +14,7 @@
  *                noisy one.
  *   VERIFIER     Independently checks the implementer's claim of success. It
  *                is a DIFFERENT call with a DIFFERENT context and no memory of
- *                the implementer's reasoning — an agent asked "are you sure?"
+ *                the implementer's reasoning - an agent asked "are you sure?"
  *                in its own conversation almost always says yes.
  *   TIEBREAK     Third opinion when implementer and verifier disagree.
  *   COMPACTOR    Cheap summariser (see compaction.ts).
@@ -40,8 +40,16 @@ import { Subtask } from './protocol';
 
 /** Pull the first balanced JSON object/array out of a model reply. */
 export function extractJson(text: string): any | null {
-  const fenced = /```(?:json)?\s*([\s\S]*?)```/i.exec(text);
-  const candidates = [fenced?.[1], text].filter(Boolean) as string[];
+  if (!text || typeof text !== 'string') return null;
+
+  const candidates: string[] = [];
+  const fencedRegex = /```(?:json)?\s*([\s\S]*?)```/gi;
+  let match: RegExpExecArray | null;
+  while ((match = fencedRegex.exec(text)) !== null) {
+    if (match[1]?.trim()) candidates.push(match[1].trim());
+  }
+  candidates.push(text.trim());
+
   for (const c of candidates) {
     const startObj = c.indexOf('{');
     const startArr = c.indexOf('[');
@@ -95,24 +103,24 @@ export function plannerMessages(prompt: string, repoOverview: string, agentsMd: 
         '- Otherwise produce 2-6 subtasks. Fewer, well-scoped subtasks beat many tiny ones: each subtask ' +
         'costs a full model round-trip.\n' +
         '- DEPENDENCIES ARE A COST, NOT DOCUMENTATION. "dependsOn" defaults to EMPTY. List B as depending ' +
-        'on A only if B literally cannot start until A finishes — because B reads a file A writes, or B ' +
+        'on A only if B literally cannot start until A finishes - because B reads a file A writes, or B ' +
         'builds on a decision A makes. Two subtasks that touch different files, or that are merely both ' +
         'part of the same request, are INDEPENDENT and must BOTH have "dependsOn": []. Independent ' +
         'subtasks are handed to separate agents and run at the same time, so a dependency you did not ' +
         'need makes the whole job slower for no benefit. Before you write a dependency, ask: "would this ' +
         'subtask fail if the other one had not run yet?" If no, leave dependsOn empty.\n' +
-        '- A subtask may only depend on EARLIER ones — never forward, never circular.\n' +
+        '- A subtask may only depend on EARLIER ones - never forward, never circular.\n' +
         '- "touchesFiles": list the repo-relative files the subtask will MODIFY (not files it merely ' +
         'reads). Leave it [] if you cannot name them or the subtask writes nothing. This is how two ' +
         'subtasks are kept from editing one file at the same time, which costs a wasted round-trip when ' +
-        'it happens — so a subtask whose files you CAN name is safer to mark independent, not riskier. ' +
+        'it happens - so a subtask whose files you CAN name is safer to mark independent, not riskier. ' +
         'Never list a whole directory, and never guess a file you have no evidence exists.\n' +
         '- DO NOT add a final "verify everything works" subtask. Every subtask is already checked by a ' +
         'separate verifier agent the moment it finishes. A trailing verification step that depends on all ' +
         'the others is a duplicate check that costs an extra round-trip AND forces every parallel branch ' +
         'to finish before it can start. Use "verification" ONLY for a check that is real work in its own ' +
-        'right and that no single subtask could perform — e.g. running an existing integration suite.\n' +
-        '- Each subtask must be independently checkable — state what "done" looks like.\n' +
+        'right and that no single subtask could perform - e.g. running an existing integration suite.\n' +
+        '- Each subtask must be independently checkable - state what "done" looks like.\n' +
         '- category: "analysis" (read/understand), "codegen" (write substantial code), "simple_edit" ' +
         '(small mechanical change), "verification" (run tests/checks).\n\n' +
         'Reply with ONLY this JSON:\n' +
@@ -134,7 +142,7 @@ export type Plan = { trivial: boolean; restatedGoal: string; subtasks: Subtask[]
  * is a stable key, not a real path: forward slashes, no leading "./" or "/",
  * and anything that tries to climb out of the repo is dropped rather than
  * resolved. A model that returns a sentence instead of a list, or invents 40
- * files, must not be able to turn that into a scheduling problem — hence the
+ * files, must not be able to turn that into a scheduling problem - hence the
  * type check and the cap.
  */
 function normaliseTouchedFiles(raw: any): string[] {
@@ -156,7 +164,7 @@ export function parsePlan(text: string, fallbackPrompt: string): Plan {
 
   if (!raw || raw.length === 0) {
     // Planner produced nothing parseable. Rather than fail the task, fall back
-    // to treating the whole prompt as one subtask — degraded but still useful,
+    // to treating the whole prompt as one subtask - degraded but still useful,
     // and the intervention is recorded so it is visible in the dashboard.
     return {
       trivial: true,
@@ -188,7 +196,7 @@ export function parsePlan(text: string, fallbackPrompt: string): Plan {
       id,
       title: String(s.title ?? `Step ${i + 1}`).slice(0, 120),
       detail: String(s.detail ?? s.title ?? '').slice(0, 2000),
-      // Drop dependencies on ids the planner invented or that come later —
+      // Drop dependencies on ids the planner invented or that come later -
       // a cyclic or forward dependency would deadlock the scheduler.
       dependsOn: Array.isArray(s.dependsOn) ? s.dependsOn.filter((d: any) => typeof d === 'string' && valid.has(d)) : [],
       touchesFiles: normaliseTouchedFiles(s.touchesFiles),
@@ -217,7 +225,7 @@ export function parsePlan(text: string, fallbackPrompt: string): Plan {
  * WHY A SEPARATE ROLE AND NOT JUST ANOTHER RETRY. The retry ladder already
  * re-runs the same subtask on a stronger model with the verifier's complaint
  * fed back in. If three of those failed, the thing that is wrong is not the
- * model — it is the subtask. Retrying a fourth time is the "blindly retrying
+ * model - it is the subtask. Retrying a fourth time is the "blindly retrying
  * the same action" the PS explicitly penalises. This call changes the PLAN,
  * which is the only lever left.
  *
@@ -242,9 +250,9 @@ export function replannerMessages(
         'You are the re-planner in a multi-agent coding system. One subtask has failed every retry it was ' +
         'allowed. Decide WHY, then decide what to do about it.\n\n' +
         'It failed for one of two reasons:\n' +
-        '1. It was badly scoped — too large for one agent, ambiguous, or it assumed something that was never ' +
+        '1. It was badly scoped - too large for one agent, ambiguous, or it assumed something that was never ' +
         'established. This is fixable: replace it with smaller subtasks that route around the specific failure.\n' +
-        '2. It is genuinely not achievable — a dependency that cannot be installed, a file that does not exist, ' +
+        '2. It is genuinely not achievable - a dependency that cannot be installed, a file that does not exist, ' +
         'a contradiction in the request. This is not fixable, and pretending otherwise wastes the budget the ' +
         'remaining subtasks need.\n\n' +
         'Rules:\n' +
@@ -252,7 +260,7 @@ export function replannerMessages(
         '- Do NOT restate the failed subtask in different words. That exact work already failed every attempt. ' +
         'If you cannot decompose it into genuinely different steps, abandon it instead.\n' +
         '- Do not redo work listed as already completed.\n' +
-        '- Each replacement must be independently checkable — state what "done" looks like.\n' +
+        '- Each replacement must be independently checkable - state what "done" looks like.\n' +
         '- Replacements run in the order you give them, each after the previous one.\n\n' +
         'Reply with ONLY one of these two JSON shapes:\n' +
         '{"abandon":false,"diagnosis":"one sentence on why it really failed",' +
@@ -322,17 +330,15 @@ export function parseReplan(text: string, maxReplacements: number): ReplanResult
 export function implementerSystemPrompt(goal: string, subtask: Subtask, pinnedFacts: string[]): string {
   return (
     'You are an implementer agent in a multi-agent coding system. You have been given ONE subtask. ' +
-    'Do that subtask and nothing else — another agent owns the rest.\n\n' +
+    'Do that subtask and nothing else - another agent owns the rest.\n\n' +
     `Overall goal (context only): ${goal}\n` +
     `YOUR SUBTASK: ${subtask.title}\n${subtask.detail}\n\n` +
     'How to work:\n' +
-    '- Call retrieve_context first to find relevant code. It returns snippets, not whole files. Reading whole ' +
-    'files by default wastes budget that is strictly limited.\n' +
-    '- Propose file changes with propose_edit. It shows the user a diff; they may accept only SOME blocks. ' +
-    'Read the result carefully — it tells you what actually landed on disk — and continue from that reality.\n' +
-    '- Verify your own work where you can: run the project\'s tests or a linter with run_command.\n' +
-    '- When the subtask is complete, reply with plain text starting "DONE:" and one or two sentences on what ' +
-    'you changed. If you cannot complete it, reply starting "BLOCKED:" and say precisely what stopped you.\n' +
+    '- To create or modify files, use propose_edit with the repo-relative path and complete file content.\n' +
+    '- Call retrieve_context or read_file if you need to inspect existing repository code.\n' +
+    '- Use run_command if you need to run existing tests, linters, or build scripts.\n' +
+    '- When all required changes for this subtask are on disk, stop making tool calls immediately and finish your turn by replying with plain text starting "DONE:" and a brief summary of what you did.\n' +
+    '- If you are genuinely blocked and cannot complete the subtask, reply starting "BLOCKED:" and explain what stopped you.\n' +
     (pinnedFacts.length ? `\nBinding project rules:\n${pinnedFacts.map((f) => `- ${f}`).join('\n')}\n` : '')
   );
 }

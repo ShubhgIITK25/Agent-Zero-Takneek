@@ -1,4 +1,23 @@
-# python verify.py so that the IDE can run a retrieval-service in-process, and the IDE's own retrieval
+"""
+Standalone verification for the retrieval pipeline - no Electron needed.
+
+Run this to answer "is retrieval actually working, and what did it index?"
+without going through the IDE at all. Because it imports the same modules
+server.py does, a pass here means the pipeline itself is sound and any
+remaining problem is in the Electron wiring (see the runbook), which is a
+much smaller place to look.
+
+Usage:
+    python verify.py                      # index+query THIS project
+    python verify.py /path/to/codebase    # index+query some other codebase
+    python verify.py . -q "how are sessions created"     # your own query
+    python verify.py --inspect <file.db>  # dump an index the IDE already built
+
+The --inspect mode is the one to reach for when the IDE says "Index ready"
+but the agent still can't find something: point it at the real .db from
+app.getPath('userData')/retrieval-index/ and look at what actually got
+chunked.
+"""
 import argparse
 import os
 import sys
@@ -15,7 +34,7 @@ def _fail(message: str, hint: str = "") -> None:
 
 def check_dependencies() -> dict:
     """Every dependency is checked separately, because the pipeline
-    degrades per-component rather than all-or-nothing — knowing WHICH
+    degrades per-component rather than all-or-nothing - knowing WHICH
     piece is missing tells you which capability you lost."""
     print("=" * 68)
     print("  DEPENDENCIES")
@@ -79,7 +98,7 @@ def check_grammars() -> bool:
     """Compile every language's query against its real grammar.
 
     This exists because a query that fails to compile does NOT crash the
-    indexer — chunker.py catches it and falls back to line-window chunks,
+    indexer - chunker.py catches it and falls back to line-window chunks,
     so those files stay searchable but lose their symbol names and
     call-graph edges. That degradation is easy to miss unless something
     checks for it explicitly. This is that something.
@@ -113,7 +132,7 @@ def check_grammars() -> bool:
     if not all_ok:
         print()
         print("  Fix the pattern in languages.py DEF_QUERIES before trusting the index.")
-        print("  Tip: node names differ between grammars — TypeScript names classes")
+        print("  Tip: node names differ between grammars - TypeScript names classes")
         print("  with 'type_identifier' where JavaScript uses 'identifier'.")
 
     return all_ok
@@ -121,7 +140,7 @@ def check_grammars() -> bool:
 
 def check_models() -> None:
     """The models download on first use. This forces that download now so
-    a demo doesn't stall on it — and reports clearly if there's no network,
+    a demo doesn't stall on it - and reports clearly if there's no network,
     since the pipeline stays usable without them."""
     print()
     print("=" * 68)
@@ -181,13 +200,13 @@ def run_index(root_path: str, data_dir: str) -> str:
             "contains files with extensions in indexer.TEXT_EXTENSIONS.",
         )
 
-    # Re-running must be a no-op — that's the hash check doing its job, and
+    # Re-running must be a no-op - that's the hash check doing its job, and
     # it's what makes the file-watcher's incremental updates cheap.
     again = indexer.full_index(data_dir, root_path, codebase_id)
     if again.get("files_updated", 0) == 0:
         print("  ok         re-index touched 0 files (hash check working)")
     else:
-        print(f"  WARN       re-index touched {again['files_updated']} files — expected 0")
+        print(f"  WARN       re-index touched {again['files_updated']} files - expected 0")
 
     return codebase_id
 
@@ -195,7 +214,7 @@ def run_index(root_path: str, data_dir: str) -> str:
 def _vector_count(data_dir: str, codebase_id: str) -> str:
     """How many embeddings actually made it into the index. 0 with chunks
     present means the embedder failed and retrieval is running on BM25 +
-    graph expansion alone — degraded, but working."""
+    graph expansion alone - degraded, but working."""
     import store
 
     db = store.get_db(data_dir, codebase_id)
@@ -210,7 +229,7 @@ def _vector_count(data_dir: str, codebase_id: str) -> str:
 
 def show_breakdown(data_dir: str, codebase_id: str) -> None:
     """What actually landed in the index. This is the view that answers
-    'why can't the agent find X' — if X isn't a row here, retrieval was
+    'why can't the agent find X' - if X isn't a row here, retrieval was
     never going to surface it."""
     import store
 
@@ -242,7 +261,7 @@ def show_breakdown(data_dir: str, codebase_id: str) -> None:
         "JOIN chunks ch ON ch.symbol = e.dst_symbol"
     ).fetchone()["c"]
     print(f"\n  call graph: {edges} edges, {resolved} distinct callee names resolve to an indexed chunk")
-    print("     (unresolved names are calls into stdlib/third-party code — expected)")
+    print("     (unresolved names are calls into stdlib/third-party code - expected)")
 
 
 def run_queries(data_dir: str, codebase_id: str, queries: list) -> None:
@@ -269,7 +288,7 @@ def run_queries(data_dir: str, codebase_id: str, queries: list) -> None:
         elapsed = (time.time() - t0) * 1000
 
         if not result["results"]:
-            print("     (no results — try a query using words that appear in this codebase)")
+            print("     (no results - try a query using words that appear in this codebase)")
             continue
 
         print(
@@ -280,7 +299,7 @@ def run_queries(data_dir: str, codebase_id: str, queries: list) -> None:
         )
         for r in result["results"]:
             print(f"     {r['score']:>7.3f}  {r['file']}:{r['line_start']}-{r['line_end']}")
-            print(f"              {r['kind']} {r['symbol']}  —  {r['why_relevant']}")
+            print(f"              {r['kind']} {r['symbol']}  -  {r['why_relevant']}")
 
 
 def dump_vectors(db_path: str, limit: int = 5) -> None:
@@ -302,7 +321,7 @@ def dump_vectors(db_path: str, limit: int = 5) -> None:
     db = store.get_db(data_dir, codebase_id)
 
     if not store.vec_enabled(db):
-        _fail("sqlite-vec did not load for this index — no vectors to show")
+        _fail("sqlite-vec did not load for this index - no vectors to show")
 
     total = db.execute("SELECT COUNT(*) c FROM chunks_vec").fetchone()["c"]
     print("=" * 68)
@@ -312,7 +331,7 @@ def dump_vectors(db_path: str, limit: int = 5) -> None:
     print(f"  table   chunks_vec   ({total} vectors)")
 
     if total == 0:
-        print("\n  Empty. The embedder was unavailable when this index was built —")
+        print("\n  Empty. The embedder was unavailable when this index was built -")
         print("  reindex with a working model download to populate it.")
         return
 
@@ -338,7 +357,7 @@ def dump_vectors(db_path: str, limit: int = 5) -> None:
 
     print("  Read them yourself with:")
     print("     SELECT rowid, vec_to_json(embedding) FROM chunks_vec;")
-    print("  (needs the sqlite-vec extension loaded — a plain SQLite browser")
+    print("  (needs the sqlite-vec extension loaded - a plain SQLite browser")
     print("   shows only the raw BLOB, which is why this mode exists.)")
 
 
@@ -365,7 +384,7 @@ def inspect_existing(db_path: str) -> None:
           f"vector search {'on' if stats['vector_search'] else 'off'}")
 
     if stats["chunks_indexed"] == 0:
-        print("\n  This index is empty — the IDE reported 'ready' without indexing anything.")
+        print("\n  This index is empty - the IDE reported 'ready' without indexing anything.")
         return
 
     show_breakdown(data_dir, codebase_id)
@@ -430,7 +449,7 @@ def main():
     else:
         # NOT tempfile.TemporaryDirectory as a context manager: store.py
         # caches an open SQLite connection per codebase, and Windows refuses
-        # to delete a file that's still open — the cleanup raises
+        # to delete a file that's still open - the cleanup raises
         # PermissionError (WinError 32) after a completely successful run.
         # Close the connections first, then delete, tolerating leftovers.
         data_dir = tempfile.mkdtemp(prefix="nexide-verify-")
@@ -447,7 +466,7 @@ def main():
     print("  PIPELINE OK")
     print("=" * 68)
     print("  Retrieval itself works. If the IDE still can't search, the problem is")
-    print("  in the Electron wiring, not here — check the npm run dev console for")
+    print("  in the Electron wiring, not here - check the npm run dev console for")
     print("  [retrieval] and [retrieval-service] lines.")
 
 

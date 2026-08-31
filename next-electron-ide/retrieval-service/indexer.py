@@ -1,4 +1,16 @@
-# indexes a codebase into the local sqlite database. checks hashes and only re-indexes files that have changed since the last run. uses the chunker to break files into chunks, and the embeddings module to embed them for semantic search.
+"""
+Phase 1: indexing. Walks a project root, respects .gitignore, chunks each
+file at AST boundaries, embeds the chunks, and writes everything into that
+project's SQLite file.
+
+Runs in two modes:
+  - full_index(): the first time a codebase is opened
+  - update_files(): incremental - called by Electron's file watcher with
+    just the paths that changed, so a single edited file doesn't trigger
+    a full re-walk. Every path is still hash-checked against what's
+    stored, so a no-op save (open + immediately save, or a watcher firing
+    twice) costs nothing beyond a hash compare.
+"""
 import os
 import time
 
@@ -13,9 +25,9 @@ TEXT_EXTENSIONS = {
     ".c", ".h", ".cpp", ".hpp", ".cc", ".json", ".md", ".yml", ".yaml", ".toml",
     ".css", ".html", ".sh", ".rb", ".php", ".sql",
 }
-MAX_FILE_BYTES = 1_500_000
+MAX_FILE_BYTES = 1_500_000  # skip anything absurdly large (generated bundles etc.)
 
-# respects gitignore and also ignores common build directories
+
 def _load_gitignore(root: str):
     patterns = [
         "node_modules/", ".git/", "dist/", "build/", "__pycache__/",
@@ -30,10 +42,11 @@ def _load_gitignore(root: str):
             pass
     return pathspec.PathSpec.from_lines("gitwildmatch", patterns)
 
-# iterates all source files in the root directory and yields (absolute_path, relative_path) tuples for each file
+
 def _iter_source_files(root: str, spec: pathspec.PathSpec):
     for dirpath, dirnames, filenames in os.walk(root):
         rel_dir = os.path.relpath(dirpath, root)
+        # prune ignored directories in-place so os.walk doesn't descend into them
         def _dir_rel(d):
             return (d if rel_dir == "." else f"{rel_dir}/{d}") + "/"
         dirnames[:] = [d for d in dirnames if not spec.match_file(_dir_rel(d))]
@@ -47,7 +60,7 @@ def _iter_source_files(root: str, spec: pathspec.PathSpec):
                 continue
             yield os.path.join(dirpath, name), rel_path
 
-# read the content in files
+
 def _read_text(abs_path: str):
     try:
         if os.path.getsize(abs_path) > MAX_FILE_BYTES:
@@ -57,7 +70,7 @@ def _read_text(abs_path: str):
     except OSError:
         return None
 
-# gets the chunks for a file and then embeds and stores them in the database
+
 def _index_one_file(db, abs_path: str, rel_path: str):
     text = _read_text(abs_path)
     if text is None:
@@ -78,7 +91,7 @@ def _index_one_file(db, abs_path: str, rel_path: str):
     store.insert_file_chunks(db, rel_path, text, chunks, vectors, mtime)
     return len(chunks)
 
-# the main indexer
+
 def full_index(data_dir: str, root_path: str, codebase_id: str, progress_cb=None):
     db = store.get_db(data_dir, codebase_id)
     spec = _load_gitignore(root_path)
@@ -108,7 +121,7 @@ def full_index(data_dir: str, root_path: str, codebase_id: str, progress_cb=None
     return {**store.stats(db), "files_scanned": files_scanned, "files_updated": files_touched,
             "chunks_updated": chunks_indexed}
 
-# when file is updated, deleted or added, this function is called to update the index for those files only
+
 def update_files(data_dir: str, root_path: str, codebase_id: str, changed_rel_paths: list):
     db = store.get_db(data_dir, codebase_id)
     spec = _load_gitignore(root_path)

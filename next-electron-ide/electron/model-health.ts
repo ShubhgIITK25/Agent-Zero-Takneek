@@ -1,12 +1,12 @@
 /**
  * ============================================================================
- *  MODEL HEALTH — is this model actually callable right now?
+ *  MODEL HEALTH - is this model actually callable right now?
  * ============================================================================
  * The settings screen can tell you a model is *eligible* (≤80B total params).
  * It could not, until now, tell you whether calling it would work. Those are
  * different questions, and the second one is the one that ruins a demo: a
  * mistyped key, a model the provider retired last week, or an Ollama server
- * nobody started all present identically — as a task that dies on its first
+ * nobody started all present identically - as a task that dies on its first
  * dispatch with a provider error buried in the event log.
  *
  * WHY THIS RUNS IN THE MAIN PROCESS.
@@ -18,15 +18,15 @@
  * WHY ONE REQUEST PER PROVIDER, NOT ONE PER MODEL.
  * Every provider here exposes a catalogue endpoint that lists what it will
  * serve you, for the key you present. That single response answers all five
- * questions at once — is the network up, is the key valid, are we rate
- * limited, does this specific model id still exist — for every model of that
+ * questions at once - is the network up, is the key valid, are we rate
+ * limited, does this specific model id still exist - for every model of that
  * provider simultaneously. Probing 23 models individually would mean 23
  * requests, would burn free-tier quota just to render a settings screen, and
  * would be far more likely to trip the rate limit it is trying to report.
  *
  * WHY NOT A REAL COMPLETION CALL.
- * It would be the most faithful test — it is exactly what the orchestrator
- * does — but it costs money and tokens every time someone opens Settings, and
+ * It would be the most faithful test - it is exactly what the orchestrator
+ * does - but it costs money and tokens every time someone opens Settings, and
  * on a metered free tier that is a real budget line. A catalogue lookup is
  * free and distinguishes all five states. The one thing it cannot catch is a
  * model that lists but errors on inference; that surfaces as a normal
@@ -36,12 +36,12 @@
 /**
  * Health of one model, from the user's point of view.
  *
- * Mirrored in src/lib/electron-api.ts — electron/tsconfig.json sets
+ * Mirrored in src/lib/electron-api.ts - electron/tsconfig.json sets
  * `rootDir: "."`, so this directory cannot import from the renderer's tree or
  * from orchestrator/. Keep the two unions in step.
  */
 export type ModelHealthState =
-  | "working" // listed by the provider for this key — a call should succeed
+  | "working" // listed by the provider for this key - a call should succeed
   | "invalid-key" // provider answered, but rejected the credentials
   | "rate-limited" // provider answered 429; the key is fine, the quota is not
   | "unavailable" // provider is up and the key works, but it does not serve this id
@@ -80,7 +80,7 @@ async function getJson(
     try {
       body = await res.json();
     } catch {
-      // A non-JSON body is fine — the status code carries the verdict.
+      // A non-JSON body is fine - the status code carries the verdict.
     }
     return { status: res.status, body };
   } catch (err) {
@@ -94,7 +94,7 @@ async function getJson(
 
 /**
  * Turn an HTTP status into one of our states. Kept in one place so every
- * provider reports the same status the same way — a 429 from Groq and a 429
+ * provider reports the same status the same way - a 429 from Groq and a 429
  * from Gemini must not render as two different things.
  */
 function stateForStatus(
@@ -128,7 +128,7 @@ async function probeGroq(env: Record<string, string>): Promise<ProviderProbe> {
       state: bad,
       detail: networkError
         ? `Could not reach Groq: ${networkError}`
-        : `Groq answered HTTP ${status}${body?.error?.message ? ` — ${body.error.message}` : ""}`,
+        : `Groq answered HTTP ${status}${body?.error?.message ? ` - ${body.error.message}` : ""}`,
     };
 
   const ids = new Set<string>((body?.data ?? []).map((m: any) => String(m.id)));
@@ -143,7 +143,7 @@ async function probeOpenRouter(env: Record<string, string>): Promise<ProviderPro
 
   // OpenRouter's /models is public and answers 200 even for a bad key, so the
   // credential has to be checked against an authenticated endpoint. /key is
-  // the cheapest one — it returns the key's own quota record.
+  // the cheapest one - it returns the key's own quota record.
   const auth = await getJson(`${base}/key`, { Authorization: `Bearer ${key}` });
   const bad = stateForStatus(auth.status, auth.networkError, "OpenRouter");
   if (bad)
@@ -210,7 +210,7 @@ async function probeGemini(env: Record<string, string>): Promise<ProviderProbe> 
       state: bad,
       detail: networkError
         ? `Could not reach the Gemini API: ${networkError}`
-        : `Gemini answered HTTP ${status}${body?.error?.message ? ` — ${body.error.message}` : ""}`,
+        : `Gemini answered HTTP ${status}${body?.error?.message ? ` - ${body.error.message}` : ""}`,
     };
 
   // Names come back as "models/gemma-4-31b-it"; the registry stores
@@ -236,7 +236,7 @@ function bareApiId(provider: string, apiId: string): string {
 
 /**
  * Check every requested model, one catalogue request per DISTINCT provider.
- * Providers are probed concurrently — a dead Ollama host must not add its
+ * Providers are probed concurrently - a dead Ollama host must not add its
  * timeout to the wait for a perfectly healthy Groq.
  */
 export async function checkModelHealth(

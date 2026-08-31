@@ -7,7 +7,7 @@
  * Before this existed, a failed verification retried ON TOP of the edits that
  * had just been rejected: attempt 2 started from a tree the verifier already
  * refused, attempt 3 compounded it, and when the retries ran out the union of
- * every broken attempt was left on disk under a subtask marked `failed` — with
+ * every broken attempt was left on disk under a subtask marked `failed` - with
  * its dependents blocked, so nothing downstream would ever clean up.
  *
  * The scenario below runs a REAL TaskRunner with only providers.callModel
@@ -179,7 +179,7 @@ async function main() {
   t('the retry prompt tells the model its edits were reverted', () => {
     const convo = store.loadSnapshot().conversations.s1 || [];
     const retryMsg = convo.find((m) => m.role === 'user' && /REVERTED/.test(m.content || ''));
-    assert.ok(retryMsg, 'no retry message mentioned the revert — the model would assume its edits survived');
+    assert.ok(retryMsg, 'no retry message mentioned the revert - the model would assume its edits survived');
   });
   t('the subtask still ends failed (rollback is not a pass)', () => {
     assert.strictEqual(store.loadSnapshot().subtasks.find((s) => s.id === 's1').status, 'failed');

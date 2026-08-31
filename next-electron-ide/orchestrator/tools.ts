@@ -1,6 +1,6 @@
 /**
  * ============================================================================
- *  TOOLS — what an agent can actually do, and what needs permission first
+ *  TOOLS - what an agent can actually do, and what needs permission first
  * ============================================================================
  * These run inside the orchestrator process, which has full Node access. Two
  * design points worth defending:
@@ -17,7 +17,7 @@
  *    `propose_edit` does not touch the disk. It returns a diff to the
  *    orchestrator, which raises an approval_request and blocks. Only after a
  *    decision comes back does the orchestrator write the accepted hunks. This
- *    is what makes the approval gate real rather than advisory — there is no
+ *    is what makes the approval gate real rather than advisory - there is no
  *    code path in this file that writes a file the user has not seen.
  *
  * `sideEffecting` marks the tools that must never run unapproved.
@@ -36,7 +36,7 @@ export type ToolContext = {
    *  The /query endpoint requires this and does NOT derive it from rootPath. */
   codebaseId: string;
   retrievalUrl: string | null;
-  /** .nexideignore / .ignore matcher — gates the AUTOMATIC tools below.
+  /** .nexideignore / .ignore matcher - gates the AUTOMATIC tools below.
    *  See orchestrator/ignore.ts for what it does and does not cover. */
   ignore: { isIgnored: (relPath: string) => boolean; sourceFile: string | null };
   /** Mirrors a command into the IDE's visible terminal panel. */
@@ -61,8 +61,8 @@ export type ToolResult = {
   content: string;
   contextItems?: { path: string; lines?: string; tokens: number }[];
   /** Raised by the orchestrator as an `intervention` event. Tools cannot emit
-   *  directly — they stay pure functions of (args, ctx) so they are trivially
-   *  testable — so anything a tool needs the dashboard to show travels back
+   *  directly - they stay pure functions of (args, ctx) so they are trivially
+   *  testable - so anything a tool needs the dashboard to show travels back
    *  through here. Currently used by retrieve_context to report that a first
    *  retrieval was weak and what it did about it. */
   intervention?: { cause: 'retrieval_weak'; detail: string; action: string };
@@ -84,13 +84,22 @@ function str(args: Record<string, unknown>, key: string, required = true): strin
 }
 
 /** Every path an agent supplies is confined to the open project. */
-function resolveInRoot(rootPath: string, p: string): string {
-  const resolved = path.resolve(rootPath, p);
+export function resolveInRoot(rootPath: string, p: string): { full: string; safeRel: string } {
+  let cleanPath = p.trim().replace(/\\/g, '/');
+  const normalizedRoot = path.resolve(rootPath).replace(/\\/g, '/');
+  if (cleanPath.toLowerCase().startsWith(normalizedRoot.toLowerCase())) {
+    cleanPath = cleanPath.slice(normalizedRoot.length);
+  }
+  cleanPath = cleanPath.replace(/^[a-zA-Z]:/, '').replace(/^\/+/, '');
+  if (!cleanPath) cleanPath = '.';
+
+  const resolved = path.resolve(rootPath, cleanPath);
   const rel = path.relative(rootPath, resolved);
   if (rel.startsWith('..') || path.isAbsolute(rel)) {
-    throw new Error(`path "${p}" is outside the open project folder — refused`);
+    throw new Error(`path "${p}" is outside the open project folder - refused`);
   }
-  return resolved;
+  const safeRel = rel === '' || rel === '.' ? '.' : rel.replace(/\\/g, '/');
+  return { full: resolved, safeRel };
 }
 
 function execCapture(
@@ -187,7 +196,7 @@ export const TOOLS: Tool[] = [
               `Retrieval for "${query}" scored ${attempts[0]?.confidence ?? '?'} confidence` +
               (attempts[0]?.reasons?.length ? ` (${attempts[0].reasons.join('; ')})` : '') + '.',
             action:
-              `Re-ran it widened and reformulated as "${data.query_used}" — ` +
+              `Re-ran it widened and reformulated as "${data.query_used}" - ` +
               (data.weak
                 ? `still weak (${data.confidence}). Handing the result up with guidance so the agent can rephrase.`
                 : `confidence improved to ${data.confidence}.`),
@@ -215,7 +224,7 @@ export const TOOLS: Tool[] = [
       }
 
       const body = results
-        .map((r) => `${r.file}:${r.line_start}-${r.line_end} (${r.kind} ${r.symbol}) — ${r.why_relevant}\n${r.snippet}`)
+        .map((r) => `${r.file}:${r.line_start}-${r.line_end} (${r.kind} ${r.symbol}) - ${r.why_relevant}\n${r.snippet}`)
         .join('\n\n---\n\n');
 
       // A weak result set is handed over WITH its weakness stated. Silently
@@ -224,11 +233,11 @@ export const TOOLS: Tool[] = [
       // it is already a model in a loop, so that costs no extra call.
       const header =
         data.weak && reasons.length
-          ? `[retrieval confidence ${data.confidence} — LOW] ${reasons.join('; ')}.\n` +
+          ? `[retrieval confidence ${data.confidence} - LOW] ${reasons.join('; ')}.\n` +
             `Tried: ${attempts.map((a) => `"${a.query}"`).join(', ')}. These results may not answer the question. ` +
             'If they look unrelated, search for a specific symbol name instead of a description, or use list_dir.\n\n'
           : escalated
-            ? `[retrieval confidence ${data.confidence} — recovered by reformulating to "${data.query_used}"]\n\n`
+            ? `[retrieval confidence ${data.confidence} - recovered by reformulating to "${data.query_used}"]\n\n`
             : '';
 
       return {
@@ -245,7 +254,7 @@ export const TOOLS: Tool[] = [
   {
     schema: {
       name: 'read_file',
-      description: 'Read a file from the open project by project-relative path. Costs more tokens than retrieve_context — use deliberately.',
+      description: 'Read a file from the open project by project-relative path. Costs more tokens than retrieve_context - use deliberately.',
       parameters: {
         type: 'object',
         properties: {
@@ -259,20 +268,20 @@ export const TOOLS: Tool[] = [
     sideEffecting: false,
     run: async (args, ctx) => {
       const rel = str(args, 'path');
-      if (ctx.ignore.isIgnored(rel)) {
+      const { full, safeRel } = resolveInRoot(ctx.rootPath, rel);
+      if (ctx.ignore.isIgnored(safeRel)) {
         return {
-          content: `"${rel}" is excluded from context by ${ctx.ignore.sourceFile}. It will not be read. If you genuinely need it, ask the user to pin it explicitly instead.`,
+          content: `"${safeRel}" is excluded from context by ${ctx.ignore.sourceFile}. It will not be read. If you genuinely need it, ask the user to pin it explicitly instead.`,
         };
       }
-      const full = resolveInRoot(ctx.rootPath, rel);
       const content = await fs.readFile(full, 'utf8');
       const lines = content.split('\n');
       const start = typeof args.line_start === 'number' ? Math.max(1, args.line_start) : 1;
       const end = typeof args.line_end === 'number' ? Math.min(lines.length, args.line_end) : lines.length;
       const slice = lines.slice(start - 1, end).join('\n');
       return {
-        content: `${rel}:${start}-${end}\n${clamp(slice)}`,
-        contextItems: [{ path: rel, lines: `${start}-${end}`, tokens: Math.ceil(slice.length / 3.6) }],
+        content: `${safeRel}:${start}-${end}\n${clamp(slice)}`,
+        contextItems: [{ path: safeRel, lines: `${start}-${end}`, tokens: Math.ceil(slice.length / 3.6) }],
       };
     },
   },
@@ -285,13 +294,14 @@ export const TOOLS: Tool[] = [
     sideEffecting: false,
     run: async (args, ctx) => {
       const rel = str(args, 'path', false) || '.';
-      const full = resolveInRoot(ctx.rootPath, rel);
+      const { full, safeRel } = resolveInRoot(ctx.rootPath, rel);
       const entries = await fs.readdir(full, { withFileTypes: true });
+      const dirPrefix = safeRel === '.' ? '' : safeRel;
       return {
         content: entries
           .filter((e) => !['node_modules', '.git', '.next', '__pycache__', '.venv'].includes(e.name))
-          .filter((e) => !ctx.ignore.isIgnored(path.posix.join(rel === '.' ? '' : rel, e.name)))
-          .map((e) => `${e.isDirectory() ? 'dir ' : 'file'}  ${path.posix.join(rel === '.' ? '' : rel, e.name)}`)
+          .filter((e) => !ctx.ignore.isIgnored(path.posix.join(dirPrefix, e.name)))
+          .map((e) => `${e.isDirectory() ? 'dir ' : 'file'}  ${path.posix.join(dirPrefix, e.name)}`)
           .join('\n'),
       };
     },
@@ -300,7 +310,7 @@ export const TOOLS: Tool[] = [
     schema: {
       name: 'propose_edit',
       description:
-        'Propose a change to a file. This does NOT write to disk — it shows the user a diff for block-by-block ' +
+        'Propose a change to a file. This does NOT write to disk - it shows the user a diff for block-by-block ' +
         'approval, and only the blocks they accept get written. Always supply the complete intended file content. ' +
         'The result tells you exactly what ended up on disk, which may be a partial application.',
       parameters: {
@@ -318,7 +328,7 @@ export const TOOLS: Tool[] = [
       const rel = str(args, 'path');
       const newContent = typeof args.content === 'string' ? args.content : '';
       const summary = str(args, 'summary', false) || `edit ${rel}`;
-      const full = resolveInRoot(ctx.rootPath, rel);
+      const { full, safeRel } = resolveInRoot(ctx.rootPath, rel);
 
       let oldContent: string | null = null;
       try {
@@ -327,36 +337,36 @@ export const TOOLS: Tool[] = [
         oldContent = null; // new file
       }
 
-      const diff = buildFileDiff(rel, oldContent, newContent);
-      if (diff.blocks.length === 0) return { content: `No change: ${rel} already matches the proposed content.` };
+      const diff = buildFileDiff(safeRel, oldContent, newContent);
+      if (diff.blocks.length === 0) return { content: `No change: ${safeRel} already matches the proposed content.` };
 
       const outcome = await ctx.proposeDiff([diff], summary);
       if (!outcome.approved) {
         // Telling the model precisely what happened is what lets it work
         // around a rejection instead of blindly re-proposing the same edit.
-        return { content: `The user REJECTED all changes to ${rel}. The file is unchanged on disk. Do not re-propose the same edit — either take a different approach or ask what they want instead.` };
+        return { content: `The user REJECTED all changes to ${safeRel}. The file is unchanged on disk. Do not re-propose the same edit - either take a different approach or ask what they want instead.` };
       }
       // Refused as stale: someone else changed the file between this proposal
       // being built and it being approved. Re-proposing the same content would
       // silently revert their change, so the model is told to look again.
-      if (outcome.stale.includes(rel)) {
+      if (outcome.stale.includes(safeRel)) {
         return {
           content:
-            `${rel} was NOT written: it changed on disk after you proposed this edit (another subtask or the user edited it). ` +
-            `Your diff was computed against a stale version. Re-read ${rel} with read_file and propose again against its current content.`,
+            `${safeRel} was NOT written: it changed on disk after you proposed this edit (another subtask or the user edited it). ` +
+            `Your diff was computed against a stale version. Re-read ${safeRel} with read_file and propose again against its current content.`,
         };
       }
       if (outcome.written.length === 0) {
-        return { content: `No blocks were accepted for ${rel}; the file is unchanged on disk. Do not re-propose the same edit.` };
+        return { content: `No blocks were accepted for ${safeRel}; the file is unchanged on disk. Do not re-propose the same edit.` };
       }
       if (outcome.fullyApplied) {
         // The whole proposal is on disk. Re-reading and echoing the file back
         // here just tempts a small model into "reviewing" its own change and
-        // proposing again — so confirm succinctly and tell it to move on.
+        // proposing again - so confirm succinctly and tell it to move on.
         return {
           content:
-            `Applied to ${rel} in full — every proposed block is now on disk. This edit is complete. ` +
-            `Do NOT call propose_edit for ${rel} again unless you have a further, genuinely different change to make. ` +
+            `Applied to ${safeRel} in full - every proposed block is now on disk. This edit is complete. ` +
+            `Do NOT call propose_edit for ${safeRel} again unless you have a further, genuinely different change to make. ` +
             `If this was the last thing the subtask needed, reply now with a line starting "DONE:".`,
         };
       }
@@ -364,7 +374,7 @@ export const TOOLS: Tool[] = [
       // correctly around the blocks the user rejected.
       return {
         content:
-          `Partial approval on ${rel}: the user rejected ${outcome.rejectedBlocks} block(s). The file on disk now reads:\n\n` +
+          `Partial approval on ${safeRel}: the user rejected ${outcome.rejectedBlocks} block(s). The file on disk now reads:\n\n` +
           `${clamp(await fs.readFile(full, 'utf8'), 3000)}\n\n` +
           `Continue from this actual on-disk content. Do not re-propose the rejected block(s) unchanged.`,
       };
@@ -424,7 +434,7 @@ export const TOOLS: Tool[] = [
 
       // `git branch` with no positional argument lists branches (read-only).
       // `git branch <name>` creates one, and `-d/-D/-m/-M/--edit-description`
-      // mutate refs — all of which write to .git and must go through approval
+      // mutate refs - all of which write to .git and must go through approval
       // like any other side effect, not slip through because the subcommand
       // name happens to be on the read-only list.
       if (sub === 'branch') {

@@ -1,6 +1,6 @@
 /**
  * ============================================================================
- *  REVIEW BUFFER — the text Monaco shows during an inline diff review
+ *  REVIEW BUFFER - the text Monaco shows during an inline diff review
  * ============================================================================
  * VSCode's inline AI review shows ONE buffer containing the original file with
  * the proposed changes spliced in: removed lines in red, added lines in green,
@@ -10,8 +10,8 @@
  * The renderer could run its own diff of oldContent vs newContent, but then
  * the hunk boundaries on screen would be the RENDERER's, while the block ids
  * the user's Keep/Deny decisions travel under are the ORCHESTRATOR's (minted
- * by orchestrator/diff.ts). Any drift between the two — a different context
- * window, or a different diff implementation — means the user keeps the hunk
+ * by orchestrator/diff.ts). Any drift between the two - a different context
+ * window, or a different diff implementation - means the user keeps the hunk
  * they can see and the orchestrator applies a different set of lines.
  *
  * So instead this walks the blocks the orchestrator actually sent, using each
@@ -108,7 +108,7 @@ export function buildReviewRows(diff: ReviewDiff): ReviewRow[] {
 
 /**
  * Fold the rows down to the file content that a given set of DENIED blocks
- * would produce. A denied hunk keeps its deletions and drops its additions —
+ * would produce. A denied hunk keeps its deletions and drops its additions -
  * i.e. that part of the file stays exactly as it was.
  *
  * This is the preview's contract with the orchestrator: for the same decision,

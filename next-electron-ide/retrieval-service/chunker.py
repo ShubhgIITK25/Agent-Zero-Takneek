@@ -1,4 +1,17 @@
-# AST boundary chunking is implemented that chunks at function boundaries and preserves information about it. this is done using tree-sitter. for languages that don't have a grammar, we fall back to naive line-window chunking. the chunker also extracts docstrings, leading comments, imports and function calls for each chunk.
+"""
+AST-boundary chunking: one chunk per function/method/class, never a
+fixed-token-size window. This is what turns a codebase into units that
+mean something - a chunk is exactly the thing a developer would call
+"the validateToken function," with its signature, docstring, and body
+kept together, rather than an arbitrary 500-token slice that might start
+mid-function.
+
+Each chunk is returned as a dict:
+  {
+    symbol, kind ("function"|"class"|"method"|...), file_path,
+    line_start, line_end, parent, docstring, code, imports, calls
+  }
+"""
 import importlib
 import re
 from languages import language_for, DEF_QUERIES, CALL_NODE_TYPES, GRAMMAR_MODULES
@@ -6,7 +19,8 @@ from languages import language_for, DEF_QUERIES, CALL_NODE_TYPES, GRAMMAR_MODULE
 _language_cache = {}
 _parser_cache = {}
 _query_cache = {}
-_reported_failures = set() 
+_reported_failures = set()  # languages we've already warned about, so the
+                            # warning appears once per run, not per file
 
 
 def _get_language(lang: str):
@@ -17,12 +31,15 @@ def _get_language(lang: str):
         _language_cache[lang] = Language(getattr(module, accessor)())
     return _language_cache[lang]
 
-# files that have comment over the file are supposedly understood better
+# Leading-comment / docstring heuristic: works across languages by just
+# looking at the source lines immediately above a definition (or, for
+# Python, the first statement inside it) rather than fighting each
+# language's own comment-attachment rules in the AST.
 _LINE_COMMENT_RE = re.compile(r"^\s*(#|//)\s?(.*)$")
 _IMPORT_LINE_RES = [
-    re.compile(r"^\s*(import|from)\s+.+$"),
-    re.compile(r"^\s*import\s+.*\bfrom\b.*$"),
-    re.compile(r"^\s*(const|let|var)\s+.*require\(.*$"),
+    re.compile(r"^\s*(import|from)\s+.+$"),              # python
+    re.compile(r"^\s*import\s+.*\bfrom\b.*$"),            # js/ts
+    re.compile(r"^\s*(const|let|var)\s+.*require\(.*$"),  # js require
 ]
 
 
@@ -42,6 +59,9 @@ def _get_query(lang: str):
 
 
 def _leading_comment(lines, start_line_idx):
+    """Walk upward from a definition's start line collecting a contiguous
+    block of // or # comments directly above it (its likely docstring for
+    C-family languages)."""
     out = []
     i = start_line_idx - 1
     while i >= 0:
@@ -74,11 +94,13 @@ def _find_calls(node, call_types, source: bytes, limit=40):
             callee = n.children[0] if n.children else None
             if callee is not None:
                 text = source[callee.start_byte:callee.end_byte].decode("utf-8", "replace")
+                # keep just the trailing identifier, e.g. "obj.method" -> "method"
                 calls.append(text.split(".")[-1].split("::")[-1])
         for c in n.children:
             walk(c)
 
     walk(node)
+    # de-dup, preserve order
     seen = set()
     result = []
     for c in calls:
@@ -110,6 +132,9 @@ def file_level_imports(text: str, limit=60) -> list:
 
 
 def ast_chunks(path: str, text: str):
+    """Returns (chunks, language) for a file we have a grammar for, or
+    (None, None) if the language isn't supported - caller should fall back
+    to fallback_chunks()."""
     lang = language_for(path)
     if lang is None or lang not in DEF_QUERIES:
         return None, None
@@ -118,6 +143,11 @@ def ast_chunks(path: str, text: str):
         parser = _get_parser(lang)
         query, cursor = _get_query(lang)
     except Exception as e:
+        # Loudly, once per language. A broken query pattern here drops EVERY
+        # file of that language to line-window fallback chunking - which
+        # still "works" (files stay searchable) and so hides indefinitely
+        # unless it announces itself. This is not a per-file hiccup worth
+        # swallowing; it means a whole language lost its symbol names.
         if lang not in _reported_failures:
             _reported_failures.add(lang)
             print(
@@ -179,6 +209,9 @@ def ast_chunks(path: str, text: str):
 
 
 def fallback_chunks(path: str, text: str, window=60, overlap=10):
+    """Naive line-window chunking for languages without a wired-up
+    grammar. Coarser (no symbol name, no graph edges) but keeps the file
+    searchable instead of silently excluding it from retrieval."""
     lines = text.splitlines()
     if not lines:
         return []
@@ -213,5 +246,8 @@ def chunk_file(path: str, text: str):
     if chunks is None:
         return fallback_chunks(path, text)
     if not chunks:
+        # Parseable language, but no top-level defs matched (e.g. a
+        # config/script file) - still index it as one block so it's
+        # findable by keyword search.
         return fallback_chunks(path, text, window=200, overlap=0)
     return chunks

@@ -5,7 +5,7 @@
  * src/lib/review-buffer.ts builds the buffer Monaco renders during an inline
  * diff review. orchestrator/diff.ts's applyAcceptedBlocks() decides what
  * actually lands on disk. If those two ever disagree, the user keeps a hunk
- * they can see and something else gets written — the worst possible failure
+ * they can see and something else gets written - the worst possible failure
  * for an approval gate, and a silent one.
  *
  * So the assertion here is not "the buffer looks plausible": for every
@@ -44,7 +44,7 @@ const t = (name, fn) => {
   }
 };
 
-/** Every subset of the given block ids — the full decision space. */
+/** Every subset of the given block ids - the full decision space. */
 function subsets(ids) {
   const out = [[]];
   for (const id of ids) {

@@ -1,6 +1,6 @@
 /**
  * ============================================================================
- *  CHECKPOINT STORE — append-only event log + snapshot, per task
+ *  CHECKPOINT STORE - append-only event log + snapshot, per task
  * ============================================================================
  * Layout, under Electron's userData dir (outside any project folder, so a
  * task's trace never lands inside the user's repo):
@@ -22,7 +22,7 @@
  * analytics is ever wanted, the log is trivially importable into anything.
  *
  * `state.json` is written with write-temp-then-rename, which is atomic on both
- * POSIX and NTFS — so a crash mid-checkpoint leaves the PREVIOUS good snapshot
+ * POSIX and NTFS - so a crash mid-checkpoint leaves the PREVIOUS good snapshot
  * rather than a truncated one. That property is what makes resume trustworthy.
  */
 
@@ -123,7 +123,7 @@ export class TaskStore {
         try {
           out.push(JSON.parse(line));
         } catch {
-          // Torn final line from a crash — everything before it is still good.
+          // Torn final line from a crash - everything before it is still good.
         }
       }
       return out;
@@ -244,7 +244,7 @@ export class TaskStore {
         out.push(JSON.parse(fs.readFileSync(path.join(base, id, 'state.json'), 'utf8')));
       } catch {
         // A task directory with no readable snapshot (crashed before first
-        // checkpoint) is simply not resumable — skip it rather than fail.
+        // checkpoint) is simply not resumable - skip it rather than fail.
       }
     }
     return out.sort((a, b) => b.updatedAt - a.updatedAt);

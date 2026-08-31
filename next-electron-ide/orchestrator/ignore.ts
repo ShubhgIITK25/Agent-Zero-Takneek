@@ -1,9 +1,9 @@
 /**
  * ============================================================================
- *  CONTEXT IGNORE — files that must never be pulled into agent context
+ *  CONTEXT IGNORE - files that must never be pulled into agent context
  * ============================================================================
  * `.nexideignore` in the project root (falling back to a plain `.ignore` if
- * that's the name already in use — either works), one pattern per line, in
+ * that's the name already in use - either works), one pattern per line, in
  * gitignore syntax:
  *   - blank lines and `#` comments are skipped
  *   - `*` matches within one path segment, `**` matches across segments
@@ -12,18 +12,18 @@
  *     matches at any depth, exactly like .gitignore
  *   - a leading `!` re-includes something an earlier pattern excluded
  *
- * SCOPE, DELIBERATELY: this gates the AUTOMATIC paths only —
+ * SCOPE, DELIBERATELY: this gates the AUTOMATIC paths only -
  * `retrieve_context`, `read_file` and `list_dir` as called by an agent. It
  * does NOT gate a file the user explicitly pins in the chat panel (`@path`,
  * or "+ current file"). An explicit pin is a direct instruction; a blanket
  * ignore rule silently overriding it would be surprising. .gitignore has the
- * same asymmetry — `git add -f` still works on an ignored path.
+ * same asymmetry - `git add -f` still works on an ignored path.
  */
 
 import * as fs from 'fs';
 import * as path from 'path';
 
-/** Paths excluded unconditionally, ignore file or not — noise, not signal. */
+/** Paths excluded unconditionally, ignore file or not - noise, not signal. */
 const ALWAYS_IGNORED_SEGMENTS = ['.git'];
 
 export type IgnoreRule = { re: RegExp; negate: boolean };
@@ -62,7 +62,7 @@ function patternToRegExp(pattern: string): RegExp {
   }
   const body = anchored ? `^${out}` : `(?:^|.*/)${out}`;
   // Match the segment itself, or that segment as a directory prefix of a
-  // longer path — so `dist/` (or `dist`) also excludes `dist/foo/bar.js`.
+  // longer path - so `dist/` (or `dist`) also excludes `dist/foo/bar.js`.
   return new RegExp(`${body}(?:/.*)?$`);
 }
 

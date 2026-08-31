@@ -10,7 +10,7 @@
  * the agent at the approval-gated `run_command` instead.
  *
  * The subtle case this pins: `git branch` LISTS branches (read-only) but
- * `git branch <name>` CREATES one and `git branch -d <name>` deletes one —
+ * `git branch <name>` CREATES one and `git branch -d <name>` deletes one -
  * both write to `.git/refs`. The subcommand name alone ("branch") is on the
  * allow-list, so the gate has to inspect the arguments too.
  */
@@ -30,7 +30,7 @@ const bad = (name, msg) => { console.log('  FAIL', name, '\n       ', msg); fail
 async function main() {
   const git = findTool('git');
   assert.ok(git, 'no `git` tool in the registry');
-  assert.strictEqual(git.sideEffecting, false, 'the git tool must not be side-effecting — the write path is run_command');
+  assert.strictEqual(git.sideEffecting, false, 'the git tool must not be side-effecting - the write path is run_command');
 
   const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'nexide-git-'));
   const g = (...a) => execFileSync('git', a, { cwd: repo }).toString();
@@ -79,7 +79,7 @@ async function main() {
 
     const branches = g('branch', '--format=%(refname:short)').trim().split('\n');
     if (branches.includes('new-feature')) bad('refusal held', 'a branch was created despite the refusal');
-    else ok('the refusal held — no branch was actually created on disk');
+    else ok('the refusal held - no branch was actually created on disk');
   } finally {
     fs.rmSync(repo, { recursive: true, force: true });
   }

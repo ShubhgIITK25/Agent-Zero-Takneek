@@ -8,14 +8,30 @@ export type AgentSettings = {
   envVars: Record<string, string>;
   /** Model ids from orchestrator/models.ts the user enabled for routing. */
   enabledModelIds: string[];
+  coreModelId?: string;
+  /** User-added models; the curated list remains available as suggestions. */
+  customModels: CustomModel[];
   maxCostUsd: number;
   maxSeconds: number;
   /** Independent subtasks to run at once. 1 = strictly sequential. */
   maxParallelSubtasks: number;
 };
 
+export type CustomModel = {
+  id: string;
+  apiId: string;
+  label: string;
+  provider: 'groq' | 'openrouter' | 'ollama' | 'gemini';
+  paramsBTotal: number;
+  contextWindow: number;
+  pricing: { inputPerM: number; outputPerM: number };
+  tier: 'free' | 'payg' | 'local';
+  good_at: ('planning' | 'codegen' | 'analysis' | 'simple' | 'verification')[];
+  speed: 'fast' | 'medium' | 'slow';
+};
+
 /**
- * Whether a model is actually callable right now — a different question from
+ * Whether a model is actually callable right now - a different question from
  * whether it is *eligible* (≤80B total params), which is what the roster
  * already showed. Computed in the main process; see electron/model-health.ts,
  * which holds the authoritative copy of this union (electron/ pins `rootDir`
@@ -85,7 +101,7 @@ export type RetrievalStatus = {
   chunks_updated?: number;
   vector_search?: boolean;
   /**
-   * The retrieval service is up but running without part of its pipeline —
+   * The retrieval service is up but running without part of its pipeline -
    * almost always because it was spawned with a Python that lacks
    * tree-sitter / fastembed / sqlite-vec. Retrieval still works (BM25 over
    * line-window chunks) but returns worse results, so the status bar says so.

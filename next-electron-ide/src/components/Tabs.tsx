@@ -1,5 +1,7 @@
 'use client';
 
+import { X } from 'lucide-react';
+
 export type OpenFile = {
   path: string;
   name: string;
@@ -35,7 +37,7 @@ export default function Tabs({ files, activePath, onSelect, onClose }: TabsProps
               onClose(f.path);
             }}
           >
-            ×
+            <X size={12} />
           </span>
         </div>
       ))}

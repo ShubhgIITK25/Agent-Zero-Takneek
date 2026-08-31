@@ -1,7 +1,10 @@
 'use client';
 
+import { ChevronDown, ChevronRight, LayoutDashboard, Settings, Terminal as LucideTerminal, MessageSquare, Search, Cpu, Activity, X } from 'lucide-react';
 import { languageFromPath } from '../lib/language';
 import type { RetrievalStatus } from '../lib/electron-api';
+
+const ICON = { size: 13, strokeWidth: 1.75 } as const;
 
 type StatusBarProps = {
   filePath: string | null;
@@ -68,6 +71,7 @@ export default function StatusBar({
                 : 'Code retrieval index status'
             }
           >
+            <Search size={14} style={{ marginRight: '4px' }} />
             {retrievalText}
           </span>
         )}
@@ -81,7 +85,9 @@ export default function StatusBar({
             onClick={onToggleTerminal}
             title="Toggle Terminal (Ctrl+`)"
           >
-            {terminalOpen ? '▾' : '▸'} Terminal
+            {terminalOpen ? <ChevronDown {...ICON} /> : <ChevronRight {...ICON} />}
+            <LucideTerminal size={14} style={{ marginRight: '4px' }} />
+            Terminal
           </button>
         )}
         {onToggleChat && (
@@ -91,7 +97,9 @@ export default function StatusBar({
             onClick={onToggleChat}
             title="Toggle AI Chat (Ctrl+L)"
           >
-            {chatOpen ? '▾' : '▸'} AI Chat
+            {chatOpen ? <ChevronDown {...ICON} /> : <ChevronRight {...ICON} />}
+            <MessageSquare size={14} style={{ marginRight: '4px' }} />
+            Chat
           </button>
         )}
         {taskCost != null && (
@@ -106,7 +114,8 @@ export default function StatusBar({
             onClick={onOpenDashboard}
             title="Observability dashboard (Ctrl+Shift+D)"
           >
-            ▤ Dashboard
+            <LayoutDashboard {...ICON} />
+            Dashboard
           </button>
         )}
         {onOpenSettings && (
@@ -116,7 +125,8 @@ export default function StatusBar({
             onClick={onOpenSettings}
             title="Agent Settings (Ctrl+,)"
           >
-            ⚙ Settings
+            <Settings {...ICON} />
+            Settings
           </button>
         )}
       </div>

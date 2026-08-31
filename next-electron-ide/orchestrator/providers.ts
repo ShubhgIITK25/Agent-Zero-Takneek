@@ -1,6 +1,6 @@
 /**
  * ============================================================================
- *  PROVIDER CLIENTS — OpenAI-compatible path, Ollama path, Gemini path
+ *  PROVIDER CLIENTS - OpenAI-compatible path, Ollama path, Gemini path
  * ============================================================================
  * Groq and OpenRouter both speak OpenAI's /chat/completions with the same
  * tool-calling shape, so they share a client and differ only in base URL,
@@ -54,6 +54,9 @@ export type LLMResult = {
   latencyMs: number;
 };
 
+/** How widely a failure should take models out of the running. */
+export type CooldownScope = 'model' | 'provider' | 'free-tier';
+
 export class ProviderError extends Error {
   retryable: boolean;
   rateLimited: boolean;
@@ -69,6 +72,12 @@ export class ProviderError extends Error {
   retryAfterMs?: number;
   /** The provider's own sentence, with the JSON envelope stripped off. */
   humanMessage?: string;
+  /**
+   * Who to park. A 429 on one free OpenRouter route used to cool the whole
+   * provider, which then failed the task even though paid routes (and other
+   * models) were still healthy. Default is the single model.
+   */
+  cooldownScope?: CooldownScope;
   constructor(
     message: string,
     opts: {
@@ -78,6 +87,7 @@ export class ProviderError extends Error {
       quotaScope?: 'minute' | 'day' | 'unknown';
       retryAfterMs?: number;
       humanMessage?: string;
+      cooldownScope?: CooldownScope;
     }
   ) {
     super(message);
@@ -88,6 +98,7 @@ export class ProviderError extends Error {
     this.quotaScope = opts.quotaScope;
     this.retryAfterMs = opts.retryAfterMs;
     this.humanMessage = opts.humanMessage;
+    this.cooldownScope = opts.cooldownScope;
   }
 }
 
@@ -98,7 +109,7 @@ export class ProviderError extends Error {
  * {"error":{"message":"Rate limit exceeded: free-models-per-day...","metadata":
  * {"headers":{"X-RateLimit-Limit":"50",...}}}}. Rendering that raw is what made
  * an ordinary free-tier pause look like a crash. Everything below reads that
- * body — never the Response headers — so no call site has to change.
+ * body - never the Response headers - so no call site has to change.
  */
 export function describeProviderError(text: string): string {
   try {
@@ -106,7 +117,7 @@ export function describeProviderError(text: string): string {
     const msg = parsed?.error?.message ?? parsed?.message ?? parsed?.error;
     if (typeof msg === 'string' && msg.trim()) return msg.trim().slice(0, 200);
   } catch {
-    // Not JSON — fall through to the raw text.
+    // Not JSON - fall through to the raw text.
   }
   const stripped = text.replace(/\s+/g, ' ').trim();
   return stripped ? stripped.slice(0, 160) : 'no detail supplied';
@@ -117,6 +128,26 @@ export function quotaScopeOf(text: string): 'minute' | 'day' | 'unknown' {
   if (/per[-_ ]?day|daily|requests[-_ ]per[-_ ]day|rpd\b/i.test(text)) return 'day';
   if (/per[-_ ]?min|per[-_ ]?second|rpm\b|tpm\b/i.test(text)) return 'minute';
   return 'unknown';
+}
+
+/**
+ * Who a failure should park.
+ *
+ * OpenRouter (and similar aggregators) fail one *route* far more often than
+ * they fail the key. Parking the whole provider on "Provider returned error"
+ * or a free-tier 429 is what made a working paid model look dead, and then
+ * skipped every dependent subtask.
+ */
+export function classifyCooldownScope(
+  text: string,
+  model?: { tier: string; apiId?: string }
+): CooldownScope {
+  const t = text.toLowerCase();
+  if (/free[-_ ]models|free[-_ ]tier|free[-_ ]route|:free\b/.test(t)) return 'free-tier';
+  if (model?.tier === 'free' && /rate|quota|limit|429/.test(t)) return 'free-tier';
+  if (/provider returned error|upstream|temporarily unavailable|overloaded/.test(t)) return 'model';
+  if (/all models|api[-_ ]?key|organization|account/.test(t)) return 'provider';
+  return 'model';
 }
 
 /**
@@ -192,7 +223,7 @@ async function postJson(
       throw new ProviderError('cancelled by user', { retryable: false, rateLimited: false });
     }
     const msg = err instanceof Error ? err.message : String(err);
-    // A network failure or timeout is retryable on ANOTHER provider — the
+    // A network failure or timeout is retryable on ANOTHER provider - the
     // request itself was fine, this endpoint just did not answer.
     throw new ProviderError(`network error contacting ${url}: ${msg}`, { retryable: true, rateLimited: false });
   } finally {
@@ -200,7 +231,7 @@ async function postJson(
   }
 }
 
-function classifyHttp(status: number, text: string): ProviderError {
+function classifyHttp(status: number, text: string, model?: ModelEntry): ProviderError {
   if (status === 429) {
     const human = describeProviderError(text);
     return new ProviderError(`rate limited (429): ${human}`, {
@@ -210,17 +241,88 @@ function classifyHttp(status: number, text: string): ProviderError {
       quotaScope: quotaScopeOf(text),
       retryAfterMs: retryAfterMsOf(text),
       humanMessage: human,
+      cooldownScope: classifyCooldownScope(text, model),
+    });
+  }
+  if (status === 402) {
+    const human = describeProviderError(text);
+    return new ProviderError(`payment required / insufficient credits (402): ${human}`, {
+      retryable: true,
+      rateLimited: false,
+      status: 402,
+      humanMessage: human,
+      cooldownScope: 'model',
     });
   }
   if (status === 401 || status === 403) {
-    return new ProviderError(`auth failed (${status}) — check the API key in Settings`, { retryable: false, rateLimited: false, status });
+    return new ProviderError(`auth failed (${status}) - check the API key in Settings`, {
+      retryable: false,
+      rateLimited: false,
+      status,
+      cooldownScope: 'provider',
+    });
   }
   if (status >= 500) {
-    return new ProviderError(`provider error (${status}): ${text.slice(0, 200)}`, { retryable: true, rateLimited: false, status });
+    return new ProviderError(`provider error (${status}): ${text.slice(0, 200)}`, {
+      retryable: true,
+      rateLimited: false,
+      status,
+      humanMessage: describeProviderError(text),
+      cooldownScope: 'model',
+    });
   }
   // 4xx other than the above means we built a bad request. Retrying the same
-  // payload on a different provider will fail identically — do not mask it.
-  return new ProviderError(`bad request (${status}): ${text.slice(0, 300)}`, { retryable: false, rateLimited: false, status });
+  // payload on a different provider will fail identically - do not mask it.
+  return new ProviderError(`bad request (${status}): ${text.slice(0, 300)}`, {
+    retryable: false,
+    rateLimited: false,
+    status,
+    cooldownScope: 'model',
+  });
+}
+
+/**
+ * HTTP 200 with an `error` object (OpenRouter free routes, Gemini quota).
+ * Classified the same way as a real status code so a wrapped 429 still
+ * carries quotaScope / retryAfter / cooldownScope.
+ */
+function classifyErrorBody(error: unknown, model?: ModelEntry): ProviderError {
+  const raw = typeof error === 'string' ? error : JSON.stringify(error ?? '');
+  const msg = describeProviderError(raw);
+  const code = Number(
+    (error && typeof error === 'object'
+      ? (error as { code?: unknown; status?: unknown }).code ?? (error as { status?: unknown }).status
+      : 0) ?? 0
+  );
+  const creditFailure = code === 402 || /more credits|fewer max_tokens|insufficient credit/i.test(msg);
+  if (creditFailure) {
+    return new ProviderError(`insufficient credits: ${msg}`, {
+      retryable: true,
+      rateLimited: false,
+      status: code || 402,
+      humanMessage: msg,
+      cooldownScope: 'model',
+    });
+  }
+  if (code === 429 || /rate|quota|limit/i.test(msg)) {
+    return new ProviderError(`rate limited: ${msg}`, {
+      retryable: true,
+      rateLimited: true,
+      status: code || 429,
+      quotaScope: quotaScopeOf(raw),
+      retryAfterMs: retryAfterMsOf(raw),
+      humanMessage: msg,
+      cooldownScope: classifyCooldownScope(raw, model),
+    });
+  }
+  const retryable = code >= 500 || code === 0 || /provider returned error|overloaded|unavailable|timeout/i.test(msg);
+  return new ProviderError(`provider returned an error body: ${msg}`, {
+    retryable,
+    rateLimited: false,
+    status: code || undefined,
+    humanMessage: msg,
+    cooldownScope: 'model',
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -274,16 +376,21 @@ async function callOpenAICompatible(
   const headers: Record<string, string> = { Authorization: `Bearer ${apiKey}` };
   if (!isGroq) {
     // OpenRouter attributes traffic with these; harmless but expected.
-    headers['HTTP-Referer'] = 'https://localhost/codenawabs';
-    headers['X-Title'] = 'CodéNawabs';
+    headers['HTTP-Referer'] = 'https://localhost/nexide';
+    headers['X-Title'] = 'NEXide';
   }
 
   const started = Date.now();
   if (signal?.aborted) throw new ProviderError('cancelled by user', { retryable: false, rateLimited: false });
 
-  const res = await postJson(`${baseUrl}/chat/completions`, headers, {
+  const requestBody: Record<string, unknown> = {
     model: model.apiId,
     messages: toOpenAIMessages(messages),
+    // OpenRouter otherwise defaults to the model's full completion budget.
+    // That can exceed a user's remaining credits before generation starts
+    // (HTTP 402). Agent turns do not need 32K; cap them to 4K to conserve
+    // credit reserve and leave plenty of room for generation.
+    max_tokens: Math.min(4096, Math.max(1024, model.contextWindow - estimateMessageTokens(messages))),
     ...(tools.length
       ? {
           tools: tools.map((t) => ({
@@ -294,10 +401,26 @@ async function callOpenAICompatible(
         }
       : {}),
     temperature: 0.2,
-  }, signal);
+  };
+
+  let res = await postJson(`${baseUrl}/chat/completions`, headers, requestBody, signal);
 
   if (!res.ok) {
-    throw classifyHttp(res.status, await res.text().catch(() => ''));
+    const errorText = await res.text().catch(() => '');
+    // OpenRouter's credit guard reports the exact completion allowance still
+    // affordable. Retry once at that allowance (minus a small safety margin)
+    // instead of treating a temporarily large request as a dead model.
+    if (res.status === 402) {
+      const affordable = Number(errorText.match(/can only afford\s+(\d+)/i)?.[1] ?? 0);
+      if (affordable >= 256) {
+        requestBody.max_tokens = Math.max(256, Math.min(Number(requestBody.max_tokens), affordable - 32));
+        res = await postJson(`${baseUrl}/chat/completions`, headers, requestBody, signal);
+      } else if (Number(requestBody.max_tokens) > 1024) {
+        requestBody.max_tokens = 1024;
+        res = await postJson(`${baseUrl}/chat/completions`, headers, requestBody, signal);
+      }
+    }
+    if (!res.ok) throw classifyHttp(res.status, errorText, model);
   }
 
   const data: any = await res.json();
@@ -306,9 +429,7 @@ async function callOpenAICompatible(
   // Some free routes return an `error` object with HTTP 200. Treat it as the
   // failure it is rather than silently producing an empty assistant turn.
   if (data.error) {
-    const msg = String(data.error.message ?? JSON.stringify(data.error));
-    const rateLimited = /rate|quota|limit/i.test(msg);
-    throw new ProviderError(`provider returned an error body: ${msg}`, { retryable: true, rateLimited });
+    throw classifyErrorBody(data.error, model);
   }
 
   const choice = data.choices?.[0]?.message;
@@ -382,7 +503,7 @@ async function callOllama(
       : {}),
     // num_ctx must be sent explicitly. Ollama otherwise falls back to a small
     // default (4k) regardless of what the weights support, and it does not
-    // error on overflow — it drops the oldest tokens, which for us means the
+    // error on overflow - it drops the oldest tokens, which for us means the
     // system prompt and the tool definitions vanish and the model starts
     // replying in prose. The registry's contextWindow is chosen to be a window
     // the reference machine can actually allocate; see models.ts.
@@ -397,7 +518,7 @@ async function callOllama(
         { retryable: false, rateLimited: false, status: 404 }
       );
     }
-    throw classifyHttp(res.status, body);
+    throw classifyHttp(res.status, body, model);
   }
 
   const data: any = await res.json();
@@ -520,7 +641,7 @@ async function callGemini(
   const { systemInstruction, contents } = toGeminiContents(messages);
 
   // Gemma models are served through the same Gemini API but have no system
-  // role — passing `systemInstruction` to them is a 400. Fold that text into
+  // role - passing `systemInstruction` to them is a 400. Fold that text into
   // the first user turn instead so the same adapter serves both.
   const isGemma = /gemma/i.test(modelName);
   if (isGemma && systemInstruction) {
@@ -557,16 +678,14 @@ async function callGemini(
   if (!res.ok) {
     const text = await res.text().catch(() => '');
     // Gemini uses 429 for quota, 400 for bad requests, 401/403 for auth.
-    throw classifyHttp(res.status, text);
+    throw classifyHttp(res.status, text, model);
   }
 
   const data: any = await res.json();
 
   // Gemini surfaces quota/safety errors inside a 200 body.
   if (data.error) {
-    const msg = String(data.error.message ?? JSON.stringify(data.error));
-    const rateLimited = /quota|rate|limit/i.test(msg);
-    throw new ProviderError(`Gemini returned an error body: ${msg}`, { retryable: true, rateLimited });
+    throw classifyErrorBody(data.error, model);
   }
 
   const candidate = data.candidates?.[0];
@@ -611,7 +730,7 @@ async function callGemini(
     }
   }
 
-  // Gemini attaches the signature to just one part per turn — usually the first
+  // Gemini attaches the signature to just one part per turn - usually the first
   // functionCall, but sometimes a leading thought part. If the calls themselves
   // carried none but the turn did, pin it to the first call so the history
   // round-trip still satisfies the check instead of 400'ing next request.

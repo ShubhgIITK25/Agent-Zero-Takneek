@@ -58,7 +58,7 @@ export default function DiffReviewPane({ summary, diffs, onDecide }: DiffReviewP
     if (sent) return;
     setSent(true);
     const delivered = await onDecide(approved, ids);
-    // Only release the buttons on failure — on success the pane unmounts.
+    // Only release the buttons on failure - on success the pane unmounts.
     if (!delivered) setSent(false);
   };
 
@@ -162,7 +162,16 @@ export default function DiffReviewPane({ summary, diffs, onDecide }: DiffReviewP
           onClick={() => decide(true, allBlockIds.filter((id) => !denied.has(id)))}
           disabled={sent || keptCount === 0}
         >
-          {sent ? 'Applying…' : `Apply ${keptCount} change${keptCount === 1 ? '' : 's'}`}
+          {sent ? 'Applying...' : `Apply ${keptCount} change${keptCount === 1 ? '' : 's'}`}
+        </button>
+        <button
+          type="button"
+          className="review-btn review-btn-approve-all"
+          onClick={() => decide(true, allBlockIds)}
+          disabled={sent || allBlockIds.length === 0}
+          title="Keep every hunk and apply immediately"
+        >
+          {sent ? 'Applying...' : 'Approve all'}
         </button>
       </div>
     </div>
