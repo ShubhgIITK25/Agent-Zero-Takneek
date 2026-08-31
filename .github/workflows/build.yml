@@ -1,0 +1,58 @@
+name: Build Electron Apps
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch: 
+
+jobs:
+  build:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [macos-latest, ubuntu-latest, windows-latest]
+
+    defaults:
+      run:
+        working-directory: Agent-Zero-Takneek/next-electron-ide
+
+    steps:
+      - name: Check out Git repository
+        uses: actions/checkout@v4
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+          cache-dependency-path: Agent-Zero-Takneek/next-electron-ide/package-lock.json
+
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Linux Build Tools
+        if: matrix.os == 'ubuntu-latest'
+        run: sudo apt-get update && sudo apt-get install -y rpm libarchive-tools fakeroot
+
+      - name: Install Dependencies
+        run: npm install
+
+      - name: Build and Package App
+        run: npm run dist
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: App-Binaries-${{ matrix.os }}
+          path: |
+            Agent-Zero-Takneek/next-electron-ide/dist/*.exe
+            Agent-Zero-Takneek/next-electron-ide/dist/*.dmg
+            Agent-Zero-Takneek/next-electron-ide/dist/*.AppImage
+            Agent-Zero-Takneek/next-electron-ide/dist/*.deb
+            Agent-Zero-Takneek/next-electron-ide/dist/*.rpm
+            Agent-Zero-Takneek/next-electron-ide/dist/*.pacman
+          retention-days: 7

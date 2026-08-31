@@ -70,7 +70,9 @@
     "linux": {
       "target": [
         "AppImage",
-        "deb"
+        "deb",
+        "rpm",
+        "pacman"
       ],
       "category": "Development",
       "maintainer": "Takneek PS Team <proaditya604@gmail.com>"
