@@ -25,6 +25,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { CheckCheck, ChevronDown, ChevronRight, Clock, LayoutDashboard, Settings, X, Send, Plus, Bot, User, Zap, ShieldCheck, Play, Square, Sparkles, Circle, Cpu } from 'lucide-react';
 import type { FileDiffView } from './DiffReview';
+import type { RetrievalStatus } from '../lib/electron-api';
 import { TraceView, TraceEvent, applyEvent, emptyTrace, formatUsd } from '../lib/trace';
 import { MODEL_REGISTRY } from '../../orchestrator/models';
 
@@ -42,6 +43,7 @@ type ChatPanelProps = {
   onOpenDashboard: () => void;
   onRunCommand: (command: string) => void;
   onOpenFileAt: (path: string, line?: number) => void;
+  retrievalStatus?: RetrievalStatus | null;
 };
 
 type PinnedItem = { path: string; lineStart?: number; lineEnd?: number };
@@ -148,6 +150,7 @@ export default function ChatPanel({
   onRunCommand,
   onOpenFileAt,
   onClearTrace,
+  retrievalStatus,
 }: ChatPanelProps) {
   const [bubbles, setBubbles] = useState<Bubble[]>([]);
   const [input, setInput] = useState('');
@@ -478,6 +481,10 @@ export default function ChatPanel({
     if (!text || running) return;
     setInput('');
 
+    const broadRepositoryTask =
+      /\b(all|every|entire|whole|across|throughout|repository|repo|codebase|project|each|anywhere|global)\b/i.test(text);
+    const indexIncomplete = retrievalStatus?.state !== 'ready';
+
     // `@path` / `@path:12-40` become pins rather than prose.
     const pinMatches = [...text.matchAll(/@([\w./\\-]+?)(?::(\d+)(?:-(\d+))?)?(?=\s|$)/g)];
     if (pinMatches.length) {
@@ -525,11 +532,23 @@ export default function ChatPanel({
     }
 
     const contextBlock = await buildContextBlock();
+    const incompleteIndexNote = broadRepositoryTask && indexIncomplete
+      ? '\n\n[Repository context notice: indexing is incomplete. Use currently available retrieval results, but do not claim an exhaustive repository-wide result. Use list_dir/read_file to inspect important files directly, or ask the user to wait for indexing to finish.]'
+      : '';
+    if (incompleteIndexNote) {
+      push({
+        id: nextId(),
+        kind: 'system',
+        text: retrievalStatus?.state === 'indexing'
+          ? 'Indexing is continuing in the background. This task will use partial context.'
+          : 'The project index is incomplete. This task will run without guaranteed full retrieval context.',
+      });
+    }
     const id = `task_${Date.now()}`;
     setTaskId(id);
     setRunning(true);
     try {
-      await window.electronAPI!.orchestratorStartTask(id, text + contextBlock);
+      await window.electronAPI!.orchestratorStartTask(id, text + contextBlock + incompleteIndexNote);
     } catch (err) {
       push({ id: nextId(), kind: 'error', text: err instanceof Error ? err.message : String(err) });
       setRunning(false);
@@ -579,6 +598,7 @@ export default function ChatPanel({
   };
 
   const budgetPct = trace.budget.maxCostUsd > 0 ? (trace.budget.costUsd / trace.budget.maxCostUsd) * 100 : 0;
+  const retrievalIncomplete = retrievalStatus && retrievalStatus.state !== 'ready';
 
   return (
     <aside className="chat-sidebar">
@@ -886,6 +906,13 @@ export default function ChatPanel({
       </div>
 
       <div className="chat-input-row">
+        {retrievalIncomplete && (
+          <div className="chat-retrieval-notice">
+            {retrievalStatus.state === 'indexing'
+              ? 'Indexing in the background — prompts can run with partial context.'
+              : 'Project index is unavailable — prompts can still run using files read directly by the agent.'}
+          </div>
+        )}
         <textarea
           value={input}
           onChange={(e) => setInput(e.target.value)}

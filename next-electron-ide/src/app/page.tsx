@@ -507,6 +507,7 @@ export default function Home() {
           onOpenDashboard={() => setDashboardOpen(true)}
           onRunCommand={runInTerminal}
           onOpenFileAt={openFileAt}
+          retrievalStatus={retrievalStatus}
         />
       )}
       {settingsOpen && <SettingsPanel onClose={() => setSettingsOpen(false)} />}
