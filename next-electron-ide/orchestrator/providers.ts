@@ -640,7 +640,9 @@ async function callGemini(
     .replace(/^gemini\//, '')
     .replace(/^models\//, '');
   const baseUrl = env.GEMINI_BASE_URL || 'https://generativelanguage.googleapis.com/v1beta';
-  const url = `${baseUrl}/models/${modelName}:generateContent?key=${apiKey}`;
+  // Google documents API-key authentication through this header. Keeping the
+  // key out of the URL also prevents it from appearing in proxy/access logs.
+  const url = `${baseUrl}/models/${modelName}:generateContent`;
 
   const { systemInstruction, contents } = toGeminiContents(messages);
 
@@ -676,7 +678,7 @@ async function callGemini(
   const started = Date.now();
   if (signal?.aborted) throw new ProviderError('cancelled by user', { retryable: false, rateLimited: false });
 
-  const res = await postJson(url, {}, body, signal);
+  const res = await postJson(url, { 'x-goog-api-key': apiKey }, body, signal);
   const latencyMs = Date.now() - started;
 
   if (!res.ok) {

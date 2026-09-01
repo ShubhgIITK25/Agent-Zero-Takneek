@@ -17,8 +17,8 @@
  *
  * `paramsBTotal: null` means the provider does not publish a parameter count.
  * Unpublished is treated as INELIGIBLE, not as "probably fine" - an
- * unverifiable model is a disqualification risk, which is exactly why the
- * Gemini wiring this replaced had to go.
+ * unverifiable model is a disqualification risk. Gemini is supported as an
+ * optional keyed provider; its catalogue is checked at runtime from Settings.
  *
  * `qualityIndex` is the Artificial Analysis intelligence index as published in
  * the OpenRouter catalogue. It exists because parameter count turned out to be
@@ -33,8 +33,8 @@
  * openrouter.ai/api/v1/models, console.groq.com/docs/models, and
  * ollama.com/library. `npm run verify:models` (scripts/verify-models.mjs)
  * re-runs that check so a renamed model surfaces as a failing script rather
- * than a 404 in front of a judge. The one entry it cannot check is the Gemini
- * one, because that catalogue needs a key; see its note.
+ * than a 404 in front of a judge. Gemini is checked at runtime because its
+ * catalogue requires the user's API key.
  */
 
 export type ProviderId = "groq" | "openrouter" | "ollama" | "gemini";
@@ -404,34 +404,12 @@ const LEGACY_MODEL_REGISTRY: ModelEntry[] = [
     notes:
       "ABOVE THE REFERENCE SPEC: ~18GB at Q4, so it needs ~24GB RAM or a 24GB GPU. Listed because only 3B activate per token, so where it does fit it is both the best and the fastest local coder. Leave it disabled on a 16GB machine.",
   },
-  // Open-weights Gemma served through the Gemini API (generativelanguage.*),
-  // so the same GEMINI_API_KEY and REST adapter are reused. Free tier, and
-  // 31B total keeps it inside the 80B ceiling.
-  {
-    id: "gemini:gemma-4-31b",
-    apiId: "gemini/gemma-4-31b-it",
-    label: "Gemma 4 31B IT (Gemini API)",
-    provider: "gemini",
-    paramsBTotal: 31,
-    contextWindow: 131072,
-    pricing: { inputPerM: 0, outputPerM: 0 },
-    tier: "free",
-    qualityIndex: 29.7,
-    good_at: ["codegen", "analysis", "planning"],
-    speed: "medium",
-    notes:
-      "Gemma 4 31B open weights via the Gemini API. Free tier. Gemma has no " +
-      "system role, so the adapter folds the system prompt into the first user turn. " +
-      "UNVERIFIED id: listing generativelanguage.googleapis.com needs a key, so this " +
-      "is the one entry verify:models cannot check. The weights are confirmed real " +
-      "(the OpenRouter route to the same model is enabled above); what is unconfirmed " +
-      "is whether Google still serves them under this name. Enable the OpenRouter " +
-      "route instead if a call 404s.",
-  },
+
 ];
 
 /** The deliberately small role roster shown in Settings. Verified against the
- * current Groq and OpenRouter catalogues on 2026-08-31. */
+ * current provider catalogues on 2026-08-31; Gemini is rechecked with the
+ * user's key when Settings opens. */
 export const MODEL_REGISTRY: ModelEntry[] = [
   { id: 'openrouter:qwen3-next-80b-thinking', apiId: 'qwen/qwen3-next-80b-a3b-thinking', label: 'Planner: Qwen3 Next 80B-A3B Thinking', provider: 'openrouter', paramsBTotal: 80, paramsBActive: 3, contextWindow: 262144, pricing: { inputPerM: .15, outputPerM: 1.2 }, tier: 'payg', qualityIndex: 55, good_at: ['planning', 'analysis'], speed: 'medium', notes: 'Primary planner; thinking-only and tool-capable.' },
   { id: 'groq:llama-3.3-70b', apiId: 'llama-3.3-70b-versatile', label: 'Planner backup: Llama 3.3 70B', provider: 'groq', paramsBTotal: 70, contextWindow: 131072, pricing: { inputPerM: .59, outputPerM: .79 }, tier: 'payg', good_at: ['planning', 'analysis'], speed: 'fast', notes: 'Deprecated by Groq for free/developer tiers; keep only if your account still serves it.' },
@@ -441,6 +419,8 @@ export const MODEL_REGISTRY: ModelEntry[] = [
   { id: 'openrouter:laguna-xs-2.1', apiId: 'poolside/laguna-xs-2.1:free', label: 'Agentic coder: Laguna XS 2.1', provider: 'openrouter', paramsBTotal: 33, paramsBActive: 3, contextWindow: 262144, pricing: { inputPerM: 0, outputPerM: 0 }, tier: 'free', good_at: ['codegen', 'simple'], speed: 'medium' },
   { id: 'openrouter:qwen3-coder-30b', apiId: 'qwen/qwen3-coder-30b-a3b-instruct', label: 'Agentic coder: Qwen3-Coder-30B-A3B', provider: 'openrouter', paramsBTotal: 30.5, paramsBActive: 3, contextWindow: 262144, pricing: { inputPerM: .07, outputPerM: .27 }, tier: 'payg', good_at: ['codegen', 'simple'], speed: 'medium' },
   { id: 'openrouter:nemotron-3-nano', apiId: 'nvidia/nemotron-3-nano-30b-a3b', label: 'Hard implement: Nemotron 3 Nano 30B-A3B', provider: 'openrouter', paramsBTotal: 30, paramsBActive: 3, contextWindow: 262144, pricing: { inputPerM: .05, outputPerM: .2 }, tier: 'payg', good_at: ['codegen', 'analysis', 'simple'], speed: 'medium' },
+  { id: 'gemini:gemma-4-31b', apiId: 'gemini/gemma-4-31b-it', label: 'Gemma 4 31B IT (Gemini API)', provider: 'gemini', paramsBTotal: 31, contextWindow: 131072, pricing: { inputPerM: 0, outputPerM: 0 }, tier: 'free', qualityIndex: 29.7, good_at: ['codegen', 'analysis', 'planning'], speed: 'medium', notes: 'Gemma 4 31B via the Gemini API. Enable it after adding GEMINI_API_KEY; Settings verifies that the key can list this generateContent model.' },
+
 ];
 
 export type Eligibility = { eligible: boolean; reason: string };

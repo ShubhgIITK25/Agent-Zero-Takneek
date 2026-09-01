@@ -23,10 +23,11 @@ const realFetch = global.fetch;
 
 /** Route stubbed responses by URL substring. */
 function stubFetch(routes) {
-  global.fetch = async (url) => {
+  global.fetch = async (url, init) => {
     for (const [needle, res] of Object.entries(routes)) {
       if (String(url).includes(needle)) {
         if (res.throws) throw new Error(res.throws);
+        if (res.check) res.check(url, init);
         return {
           status: res.status,
           json: async () => res.body ?? {},
@@ -125,6 +126,21 @@ async function main() {
     });
     const h = await checkModelHealth({ models: [MODELS.gemini], envVars: { GEMINI_API_KEY: 'bad' } });
     assert.strictEqual(h['gem:a'].state, 'invalid-key');
+  });
+
+  await t('Gemini health sends the key in the documented header, not the URL', async () => {
+    stubFetch({
+      generativelanguage: {
+        status: 200,
+        body: { models: [{ name: 'models/gemma-4-31b-it', supportedGenerationMethods: ['generateContent'] }] },
+        check: (url, init) => {
+          assert.ok(!String(url).includes('key='), `key leaked into URL: ${url}`);
+          assert.strictEqual(init.headers['x-goog-api-key'], 'secret');
+        },
+      },
+    });
+    const h = await checkModelHealth({ models: [MODELS.gemini], envVars: { GEMINI_API_KEY: 'secret' } });
+    assert.strictEqual(h['gem:a'].state, 'working');
   });
 
   await t('the gemini/ namespace prefix is stripped before matching', async () => {

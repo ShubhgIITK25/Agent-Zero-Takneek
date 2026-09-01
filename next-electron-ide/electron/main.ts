@@ -1061,7 +1061,7 @@ function normalizeAgentSettings(parsed: any): AgentSettings {
         .filter((m: any) => m.good_at.length > 0)
     : [];
   const customIds = new Set(customModels.map((m: any) => m.id));
-  const curatedIds = new Set(['openrouter:qwen3-next-80b-thinking', 'groq:llama-3.3-70b', 'openrouter:gemma-4-31b', 'groq:qwen3.8-27b', 'openrouter:north-mini-code', 'openrouter:laguna-xs-2.1', 'openrouter:qwen3-coder-30b', 'openrouter:nemotron-3-nano']);
+  const curatedIds = new Set(['openrouter:qwen3-next-80b-thinking', 'groq:llama-3.3-70b', 'openrouter:gemma-4-31b', 'gemini:gemma-4-31b', 'groq:qwen3.8-27b', 'openrouter:north-mini-code', 'openrouter:laguna-xs-2.1', 'openrouter:qwen3-coder-30b', 'openrouter:nemotron-3-nano']);
   const validEnabled = [...new Set(enabled)].filter((id) => typeof id === 'string' && (curatedIds.has(id) || customIds.has(id)));
   // A single enabled model cannot provide failover: one 429 then aborts the
   // whole DAG. Older settings commonly contain exactly one model (especially

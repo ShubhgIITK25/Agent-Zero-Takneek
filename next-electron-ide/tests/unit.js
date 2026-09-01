@@ -16,7 +16,7 @@ const D = path.join(__dirname, '..', 'orchestrator-dist');
 const { buildFileDiff, applyAcceptedBlocks, renderUnified } = require(path.join(D, 'diff'));
 const { extractJson, parsePlan, parseVerdict } = require(path.join(D, 'agents'));
 const { Router, RateLimitTracker } = require(path.join(D, 'router'));
-const { checkEligibility, findModel } = require(path.join(D, 'models'));
+const { checkEligibility, findModel, MODEL_REGISTRY } = require(path.join(D, 'models'));
 const { Budget } = require(path.join(D, 'budget'));
 
 let pass = 0;
@@ -133,6 +133,12 @@ t('120B-total / 12B-active MoE is blocked on TOTAL', () => {
 });
 t('26B-total / 4B-active MoE is allowed', () => {
   assert.strictEqual(checkEligibility(findModel('openrouter:gemma-4-26b-a4b')).eligible, true);
+});
+t('Gemini Gemma is in the active Settings/routing registry', () => {
+  const gemini = MODEL_REGISTRY.find((m) => m.id === 'gemini:gemma-4-31b');
+  assert.ok(gemini, 'Gemini model must be visible to Settings and default routing');
+  assert.strictEqual(gemini.provider, 'gemini');
+  assert.strictEqual(checkEligibility(gemini).eligible, true);
 });
 t('unpublished parameter count is blocked', () => {
   assert.strictEqual(checkEligibility({ paramsBTotal: null, contextWindow: 1, pricing: {} }).eligible, false);

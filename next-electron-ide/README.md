@@ -115,7 +115,7 @@ Launch the app (`npm run dev`), open **Settings**, and paste keys for whichever 
 | **Groq** | `GROQ_API_KEY` | [console.groq.com/keys](https://console.groq.com/keys)  -  sign in, *Create API Key*, copy the `gsk_…` value | Free tier | Fastest provider; the default for most subtasks. Free tier is rate-limited per minute, which the router handles by cooling the provider down and failing over. |
 | **OpenRouter** | `OPENROUTER_API_KEY` | [openrouter.ai/keys](https://openrouter.ai/keys)  -  sign in, *Create Key*, copy the `sk-or-…` value | Free routes + PAYG | Serves the free-tier models in the roster and acts as Groq's failover target. No card needed for the `:free` routes. |
 | **Ollama** | *(none)* | Install from [ollama.com/download](https://ollama.com/download), then `ollama serve` | $0 | Local models, zero marginal cost. See §2.5 and [docs/local-models.md](docs/local-models.md). |
-| **Gemini** *(optional)* | `GEMINI_API_KEY` | [aistudio.google.com/apikey](https://aistudio.google.com/apikey) | Free tier | Optional extra route. This is the one entry `npm run verify:models` cannot verify without a key. |
+| **Gemini** *(optional)* | `GEMINI_API_KEY` | [aistudio.google.com/apikey](https://aistudio.google.com/apikey) | Free tier | Optional route. Settings verifies its model catalogue with your key because the public catalogue check cannot authenticate. |
 
 Optional overrides, only if you are proxying a provider: `GROQ_BASE_URL`, `OPENROUTER_BASE_URL`, `GEMINI_BASE_URL`, `OLLAMA_BASE_URL` (default `http://127.0.0.1:11434`).
 
@@ -689,7 +689,7 @@ A model whose provider does not publish a parameter count is treated as ineligib
 npm run verify:models
 ```
 
-Every id, price, context window and parameter count is a factual claim about a catalogue that churns every few weeks, and a stale claim does not fail at build time  -  it fails as a 404 mid-demo. `scripts/verify-models.mjs` re-derives those claims from the live sources (`openrouter.ai/api/v1/models`, `console.groq.com/docs/models`, `ollama.com/library/<model>/tags`) and exits non-zero if a model has disappeared. Price/context drift is a warning; a missing id is a failure. **Last full run: 2026-08-30  -  21 verified, 0 missing.** The Gemini route is the one entry it cannot check (that listing needs a key), so it is reported `skip`/UNVERIFIABLE rather than quietly counted OK.
+Every id, price, context window and parameter count is a factual claim about a catalogue that churns every few weeks, and a stale claim does not fail at build time  -  it fails as a 404 mid-demo. `scripts/verify-models.mjs` re-derives those claims from the live sources (`openrouter.ai/api/v1/models`, `console.groq.com/docs/models`, `ollama.com/library/<model>/tags`) and exits non-zero if a model has disappeared. Price/context drift is a warning; a missing id is a failure. **Last full run: 2026-08-30  -  21 verified, 0 missing.** Gemini is checked separately in Settings with the user's key because its catalogue requires authentication.
 
 ---
 
@@ -868,7 +868,7 @@ The repository ships a **GitHub Actions workflow** ([`.github/workflows/build.ym
 - **The packaged app does not bundle `.venv`.** On a machine without a suitable interpreter it uses `python3` from `PATH`; set `CODENAWABS_PYTHON` or install the requirements there (§18).
 - **Backtracking covers `propose_edit` writes only**  -  the only write path the orchestrator controls. Files mutated by an approved `run_command` (a formatter, a build step, a generator) are not captured and survive a rollback. The intervention names exactly which files it did revert, so it never claims a clean tree it cannot deliver. Undo points also live in memory, so after a resume a rollback only reaches edits made since that resume.
 - **Ollama models need a local server** the judges' machine may not have running; keep a Groq/OpenRouter fallback in any demo.
-- **Provider catalogues churn.** Run `npm run verify:models` before a demo. The Gemini entry is unverifiable without a key and is marked as such.
+- **Provider catalogues churn.** Run `npm run verify:models` before a demo, then use Settings → Re-check for Gemini because its catalogue requires your key.
 - **`qualityIndex` is a third-party benchmark** (Artificial Analysis via OpenRouter), not our own measurement, and is only comparable between the models listed here.
 
 ---

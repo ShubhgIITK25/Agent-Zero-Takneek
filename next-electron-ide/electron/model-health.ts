@@ -200,7 +200,8 @@ async function probeGemini(env: Record<string, string>): Promise<ProviderProbe> 
 
   const base = env.GEMINI_BASE_URL || "https://generativelanguage.googleapis.com/v1beta";
   const { status, body, networkError } = await getJson(
-    `${base}/models?key=${encodeURIComponent(key)}`,
+    `${base}/models`,
+    { "x-goog-api-key": key },
   );
 
   const bad = stateForStatus(status, networkError, "Gemini");
