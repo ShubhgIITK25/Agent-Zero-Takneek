@@ -462,6 +462,27 @@ button:hover {
   cursor: pointer;
 }
 
+.terminal-panel-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.terminal-copy-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: transparent;
+  border: none;
+  color: var(--text-dim);
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.terminal-copy-btn:hover {
+  color: var(--text-main);
+}
+
 .terminal-close-btn:hover {
   color: var(--text-main);
 }

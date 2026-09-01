@@ -1,8 +1,9 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
+import { Copy, Check } from "lucide-react";
 import "@xterm/xterm/css/xterm.css";
 
 type TerminalPanelProps = {
@@ -10,6 +11,28 @@ type TerminalPanelProps = {
   cwd: string | null;
   onClose: () => void;
 };
+
+async function copyText(text: string): Promise<boolean> {
+  if (!text) return false;
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch {
+    // Fall through to the legacy Electron/browser clipboard path.
+  }
+
+  const helper = document.createElement("textarea");
+  helper.value = text;
+  helper.style.position = "fixed";
+  helper.style.opacity = "0";
+  document.body.appendChild(helper);
+  helper.select();
+  const copied = document.execCommand("copy");
+  helper.remove();
+  return copied;
+}
 
 export default function TerminalPanel({
   id,
@@ -19,6 +42,16 @@ export default function TerminalPanel({
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
+  const [copied, setCopied] = useState(false);
+
+  const copySelection = async () => {
+    const selection = termRef.current?.getSelection() ?? "";
+    if (!selection) return;
+    if (await copyText(selection)) {
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1200);
+    }
+  };
 
   useEffect(() => {
     if (!containerRef.current || !window.electronAPI) return;
@@ -40,6 +73,23 @@ export default function TerminalPanel({
 
     termRef.current = term;
     fitRef.current = fitAddon;
+
+    // Preserve the normal terminal Ctrl/Cmd+C interrupt when nothing is
+    // selected, but copy xterm's selection instead of sending the control-C
+    // byte to the PTY when the user is selecting output.
+    term.attachCustomKeyEventHandler((event) => {
+      if (
+        event.type === "keydown" &&
+        (event.ctrlKey || event.metaKey) &&
+        event.key.toLowerCase() === "c" &&
+        term.hasSelection()
+      ) {
+        void copyText(term.getSelection());
+        term.clearSelection();
+        return false;
+      }
+      return true;
+    });
 
     let disposed = false;
     let started = false;
@@ -163,13 +213,23 @@ export default function TerminalPanel({
     <div className="terminal-panel">
       <div className="terminal-panel-header">
         <span>TERMINAL</span>
-        <button
-          className="terminal-close-btn"
-          onClick={onClose}
-          title="Close terminal"
-        >
-          ×
-        </button>
+        <div className="terminal-panel-actions">
+          <button
+            className="terminal-copy-btn"
+            onClick={() => void copySelection()}
+            title="Copy selected terminal output (Ctrl/Cmd+C)"
+          >
+            {copied ? <Check size={13} /> : <Copy size={13} />}
+            {copied ? "Copied" : "Copy"}
+          </button>
+          <button
+            className="terminal-close-btn"
+            onClick={onClose}
+            title="Close terminal"
+          >
+            ×
+          </button>
+        </div>
       </div>
       <div className="terminal-panel-body" ref={containerRef} />
     </div>
