@@ -51,6 +51,14 @@ export default function Home() {
     diffs: ReviewDiff[];
   } | null>(null);
 
+  const retryRetrieval = useCallback(async () => {
+    if (!window.electronAPI) return;
+    const result = await window.electronAPI.retrievalReindex();
+    if (result.error) {
+      setRetrievalStatus({ state: 'error', message: result.error });
+    }
+  }, []);
+
   const handleTraceEvent = useCallback((e: TraceEvent) => {
     setTrace((prev) => applyEvent(e.type === 'task_started' ? emptyTrace() : prev, e));
 
@@ -120,6 +128,11 @@ export default function Home() {
     });
     const offRetrievalStatus = window.electronAPI?.onRetrievalStatus((status) => {
       setRetrievalStatus(status);
+    });
+    // Recover the current state if main emitted it before this renderer
+    // finished mounting (common after reopening during an index).
+    void window.electronAPI?.retrievalGetStatus().then((status) => {
+      if (status) setRetrievalStatus(status);
     });
     return () => {
       offFolder?.();
@@ -465,6 +478,7 @@ export default function Home() {
           onOpenDashboard={electronReady ? () => setDashboardOpen(true) : undefined}
           taskCost={trace.status === 'running' ? trace.budget.costUsd : null}
           retrievalStatus={retrievalStatus}
+          onRetryRetrieval={electronReady ? retryRetrieval : undefined}
         />
       </main>
       {electronReady && chatOpen && (

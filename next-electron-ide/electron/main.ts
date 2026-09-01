@@ -82,6 +82,16 @@ let retrievalProc: ChildProcessWithoutNullStreams | null = null;
 let retrievalPort: number | null = null;
 let retrievalReady = false;
 let currentCodebaseId: string | null = null;
+// Every service restart, folder switch, or shutdown invalidates in-flight
+// indexing requests. This prevents a late response from repainting the UI
+// with the state of an old session/project.
+let retrievalGeneration = 0;
+let lastRetrievalStatus: Record<string, unknown> | null = null;
+
+function sendRetrievalStatus(status: Record<string, unknown>) {
+  lastRetrievalStatus = status;
+  mainWindow?.webContents.send("retrieval:status", status);
+}
 
 /**
  * What the retrieval service can actually do right now, read from its
@@ -137,6 +147,7 @@ function pythonExecutable(): { command: string; source: string; isFallback: bool
 }
 
 async function startRetrievalService() {
+  const generation = ++retrievalGeneration;
   try {
     retrievalPort = await findFreePort();
   } catch (err) {
@@ -144,7 +155,7 @@ async function startRetrievalService() {
       "[retrieval] could not find a free port, retrieval disabled:",
       err,
     );
-    mainWindow?.webContents.send("retrieval:status", {
+    sendRetrievalStatus({
       state: "unavailable",
       message: "could not allocate a local port",
     });
@@ -188,8 +199,9 @@ async function startRetrievalService() {
     // Most common cause: no `python`/`python3` on PATH, or the
     // retrieval-service/requirements.txt deps aren't installed yet.
     console.log("[retrieval] failed to start retrieval service:", err);
+    if (generation !== retrievalGeneration) return;
     retrievalProc = null;
-    mainWindow?.webContents.send("retrieval:status", {
+    sendRetrievalStatus({
       state: "unavailable",
       message:
         "Python retrieval service failed to start - see retrieval-service/README.md for setup.",
@@ -198,8 +210,14 @@ async function startRetrievalService() {
 
   proc.on("exit", (code) => {
     console.log(`[retrieval] service exited with code ${code}`);
+    if (generation !== retrievalGeneration) return;
     retrievalProc = null;
     retrievalReady = false;
+    retrievalCapabilities = null;
+    sendRetrievalStatus({
+      state: "unavailable",
+      message: "Retrieval service stopped. Reopen or restart the service to continue indexing.",
+    });
   });
 
   // Poll /health instead of assuming the process is ready the instant it's
@@ -207,6 +225,7 @@ async function startRetrievalService() {
   // (tree-sitter grammars, fastembed) before it can bind the socket.
   for (let attempt = 0; attempt < 30; attempt++) {
     await new Promise((r) => setTimeout(r, 300));
+    if (generation !== retrievalGeneration) return;
     if (!retrievalProc) return; // died already, error event above already reported it
     try {
       const res = await fetch(`http://127.0.0.1:${retrievalPort}/health`);
@@ -238,7 +257,7 @@ async function startRetrievalService() {
         } else {
           console.log("[retrieval] full pipeline available");
         }
-        mainWindow?.webContents.send("retrieval:status", {
+        sendRetrievalStatus({
           state: "idle",
           degraded: !c.vectorSearch || !c.astChunking || !c.reranker,
           vector_search: c.vectorSearch,
@@ -255,8 +274,13 @@ async function startRetrievalService() {
 }
 
 function stopRetrievalService() {
+  retrievalGeneration += 1;
   retrievalReady = false;
   retrievalCapabilities = null;
+  sendRetrievalStatus({
+    state: "unavailable",
+    message: "Retrieval service stopped.",
+  });
   if (retrievalProc) {
     try {
       retrievalProc.kill();
@@ -285,23 +309,35 @@ async function retrievalRequest(pathName: string, body: unknown): Promise<any> {
 
 async function indexCurrentFolder() {
   if (!openFolderPath || !retrievalReady) return;
-  const codebaseId = codebaseIdFor(openFolderPath);
+  const folderPath = openFolderPath;
+  const codebaseId = codebaseIdFor(folderPath);
+  const generation = retrievalGeneration;
   currentCodebaseId = codebaseId;
-  mainWindow?.webContents.send("retrieval:status", {
+  sendRetrievalStatus({
     state: "indexing",
     codebaseId,
   });
   const result = await retrievalRequest("/index", {
-    root_path: openFolderPath,
+    root_path: folderPath,
     codebase_id: codebaseId,
   });
+  // The request may have been interrupted by closing the window or changing
+  // folders. Its eventual rejection/response must not overwrite the newer
+  // status.
+  if (
+    generation !== retrievalGeneration ||
+    !retrievalReady ||
+    openFolderPath !== folderPath ||
+    currentCodebaseId !== codebaseId
+  ) return;
   if (result?.error) {
-    mainWindow?.webContents.send("retrieval:status", {
+    sendRetrievalStatus({
       state: "error",
+      codebaseId,
       message: result.error,
     });
   } else {
-    mainWindow?.webContents.send("retrieval:status", {
+    sendRetrievalStatus({
       state: "ready",
       codebaseId,
       ...result,
@@ -355,7 +391,7 @@ function watchFolder(folderPath: string) {
           changed_paths: paths,
         }).then((result) => {
           if (!result?.error) {
-            mainWindow?.webContents.send("retrieval:status", {
+            sendRetrievalStatus({
               state: "ready",
               codebaseId: currentCodebaseId,
               ...result,
@@ -487,7 +523,9 @@ async function restoreLastFolder(): Promise<void> {
 
 function setOpenFolder(folderPath: string) {
   const previousCodebaseId = currentCodebaseId;
+  retrievalGeneration += 1;
   openFolderPath = folderPath;
+  currentCodebaseId = codebaseIdFor(folderPath);
   void writeUiState({ lastFolder: folderPath });
   watchFolder(folderPath);
 
@@ -500,6 +538,12 @@ function setOpenFolder(folderPath: string) {
     if (previousCodebaseId)
       retrievalRequest("/evict", { codebase_id: previousCodebaseId });
     indexCurrentFolder();
+  } else {
+    sendRetrievalStatus({
+      state: "unavailable",
+      codebaseId: currentCodebaseId,
+      message: "Retrieval service is starting…",
+    });
   }
 }
 
@@ -725,6 +769,26 @@ ipcMain.handle("retrieval:query", async (_evt, query: string, k?: number) => {
     query,
     k: k ?? 8,
   });
+});
+
+// Renderer listeners are installed after the window loads, so a status event
+// emitted during Electron startup can be missed. Keep the latest status in
+// memory and let a newly loaded renderer request it explicitly.
+ipcMain.handle("retrieval:getStatus", () => lastRetrievalStatus);
+
+ipcMain.handle("retrieval:reindex", async () => {
+  if (!openFolderPath) return { error: "Open a project folder first." };
+
+  // A dead or half-started service cannot recover from another /index call.
+  // Restart it so the retry also covers missing sockets and crashed Python
+  // processes. The on-disk SQLite index remains intact.
+  if (!retrievalReady) {
+    stopRetrievalService();
+    await startRetrievalService();
+  } else {
+    void indexCurrentFolder();
+  }
+  return { ok: true };
 });
 
 ipcMain.handle(

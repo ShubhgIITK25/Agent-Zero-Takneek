@@ -1,6 +1,6 @@
 'use client';
 
-import { ChevronDown, ChevronRight, LayoutDashboard, Settings, Terminal as LucideTerminal, MessageSquare, Search, Cpu, Activity, X } from 'lucide-react';
+import { ChevronDown, ChevronRight, LayoutDashboard, Settings, Terminal as LucideTerminal, MessageSquare, Search, RefreshCw } from 'lucide-react';
 import { languageFromPath } from '../lib/language';
 import type { RetrievalStatus } from '../lib/electron-api';
 
@@ -18,6 +18,7 @@ type StatusBarProps = {
   /** Live spend on the running task, or null when nothing is running. */
   taskCost?: number | null;
   retrievalStatus?: RetrievalStatus | null;
+  onRetryRetrieval?: () => void;
 };
 
 function retrievalLabel(status: RetrievalStatus | null | undefined): string | null {
@@ -37,6 +38,7 @@ function retrievalLabel(status: RetrievalStatus | null | undefined): string | nu
     case 'unavailable':
       return 'Retrieval unavailable';
     case 'idle':
+      return 'Index pending';
     default:
       return null;
   }
@@ -53,6 +55,7 @@ export default function StatusBar({
   onOpenDashboard,
   taskCost,
   retrievalStatus,
+  onRetryRetrieval,
 }: StatusBarProps) {
   const retrievalText = retrievalLabel(retrievalStatus);
 
@@ -75,6 +78,18 @@ export default function StatusBar({
             {retrievalText}
           </span>
         )}
+        {onRetryRetrieval &&
+          (retrievalStatus?.state === 'unavailable' || retrievalStatus?.state === 'error') && (
+            <button
+              type="button"
+              className="status-toggle-btn"
+              onClick={onRetryRetrieval}
+              title="Restart retrieval service and re-index the current project"
+            >
+              <RefreshCw size={13} style={{ marginRight: '4px' }} />
+              Retry index
+            </button>
+          )}
         {filePath && <span className="status-item">{languageFromPath(filePath)}</span>}
         {dirty && <span className="status-item">● Unsaved</span>}
         <span className="status-item">UTF-8</span>

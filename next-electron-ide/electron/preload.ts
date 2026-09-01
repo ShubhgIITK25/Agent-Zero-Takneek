@@ -210,6 +210,10 @@ const api = {
     lineEnd?: number,
   ): Promise<RetrievalFileResult> =>
     ipcRenderer.invoke("retrieval:openFile", path, lineStart, lineEnd),
+  retrievalGetStatus: (): Promise<RetrievalStatus | null> =>
+    ipcRenderer.invoke("retrieval:getStatus"),
+  retrievalReindex: (): Promise<{ ok?: boolean; error?: string }> =>
+    ipcRenderer.invoke("retrieval:reindex"),
   onRetrievalStatus: (cb: (status: RetrievalStatus) => void) => {
     const listener = (_evt: unknown, status: RetrievalStatus) => cb(status);
     ipcRenderer.on("retrieval:status", listener);

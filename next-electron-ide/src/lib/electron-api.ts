@@ -172,6 +172,8 @@ export interface ElectronAPI {
   // ---- code retrieval ----
   retrievalQuery: (query: string, k?: number) => Promise<RetrievalQueryResult>;
   retrievalOpenFile: (path: string, lineStart?: number, lineEnd?: number) => Promise<RetrievalFileResult>;
+  retrievalGetStatus: () => Promise<RetrievalStatus | null>;
+  retrievalReindex: () => Promise<{ ok?: boolean; error?: string }>;
   onRetrievalStatus: (cb: (status: RetrievalStatus) => void) => () => void;
 }
 
