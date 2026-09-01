@@ -45,7 +45,8 @@ export class OrchestratorBridge {
   constructor(
     private scriptPath: string,
     private dataDir: string,
-    private getWindow: () => BrowserWindow | null
+    private getWindow: () => BrowserWindow | null,
+    private onEvent?: (event: any) => void,
   ) {}
 
   private send(target: string, payload: unknown): void {
@@ -131,6 +132,7 @@ export class OrchestratorBridge {
         return;
       }
       // Everything else is trace data the dashboard renders.
+      this.onEvent?.(msg);
       this.send('orchestrator:event', msg);
     }
   }

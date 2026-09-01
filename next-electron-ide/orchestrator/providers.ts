@@ -632,9 +632,13 @@ async function callGemini(
     );
   }
 
-  // The registry stores apiId as "gemini/<model-name>" for namespacing clarity.
-  // The actual Gemini REST endpoint uses just the model name.
-  const modelName = model.apiId.startsWith('gemini/') ? model.apiId.slice('gemini/'.length) : model.apiId;
+  // The registry stores apiId as "gemini/<model-name>" for namespacing clarity,
+  // while Gemini's ListModels endpoint returns "models/<model-name>". Accept
+  // either spelling for custom models so the user can paste the value they
+  // copied from the Gemini response directly into Settings.
+  const modelName = model.apiId
+    .replace(/^gemini\//, '')
+    .replace(/^models\//, '');
   const baseUrl = env.GEMINI_BASE_URL || 'https://generativelanguage.googleapis.com/v1beta';
   const url = `${baseUrl}/models/${modelName}:generateContent?key=${apiKey}`;
 

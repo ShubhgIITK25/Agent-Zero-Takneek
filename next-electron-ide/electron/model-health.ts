@@ -214,9 +214,17 @@ async function probeGemini(env: Record<string, string>): Promise<ProviderProbe> 
     };
 
   // Names come back as "models/gemma-4-31b-it"; the registry stores
-  // "gemini/gemma-4-31b-it". Normalise both to the bare model name.
+  // "gemini/gemma-4-31b-it". Normalise both to the bare model name. A Gemini
+  // catalogue also includes embedding/image-only models, so only advertise a
+  // model as working when it supports the generateContent method we call.
   const ids = new Set<string>(
-    (body?.models ?? []).map((m: any) => String(m.name ?? "").replace(/^models\//, "")),
+    (body?.models ?? [])
+      .filter((m: any) =>
+        !Array.isArray(m.supportedGenerationMethods) ||
+        m.supportedGenerationMethods.includes("generateContent"),
+      )
+      .map((m: any) => String(m.name ?? "").replace(/^models\//, ""))
+      .filter(Boolean),
   );
   return { ok: true, ids, detail: `Gemini lists ${ids.size} model(s) for this key.` };
 }
@@ -230,7 +238,9 @@ const PROBES: Record<string, (env: Record<string, string>) => Promise<ProviderPr
 
 /** Strip the provider namespace the registry adds, to get the id the provider itself uses. */
 function bareApiId(provider: string, apiId: string): string {
-  if (provider === "gemini" && apiId.startsWith("gemini/")) return apiId.slice("gemini/".length);
+  if (provider === "gemini") {
+    return apiId.replace(/^gemini\//, "").replace(/^models\//, "");
+  }
   return apiId;
 }
 

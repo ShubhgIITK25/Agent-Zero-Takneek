@@ -158,6 +158,8 @@ export type TaskConfig = {
    * checked" must never be read as "broken".
    */
   modelHealth?: Record<string, { state: string; detail: string; checkedAt: number }>;
+  /** Minimum declared/effective capability for custom verification models. */
+  minVerifierQuality?: number;
   /**
    * How many independent subtasks may run at once. 1 reproduces the strictly
    * sequential behaviour exactly, and is the escape hatch if parallelism ever
@@ -205,7 +207,7 @@ export type EventBody =
   /** Emitted the instant the router decides - never reconstructed after the fact. */
   | { type: 'routing_decision'; subtaskId: string; nodeId: string; modelId: string; provider: string; reason: string; signals: RoutingSignals; rejected: { modelId: string; why: string }[] }
   | { type: 'agent_call_start'; nodeId: string; parentId: string | null; role: AgentRole; subtaskId: string | null; modelId: string; provider: string; prompt: string }
-  | { type: 'agent_call_end'; nodeId: string; promptTokens: number; completionTokens: number; costUsd: number; latencyMs: number; output: string; error?: string }
+  | { type: 'agent_call_end'; nodeId: string; modelId: string; provider: string; promptTokens: number; completionTokens: number; costUsd: number; latencyMs: number; output: string; error?: string }
   | { type: 'thought'; nodeId: string; text: string }
   | { type: 'tool_call'; nodeId: string; callId: string; name: string; args: Record<string, unknown>; sideEffecting: boolean }
   | { type: 'tool_result'; nodeId: string; callId: string; result: string; outcome: 'done' | 'rejected' | 'error'; ms: number }

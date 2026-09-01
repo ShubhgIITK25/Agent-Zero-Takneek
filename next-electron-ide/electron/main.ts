@@ -888,6 +888,7 @@ async function buildTaskConfig() {
     customModels: settings.customModels,
     modelHealth: freshHealth(),
     maxParallelSubtasks: settings.maxParallelSubtasks,
+    minVerifierQuality: settings.minVerifierQuality,
     maxCostUsd: settings.maxCostUsd,
     maxSeconds: settings.maxSeconds,
   };
@@ -997,7 +998,7 @@ type AgentSettings = {
   coreModelId?: string;
   customModels: Array<{
     id: string; apiId: string; label: string; provider: 'groq' | 'openrouter' | 'ollama' | 'gemini';
-    paramsBTotal: number; contextWindow: number; pricing: { inputPerM: number; outputPerM: number };
+    paramsBTotal: number; contextWindow: number; qualityIndex?: number; pricing: { inputPerM: number; outputPerM: number };
     tier: 'free' | 'payg' | 'local'; good_at: ('planning' | 'codegen' | 'analysis' | 'simple' | 'verification')[];
     speed: 'fast' | 'medium' | 'slow';
   }>;
@@ -1006,6 +1007,8 @@ type AgentSettings = {
   maxSeconds: number;
   /** Independent subtasks to run at once. 1 = strictly sequential. */
   maxParallelSubtasks: number;
+  /** Minimum quality score accepted for custom verifier models. */
+  minVerifierQuality: number;
 };
 
 const DEFAULT_AGENT_SETTINGS: AgentSettings = {
@@ -1021,6 +1024,8 @@ const DEFAULT_AGENT_SETTINGS: AgentSettings = {
   // subtasks, low enough that a free-tier provider is not instantly rate
   // limited by our own fan-out. Set to 1 for the exact sequential behaviour.
   maxParallelSubtasks: 3,
+  // Custom models must opt into verification with a meaningful quality score.
+  minVerifierQuality: 20,
 };
 
 /** Migrate IDs used by the earlier local-model setup to the agent-capable tag. */
@@ -1040,6 +1045,20 @@ function normalizeAgentSettings(parsed: any): AgentSettings {
         ['free', 'payg', 'local'].includes(m.tier) && Array.isArray(m.good_at) &&
         ['fast', 'medium', 'slow'].includes(m.speed)
       )
+        .map((m: any) => ({
+          ...m,
+          qualityIndex: Number.isFinite(m.qualityIndex)
+            ? Math.min(100, Math.max(0, Number(m.qualityIndex)))
+            : Math.min(30, Number(m.paramsBTotal) * 0.4),
+          good_at: m.good_at.filter((cap: unknown) =>
+            ['planning', 'codegen', 'analysis', 'simple', 'verification'].includes(String(cap)),
+          ),
+          pricing: {
+            inputPerM: Math.max(0, Number(m.pricing.inputPerM)),
+            outputPerM: Math.max(0, Number(m.pricing.outputPerM)),
+          },
+        }))
+        .filter((m: any) => m.good_at.length > 0)
     : [];
   const customIds = new Set(customModels.map((m: any) => m.id));
   const curatedIds = new Set(['openrouter:qwen3-next-80b-thinking', 'groq:llama-3.3-70b', 'openrouter:gemma-4-31b', 'groq:qwen3.8-27b', 'openrouter:north-mini-code', 'openrouter:laguna-xs-2.1', 'openrouter:qwen3-coder-30b', 'openrouter:nemotron-3-nano']);
@@ -1062,7 +1081,10 @@ function normalizeAgentSettings(parsed: any): AgentSettings {
   
   const coreModelId = typeof parsed?.coreModelId === 'string' && (curatedIds.has(parsed.coreModelId) || customIds.has(parsed.coreModelId))
     ? parsed.coreModelId : normalizedEnabled[0];
-  return { ...DEFAULT_AGENT_SETTINGS, ...parsed, customModels, enabledModelIds: normalizedEnabled, coreModelId };
+  const minVerifierQuality = Number.isFinite(parsed?.minVerifierQuality)
+    ? Math.min(100, Math.max(0, Number(parsed.minVerifierQuality)))
+    : DEFAULT_AGENT_SETTINGS.minVerifierQuality;
+  return { ...DEFAULT_AGENT_SETTINGS, ...parsed, customModels, enabledModelIds: normalizedEnabled, coreModelId, minVerifierQuality };
 }
 
 function settingsFilePath(): string {
@@ -1123,13 +1145,40 @@ function freshHealth(): Record<string, { state: string; detail: string; checkedA
   return out;
 }
 
+/** Keep inference-time quota evidence visible after the settings catalogue probe. */
+function recordRuntimeModelHealth(event: any): void {
+  if (event?.type !== "agent_call_end" || typeof event.modelId !== "string") return;
+  const checkedAt = typeof event.ts === "number" ? event.ts : Date.now();
+  const provider = typeof event.provider === "string" ? event.provider : "provider";
+  if (event.error && /\b429\b|rate[ -]?limit|quota/i.test(String(event.error))) {
+    lastModelHealth[event.modelId] = {
+      state: "rate-limited",
+      detail: `A live ${provider} inference request was rate-limited: ${event.error}`,
+      checkedAt,
+    };
+  } else if (!event.error) {
+    lastModelHealth[event.modelId] = {
+      state: "working",
+      detail: `A live ${provider} inference request succeeded.`,
+      checkedAt,
+    };
+  }
+}
+
 ipcMain.handle(
   "models:checkHealth",
   async (_evt, req: HealthCheckRequest) => {
     try {
       const result = await checkModelHealth(req);
-      lastModelHealth = { ...lastModelHealth, ...result };
-      return result;
+      const merged = { ...lastModelHealth };
+      for (const [id, next] of Object.entries(result)) {
+        // A catalogue listing only proves that the model exists; it cannot
+        // undo a recent inference-time 429. A later successful call does.
+        if (merged[id]?.state === "rate-limited" && next.state === "working") continue;
+        merged[id] = next;
+      }
+      lastModelHealth = merged;
+      return Object.fromEntries((req?.models ?? []).map((m) => [m.id, lastModelHealth[m.id] ?? result[m.id]]));
     } catch (err) {
       const detail = err instanceof Error ? err.message : String(err);
       const out: Record<string, { state: string; detail: string; checkedAt: number }> = {};
@@ -1162,6 +1211,7 @@ app.whenReady().then(() => {
     orchestratorScriptPath(isDev),
     app.getPath("userData"),
     () => mainWindow,
+    recordRuntimeModelHealth,
   );
   orchestrator.start();
 

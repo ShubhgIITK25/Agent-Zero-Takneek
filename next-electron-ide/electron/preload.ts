@@ -9,8 +9,12 @@ export type FileNode = {
 export type AgentSettings = {
   envVars: Record<string, string>;
   enabledModelIds: string[];
+  coreModelId?: string;
+  customModels: unknown[];
   maxCostUsd: number;
   maxSeconds: number;
+  maxParallelSubtasks: number;
+  minVerifierQuality: number;
 };
 
 export type OrchestratorStatus = {

@@ -135,6 +135,31 @@ async function main() {
     assert.strictEqual(h['gem:a'].state, 'working');
   });
 
+  await t('the models/ prefix from Gemini ListModels is stripped before matching', async () => {
+    stubFetch({
+      generativelanguage: { status: 200, body: { models: [{ name: 'models/gemini-2.5-flash' }] } },
+    });
+    const h = await checkModelHealth({
+      models: [{ id: 'gem:custom', apiId: 'models/gemini-2.5-flash', provider: 'gemini' }],
+      envVars: { GEMINI_API_KEY: 'k' },
+    });
+    assert.strictEqual(h['gem:custom'].state, 'working');
+  });
+
+  await t('Gemini does not mark a non-generative model as working', async () => {
+    stubFetch({
+      generativelanguage: {
+        status: 200,
+        body: { models: [{ name: 'models/text-embedding-005', supportedGenerationMethods: ['embedContent'] }] },
+      },
+    });
+    const h = await checkModelHealth({
+      models: [{ id: 'gem:embedding', apiId: 'text-embedding-005', provider: 'gemini' }],
+      envVars: { GEMINI_API_KEY: 'k' },
+    });
+    assert.strictEqual(h['gem:embedding'].state, 'unavailable');
+  });
+
   await t('a dead Ollama host is "offline" and names the fix', async () => {
     stubFetch({ '11434': { throws: 'ECONNREFUSED' } });
     const h = await checkModelHealth({ models: [MODELS.ollama], envVars: {} });

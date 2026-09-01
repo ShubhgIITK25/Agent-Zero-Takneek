@@ -56,7 +56,8 @@ export type ModelEntry = {
   pricing: { inputPerM: number; outputPerM: number };
   tier: "free" | "payg" | "local";
   /** Artificial Analysis intelligence index (0-100), as published in the
-   *  OpenRouter catalogue. Omitted when the model has not been benchmarked. */
+   *  OpenRouter catalogue. For custom models this is the user's declared
+   *  quality estimate, not a claim that the model was benchmarked. */
   qualityIndex?: number;
   /** What the router is willing to hand this model. */
   good_at: ("planning" | "codegen" | "analysis" | "simple" | "verification")[];

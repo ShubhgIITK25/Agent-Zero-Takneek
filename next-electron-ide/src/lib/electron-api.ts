@@ -13,6 +13,8 @@ export type AgentSettings = {
   customModels: CustomModel[];
   maxCostUsd: number;
   maxSeconds: number;
+  /** Minimum quality score accepted for custom verifier models. */
+  minVerifierQuality: number;
   /** Independent subtasks to run at once. 1 = strictly sequential. */
   maxParallelSubtasks: number;
 };
@@ -24,6 +26,8 @@ export type CustomModel = {
   provider: 'groq' | 'openrouter' | 'ollama' | 'gemini';
   paramsBTotal: number;
   contextWindow: number;
+  /** User-declared 0-100 quality estimate used by the router. */
+  qualityIndex?: number;
   pricing: { inputPerM: number; outputPerM: number };
   tier: 'free' | 'payg' | 'local';
   good_at: ('planning' | 'codegen' | 'analysis' | 'simple' | 'verification')[];

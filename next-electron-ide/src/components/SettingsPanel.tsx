@@ -15,7 +15,7 @@
  * choosing among the models you can actually use.
  */
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Key, Cpu, ExternalLink, Eye, EyeOff, ChevronDown, ChevronRight, Monitor, Zap, X } from 'lucide-react';
 import type { AgentSettings, CustomModel, ModelHealth, ModelHealthState } from '../lib/electron-api';
 import { MODEL_REGISTRY, checkEligibility, PROVIDER_CONFIG, ProviderId } from '../../orchestrator/models';
@@ -43,6 +43,16 @@ const PROVIDER_HELP: Record<ProviderId, { url: string; hint: string }> = {
   gemini: { url: 'aistudio.google.com/apikey', hint: 'Google Gemini - get a free key from AI Studio.' },
 };
 
+type CustomCapability = CustomModel['good_at'][number];
+
+const CUSTOM_CAPABILITY_OPTIONS: { id: CustomCapability; label: string }[] = [
+  { id: 'simple', label: 'Simple edits' },
+  { id: 'codegen', label: 'Code generation' },
+  { id: 'analysis', label: 'Analysis' },
+  { id: 'planning', label: 'Planning' },
+  { id: 'verification', label: 'Verification' },
+];
+
 export default function SettingsPanel({ onClose }: SettingsPanelProps) {
   const [settings, setSettings] = useState<AgentSettings | null>(null);
   const [saved, setSaved] = useState(false);
@@ -50,15 +60,27 @@ export default function SettingsPanel({ onClose }: SettingsPanelProps) {
   const [health, setHealth] = useState<Record<string, ModelHealth>>({});
   const [checking, setChecking] = useState(false);
   const [lastChecked, setLastChecked] = useState<number | null>(null);
-  const [customDraft, setCustomDraft] = useState({ provider: 'groq' as ProviderId, apiId: '', label: '', paramsBTotal: '30', contextWindow: '131072' });
+  const [customDraft, setCustomDraft] = useState({
+    provider: 'groq' as ProviderId,
+    apiId: '',
+    label: '',
+    paramsBTotal: '30',
+    contextWindow: '131072',
+    qualityIndex: '20',
+    inputPerM: '0',
+    outputPerM: '0',
+    good_at: ['codegen'] as CustomCapability[],
+  });
   const [showKeys, setShowKeys] = useState<Record<string, boolean>>({});
   const [advancedOpen, setAdvancedOpen] = useState(false);
+  /** Inference-time evidence is more current than the last catalogue probe. */
+  const runtimeHealth = useRef<Record<string, ModelHealth>>({});
 
   useEffect(() => {
     (async () => {
       const s = await window.electronAPI?.settingsGet();
       setSettings(
-        s ?? { envVars: {}, enabledModelIds: ['ollama:llama3.1-8b'], customModels: [], maxCostUsd: 0.5, maxSeconds: 2700, maxParallelSubtasks: 3 }
+        s ?? { envVars: {}, enabledModelIds: ['ollama:llama3.1-8b'], customModels: [], maxCostUsd: 0.5, maxSeconds: 2700, maxParallelSubtasks: 3, minVerifierQuality: 20 }
       );
     })();
   }, []);
@@ -86,7 +108,17 @@ export default function SettingsPanel({ onClose }: SettingsPanelProps) {
         apiId: m.apiId,
         provider: m.provider,
       }));
-      setHealth(await window.electronAPI.modelsCheckHealth({ models, envVars }));
+      const result = await window.electronAPI.modelsCheckHealth({ models, envVars });
+      // A provider catalogue can still list a model after its inference quota
+      // has been exhausted. Keep a fresh runtime 429 visible until a live
+      // inference succeeds or the status is explicitly refreshed later.
+      setHealth((current) => {
+        const merged = { ...current, ...result };
+        for (const [id, runtime] of Object.entries(runtimeHealth.current)) {
+          if (runtime.state === 'rate-limited') merged[id] = runtime;
+        }
+        return merged;
+      });
       setLastChecked(Date.now());
     } finally {
       setChecking(false);
@@ -106,6 +138,48 @@ export default function SettingsPanel({ onClose }: SettingsPanelProps) {
     // button covers the "I just pasted a key" case.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [envVarsKey === null]);
+
+  // Health probes use catalogue endpoints and cannot see inference-only quota
+  // failures. The orchestrator already emits the exact model and error for
+  // every call, so listen to that same stream and update the pill immediately.
+  useEffect(() => {
+    const calls = new Map<string, { modelId: string; provider: string }>();
+    const isRateLimitError = (value: unknown) => /\b429\b|rate[ -]?limit|quota/i.test(String(value ?? ''));
+    const off = window.electronAPI?.onOrchestratorEvent((event: any) => {
+      if (event?.type === 'agent_call_start' && typeof event.nodeId === 'string') {
+        calls.set(event.nodeId, { modelId: event.modelId, provider: event.provider });
+        return;
+      }
+      if (event?.type !== 'agent_call_end' || typeof event.nodeId !== 'string') return;
+      const call = calls.get(event.nodeId);
+      calls.delete(event.nodeId);
+      const modelId = typeof event.modelId === 'string' ? event.modelId : call?.modelId;
+      const provider = typeof event.provider === 'string' ? event.provider : call?.provider;
+      if (!modelId || !provider) return;
+
+      const checkedAt = typeof event.ts === 'number' ? event.ts : Date.now();
+      if (event.error && isRateLimitError(event.error)) {
+        const status: ModelHealth = {
+          state: 'rate-limited',
+          detail: `A live ${provider} inference request was rate-limited: ${event.error}`,
+          checkedAt,
+        };
+        runtimeHealth.current[modelId] = status;
+        setHealth((current) => ({ ...current, [modelId]: status }));
+        setLastChecked(checkedAt);
+      } else if (!event.error) {
+        delete runtimeHealth.current[modelId];
+        const status: ModelHealth = {
+          state: 'working',
+          detail: `A live ${provider} inference request succeeded.`,
+          checkedAt,
+        };
+        setHealth((current) => ({ ...current, [modelId]: status }));
+        setLastChecked(checkedAt);
+      }
+    });
+    return () => off?.();
+  }, []);
 
   if (!settings) {
     return (
@@ -133,16 +207,37 @@ export default function SettingsPanel({ onClose }: SettingsPanelProps) {
     const apiId = customDraft.apiId.trim();
     const paramsBTotal = Number(customDraft.paramsBTotal);
     const contextWindow = Number(customDraft.contextWindow);
-    if (!apiId || !Number.isFinite(paramsBTotal) || paramsBTotal <= 0 || paramsBTotal > 80 || !Number.isFinite(contextWindow) || contextWindow < 1024) return;
+    const qualityIndex = Number(customDraft.qualityIndex);
+    const inputPerM = Number(customDraft.inputPerM);
+    const outputPerM = Number(customDraft.outputPerM);
+    if (
+      !apiId ||
+      !Number.isFinite(paramsBTotal) || paramsBTotal <= 0 || paramsBTotal > 80 ||
+      !Number.isFinite(contextWindow) || contextWindow < 1024 ||
+      !Number.isFinite(qualityIndex) || qualityIndex < 0 || qualityIndex > 100 ||
+      !Number.isFinite(inputPerM) || inputPerM < 0 ||
+      !Number.isFinite(outputPerM) || outputPerM < 0 ||
+      customDraft.good_at.length === 0
+    ) return;
     const id = `custom:${customDraft.provider}:${apiId}`;
     const model: CustomModel = {
       id, apiId, label: customDraft.label.trim() || apiId, provider: customDraft.provider,
-      paramsBTotal, contextWindow, pricing: { inputPerM: 0, outputPerM: 0 },
-      tier: customDraft.provider === 'ollama' ? 'local' : 'payg',
-      good_at: ['planning', 'codegen', 'analysis', 'simple', 'verification'], speed: 'medium',
+      paramsBTotal, contextWindow, qualityIndex,
+      pricing: { inputPerM, outputPerM },
+      tier: customDraft.provider === 'ollama' ? 'local' : inputPerM === 0 && outputPerM === 0 ? 'free' : 'payg',
+      good_at: [...customDraft.good_at], speed: 'medium',
     };
     update({ customModels: [...settings.customModels.filter((m) => m.id !== id), model], enabledModelIds: [...new Set([...settings.enabledModelIds, id])] });
     setCustomDraft((d) => ({ ...d, apiId: '', label: '' }));
+  };
+
+  const toggleCustomCapability = (capability: CustomCapability) => {
+    setCustomDraft((draft) => ({
+      ...draft,
+      good_at: draft.good_at.includes(capability)
+        ? draft.good_at.filter((value) => value !== capability)
+        : [...draft.good_at, capability],
+    }));
   };
 
   const testCustomDraft = async () => {
@@ -155,7 +250,13 @@ export default function SettingsPanel({ onClose }: SettingsPanelProps) {
         envVars: settings.envVars,
         models: [{ id, apiId, provider: customDraft.provider }],
       });
-      setHealth((current) => ({ ...current, ...result }));
+      setHealth((current) => {
+        const merged = { ...current, ...result };
+        for (const [id, runtime] of Object.entries(runtimeHealth.current)) {
+          if (runtime.state === 'rate-limited') merged[id] = runtime;
+        }
+        return merged;
+      });
       setLastChecked(Date.now());
     } finally {
       setChecking(false);
@@ -287,6 +388,9 @@ export default function SettingsPanel({ onClose }: SettingsPanelProps) {
                                 {m.paramsBActive != null && ` / ${m.paramsBActive}B active`}
                               </span>
                               <span className="model-badge">{(m.contextWindow / 1024).toFixed(0)}k ctx</span>
+                              <span className="model-badge">
+                                {m.qualityIndex != null ? `quality ${m.qualityIndex}/100` : 'quality unrated'}
+                              </span>
                               <span className="model-badge model-badge-price">
                                 {m.pricing.inputPerM === 0 && m.pricing.outputPerM === 0
                                   ? m.tier === 'local'
@@ -306,7 +410,7 @@ export default function SettingsPanel({ onClose }: SettingsPanelProps) {
               <section className="settings-provider custom-models-section" style={{ marginTop: 24 }}>
                 <h4>
                   Add Custom Model
-                  <span className="settings-provider-hint">Add any model your configured provider serves; it joins failover immediately.</span>
+                  <span className="settings-provider-hint">Add any model your configured provider serves; press Save to make it routable.</span>
                 </h4>
                 <div className="custom-model-card">
                   <div className="custom-model-grid">
@@ -318,7 +422,8 @@ export default function SettingsPanel({ onClose }: SettingsPanelProps) {
                     </div>
                     <div className="custom-field custom-field-wide">
                       <label>Model ID</label>
-                      <input value={customDraft.apiId} onChange={(e) => setCustomDraft({ ...customDraft, apiId: e.target.value })} placeholder="e.g. qwen/qwen3-coder" spellCheck={false} />
+                      <input value={customDraft.apiId} onChange={(e) => setCustomDraft({ ...customDraft, apiId: e.target.value })} placeholder={customDraft.provider === 'gemini' ? 'e.g. gemini-2.5-flash' : 'e.g. qwen/qwen3-coder'} spellCheck={false} />
+                      {customDraft.provider === 'gemini' && <span className="custom-field-hint">Paste the name from Gemini&apos;s <code>/v1beta/models</code> response. <code>models/</code> and <code>gemini/</code> prefixes are accepted.</span>}
                     </div>
                     <div className="custom-field custom-field-wide">
                       <label>Display Name (optional)</label>
@@ -332,7 +437,43 @@ export default function SettingsPanel({ onClose }: SettingsPanelProps) {
                       <label>Context (tokens)</label>
                       <input type="number" min="1024" value={customDraft.contextWindow} onChange={(e) => setCustomDraft({ ...customDraft, contextWindow: e.target.value })} title="Context window in tokens" />
                     </div>
+                    <div className="custom-field">
+                      <label>Quality (0-100)</label>
+                      <input type="number" min="0" max="100" value={customDraft.qualityIndex} onChange={(e) => setCustomDraft({ ...customDraft, qualityIndex: e.target.value })} title="Your quality estimate. Use benchmark evidence where available." />
+                    </div>
+                    <div className="custom-field">
+                      <label>Input $ / 1M</label>
+                      <input type="number" min="0" step="any" value={customDraft.inputPerM} onChange={(e) => setCustomDraft({ ...customDraft, inputPerM: e.target.value })} title="Actual input price in USD per million tokens; use 0 for free/local." />
+                    </div>
+                    <div className="custom-field">
+                      <label>Output $ / 1M</label>
+                      <input type="number" min="0" step="any" value={customDraft.outputPerM} onChange={(e) => setCustomDraft({ ...customDraft, outputPerM: e.target.value })} title="Actual output price in USD per million tokens; use 0 for free/local." />
+                    </div>
+                    <div className="custom-field custom-field-wide">
+                      <label>Capabilities</label>
+                      <div className="custom-capability-list">
+                        {CUSTOM_CAPABILITY_OPTIONS.map((option) => (
+                          <label key={option.id} className="custom-capability-option">
+                            <input
+                              type="checkbox"
+                              checked={customDraft.good_at.includes(option.id)}
+                              onChange={() => toggleCustomCapability(option.id)}
+                            />
+                            {option.label}
+                          </label>
+                        ))}
+                      </div>
+                    </div>
                   </div>
+                  <p className="settings-hint custom-quality-hint">
+                    <strong>How quality works:</strong> this is a 0–100 estimate of how capable the model is, not a live
+                    test and not a direct calculation from parameter count. For custom models, enter a benchmark score if
+                    you have one; otherwise use a conservative estimate: 0–20 basic, 21–40 moderate, 41–60 strong,
+                    61–80 very strong, and 81–100 exceptional. Older custom entries without a score use
+                    <code>min(30, parameters in billions × 0.4)</code>. The router combines quality with the selected
+                    capability, price, context window, speed, retry number, and verification history. Verification also
+                    requires the minimum quality set in Advanced Settings.
+                  </p>
 
                   <div className="custom-model-actions">
                     <button type="button" className="settings-add-btn" onClick={addCustomModel} disabled={!customDraft.apiId.trim()}>
@@ -348,7 +489,11 @@ export default function SettingsPanel({ onClose }: SettingsPanelProps) {
                   <div className="custom-model-list" style={{ marginTop: 12 }}>
                     {settings.customModels.map((m) => (
                       <div className="custom-model-row" key={m.id}>
-                        <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>{m.label} <code>{m.apiId}</code></span>
+                        <span style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                          {m.label} <code>{m.apiId}</code>
+                          <span className="model-badge">quality {m.qualityIndex ?? Math.min(30, m.paramsBTotal * 0.4).toFixed(1)}/100</span>
+                          <span className="model-badge">{m.good_at.join(', ')}</span>
+                        </span>
                         <span className={`model-health model-health-${health[m.id]?.state ?? 'unknown'}`}>{HEALTH_LABEL[health[m.id]?.state ?? 'unknown']}</span>
                         <button type="button" onClick={() => removeCustomModel(m.id)}>Remove</button>
                       </div>
@@ -379,6 +524,23 @@ export default function SettingsPanel({ onClose }: SettingsPanelProps) {
                     ordering is unchanged. Higher values finish a wide plan sooner but hit free-tier rate
                     limits faster; the scheduler drops back to one automatically once the cost ceiling is
                     close. Set 1 for the strictly sequential behaviour.
+                  </p>
+                </div>
+                <div className="parallel-setting" style={{ marginTop: 12 }}>
+                  <label htmlFor="min-verifier-quality">Minimum quality for custom verifiers</label>
+                  <input
+                    id="min-verifier-quality"
+                    type="number"
+                    min="0"
+                    max="100"
+                    value={settings.minVerifierQuality ?? 20}
+                    onChange={(e) =>
+                      setSettings({ ...settings, minVerifierQuality: Number(e.target.value) })
+                    }
+                  />
+                  <p className="settings-hint">
+                    A custom model below this score is never selected for verification, even if you assign it the
+                    verification capability. Set 0 to allow every custom verifier.
                   </p>
                 </div>
               </details>

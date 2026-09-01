@@ -210,7 +210,14 @@ export class TaskRunner {
       0
     );
     this.health = new HealthRegistry(config.modelHealth ?? {});
-    this.router = new Router(config.enabledModelIds, this.rateLimits, this.health, config.customModels ?? [], config.coreModelId);
+    this.router = new Router(
+      config.enabledModelIds,
+      this.rateLimits,
+      this.health,
+      config.customModels ?? [],
+      config.coreModelId,
+      config.minVerifierQuality,
+    );
 
     const agentsMd = loadAgentsMd(config.rootPath);
     this.ignore = loadIgnoreMatcher(config.rootPath);
@@ -627,6 +634,8 @@ export class TaskRunner {
         this.emit({
           type: 'agent_call_end',
           nodeId,
+          modelId: route.model.id,
+          provider: route.model.provider,
           promptTokens: result.promptTokens,
           completionTokens: result.completionTokens,
           costUsd: result.costUsd,
@@ -650,7 +659,18 @@ export class TaskRunner {
           return null;
         }
         const pe = err instanceof ProviderError ? err : new ProviderError(String(err), { retryable: true, rateLimited: false });
-        this.emit({ type: 'agent_call_end', nodeId, promptTokens: 0, completionTokens: 0, costUsd: 0, latencyMs: 0, output: '', error: pe.message });
+        this.emit({
+          type: 'agent_call_end',
+          nodeId,
+          modelId: route.model.id,
+          provider: route.model.provider,
+          promptTokens: 0,
+          completionTokens: 0,
+          costUsd: 0,
+          latencyMs: 0,
+          output: '',
+          error: pe.message,
+        });
 
         // Rate-limited models stay out via cooldown, not via `tried`, so they
         // can be retried after the wait. A hard failure (404, bad key, bad
@@ -732,6 +752,7 @@ export class TaskRunner {
                 : cooldownScope === 'free-tier'
                   ? `${provider} free routes`
                   : provider;
+            const attemptedModel = `${route.model.label} (${route.model.apiId})`;
             this.emit({
               type: 'intervention',
               subtaskId: opts.subtaskId,
@@ -739,14 +760,14 @@ export class TaskRunner {
               severity: 'info',
               detail:
                 pe.quotaScope === 'day'
-                  ? `${who} has used up its quota for today (${pe.humanMessage ?? pe.message}).`
-                  : `${who} is rate limited (${pe.humanMessage ?? pe.message}).`,
+                  ? `${who} has used up its quota for today; the last attempted model was ${attemptedModel} (${pe.humanMessage ?? pe.message}).`
+                  : `${who} is rate limited; the last attempted model was ${attemptedModel} (${pe.humanMessage ?? pe.message}).`,
               action:
                 cooldownScope === 'model'
-                  ? `Skipping this model for ${when} and continuing on another. No work is lost.`
+                  ? `Skipping ${attemptedModel} for ${when} and continuing on another. No work is lost.`
                   : pe.quotaScope === 'day'
                     ? `Skipping ${who} for the rest of this task and using the other routes. Nothing is lost - add and test another provider/model ID in Settings for more headroom.`
-                    : `Pausing ${who} for ${when} and continuing on another model. No work is lost.`,
+                    : `Pausing ${who} for ${when} after ${attemptedModel} was rejected, and continuing on another model. No work is lost.`,
             });
           }
           continue;
@@ -1810,7 +1831,11 @@ export class TaskRunner {
       if (!res) {
         return { verdict: 'fail', confidence: 0.3, reason: 'Verifier could not run (no model available).', evidence: '' };
       }
-      if (res.toolCalls.length === 0 || isLastStep) return agents.parseVerdict(res.text);
+      if (res.toolCalls.length === 0 || isLastStep) {
+        const verdict = agents.parseVerdict(res.text);
+        this.router.recordVerification(res.model.id, verdict.verdict === 'pass');
+        return verdict;
+      }
 
       convo = [...convo, { role: 'assistant', content: res.text || null, toolCalls: res.toolCalls }];
       for (const call of res.toolCalls) {

@@ -357,6 +357,50 @@ function capabilityOf(m: ModelEntry): number {
   return Math.min(30, (m.paramsBTotal ?? 0) * 0.4);
 }
 
+/** Default floor for custom models that explicitly opt into verification. */
+export const DEFAULT_MIN_VERIFIER_QUALITY = 20;
+
+export type VerificationReliabilityStats = {
+  passes: number;
+  failures: number;
+};
+
+/**
+ * Process-level evidence about verifier models. This is intentionally a
+ * small, smoothed signal rather than a claim that a model is correct: a pass
+ * means the verifier produced an accepted verdict, while a failure means its
+ * verdict rejected the attempt. The quality score and role capability remain
+ * the primary signals; reliability only breaks close verification decisions.
+ */
+export class VerificationReliabilityTracker {
+  private stats = new Map<string, VerificationReliabilityStats>();
+
+  record(modelId: string, passed: boolean): void {
+    const previous = this.stats.get(modelId) ?? { passes: 0, failures: 0 };
+    this.stats.set(modelId, {
+      passes: previous.passes + (passed ? 1 : 0),
+      failures: previous.failures + (passed ? 0 : 1),
+    });
+  }
+
+  /** Smoothed 0-100 acceptance score. Unknown models start neutral at 50. */
+  score(modelId: string): number {
+    const s = this.stats.get(modelId);
+    if (!s) return 50;
+    // Two neutral pseudo-observations prevent one lucky pass/fail dominating.
+    return ((s.passes + 2) / (s.passes + s.failures + 4)) * 100;
+  }
+
+  snapshot(): Record<string, VerificationReliabilityStats> {
+    return Object.fromEntries(
+      [...this.stats.entries()].map(([id, value]) => [id, { ...value }]),
+    );
+  }
+}
+
+/** Shared by all tasks in this orchestrator process, so later tasks learn from earlier verification. */
+export const processVerificationReliability = new VerificationReliabilityTracker();
+
 export class Router {
   constructor(
     private enabledModelIds: string[],
@@ -365,7 +409,13 @@ export class Router {
     private health: HealthRegistry = new HealthRegistry(),
     private customModels: ModelEntry[] = [],
     private coreModelId?: string,
+    private minVerifierQuality = DEFAULT_MIN_VERIFIER_QUALITY,
+    private reliability: VerificationReliabilityTracker = processVerificationReliability,
   ) {}
+
+  recordVerification(modelId: string, passed: boolean): void {
+    this.reliability.record(modelId, passed);
+  }
 
   /** Models the user enabled AND that pass the parameter-count gate. */
   private candidates(): ModelEntry[] {
@@ -408,6 +458,29 @@ export class Router {
         });
         continue;
       }
+      const capability = capabilityOf(m);
+      const isCustom = this.customModels.some((custom) => custom.id === m.id);
+      const supportsRole =
+        m.good_at.includes(wanted) ||
+        (signals.category === 'simple_edit' && m.good_at.includes('codegen'));
+      if (isCustom && !supportsRole) {
+        rejected.push({
+          modelId: m.id,
+          why: `custom model does not advertise ${wanted} capability`,
+        });
+        continue;
+      }
+      if (
+        signals.category === 'verification' &&
+        isCustom &&
+        capability < this.minVerifierQuality
+      ) {
+        rejected.push({
+          modelId: m.id,
+          why: `custom verifier quality ${capability.toFixed(1)} is below the ${this.minVerifierQuality} minimum`,
+        });
+        continue;
+      }
       // Leave room for the reply, not just the prompt.
       if (signals.estimatedContextTokens + ASSUMED_COMPLETION_TOKENS > m.contextWindow) {
         rejected.push({
@@ -434,9 +507,7 @@ export class Router {
         parts.push('preferred core model');
       }
 
-      const fits =
-        m.good_at.includes(wanted) ||
-        (signals.category === 'simple_edit' && m.good_at.includes('codegen'));
+      const fits = supportsRole;
       if (fits) {
         score += 40;
         parts.push(`fits ${signals.category}`);
@@ -481,9 +552,24 @@ export class Router {
 
       // Published capability, weighted by how expensive a wrong answer is in
       // this category. See QUALITY_WEIGHT.
-      const capability = capabilityOf(m);
       score += capability * QUALITY_WEIGHT[signals.category];
-      if (m.qualityIndex != null) parts.push(`quality ${m.qualityIndex}`);
+      if (m.qualityIndex != null) {
+        parts.push(`quality ${m.qualityIndex}`);
+      } else {
+        // Custom models do not have a curated benchmark entry. They still
+        // receive a deterministic capability score, deliberately capped below
+        // published scores, and the trace must make that fallback visible.
+        parts.push(`capability ${capability.toFixed(1)} from ${m.paramsBTotal}B params`);
+      }
+
+      if (signals.category === 'verification') {
+        const reliability = this.reliability.score(m.id);
+        // Neutral history adds nothing. Evidence can move the score by at most
+        // +/-10, enough to prefer a proven verifier without overpowering role,
+        // quality, context, and budget signals.
+        score += (reliability - 50) * 0.2;
+        parts.push(`verification reliability ${reliability.toFixed(0)}%`);
+      }
 
       // Retries escalate: if a weaker model already failed this subtask, bias
       // toward capability over thrift. Repeating the cheap failure is the exact
