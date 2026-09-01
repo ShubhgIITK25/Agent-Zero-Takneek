@@ -316,6 +316,13 @@ const CATEGORY_TO_CAPABILITY: Record<Subtask['category'], ModelEntry['good_at'][
   verification: 'verification',
 };
 
+/**
+ * The curated model explicitly marked as the primary planning model. This is
+ * a preference, not a hard dependency: health, cooldown, context, budget, and
+ * failover can still remove it from consideration.
+ */
+const PRIMARY_PLANNER_MODEL_ID = 'openrouter:qwen3-next-80b-thinking';
+
 /** Assume a completion roughly this size when pre-costing a call. Exported so
  *  the orchestrator's pre-dispatch budget gate costs a call the same way the
  *  router does - one estimate, not two that can drift apart. */
@@ -327,10 +334,10 @@ export const ASSUMED_COMPLETION_TOKENS = 600;
  * Not a flat weight, because the cost of being wrong is not flat. A bad
  * `simple_edit` is discovered on the next line. A bad plan is discovered after
  * every subtask under it has already been paid for, and a bad verification
- * verdict is never discovered at all - it ships. The planner and the tie-break
- * both route as `analysis`, and the verifier as `verification`, so weighting
- * those two categories is precisely how "spend quality where it matters" is
- * expressed in this router.
+ * verdict is never discovered at all - it ships. The tie-break routes as
+ * `analysis`, while the planner has an explicit role policy below and the
+ * verifier routes as `verification`, so quality is spent where a wrong
+ * decision has the largest downstream cost.
  *
  * Cost still dominates: the penalty term below reaches 45, so a free model
  * that fits keeps beating a paid one early in a task. That is intended - C is
@@ -428,6 +435,7 @@ export class Router {
     const exclude = new Set(opts.excludeModelIds ?? []);
     const rejected: { modelId: string; why: string }[] = [];
     const wanted = CATEGORY_TO_CAPABILITY[signals.category];
+    const isPlannerRoute = signals.role === 'planner';
 
     type Scored = { model: ModelEntry; score: number; parts: string[] };
     const scored: Scored[] = [];
@@ -463,10 +471,14 @@ export class Router {
       const supportsRole =
         m.good_at.includes(wanted) ||
         (signals.category === 'simple_edit' && m.good_at.includes('codegen'));
-      if (isCustom && !supportsRole) {
+      const supportsPlannerRole = m.good_at.includes('planning');
+      const supportsRequestedRole = isPlannerRoute ? supportsPlannerRole : supportsRole;
+      if (isCustom && !supportsRequestedRole) {
         rejected.push({
           modelId: m.id,
-          why: `custom model does not advertise ${wanted} capability`,
+          why: isPlannerRoute
+            ? 'custom model does not advertise planning capability'
+            : `custom model does not advertise ${wanted} capability`,
         });
         continue;
       }
@@ -502,12 +514,31 @@ export class Router {
       let score = 0;
       const parts: string[] = [];
 
+      const plannerFit = m.good_at.includes('planning');
+      if (isPlannerRoute && plannerFit) {
+        // Planning errors multiply: a weak plan creates several bad follow-up
+        // calls. Give planning capability enough weight to beat a cheap
+        // general coder, while leaving ordinary coding routes cost-sensitive.
+        score += 28;
+        parts.push('planner-capable');
+        if (m.id === PRIMARY_PLANNER_MODEL_ID) {
+          // Qwen3 Next 80B-A3B is the registry's designated primary planner.
+          // The bonus intentionally beats the zero-cost bonus of a smaller
+          // analysis model, but disappears when the model is unavailable.
+          score += 35;
+          parts.push('primary planner');
+        }
+      }
+
       if (m.id === this.coreModelId) {
         score += 12;
         parts.push('preferred core model');
       }
 
-      const fits = supportsRole;
+      // A planner-only custom model is valid for this role even if it does
+      // not also advertise generic analysis. If no planner candidate remains,
+      // ordinary analysis support still makes a safe fallback possible.
+      const fits = (isPlannerRoute && plannerFit) || supportsRole;
       if (fits) {
         score += 40;
         parts.push(`fits ${signals.category}`);
@@ -587,9 +618,29 @@ export class Router {
 
     if (scored.length === 0) return null;
 
-    scored.sort((a, b) => b.score - a.score);
-    const winner = scored[0];
-    for (const loser of scored.slice(1)) {
+    // A planner-capable model is a semantic requirement for the planner role,
+    // not merely another point in a generic analysis score. Keep the normal
+    // scoring path as a safe fallback only when every planner-capable option
+    // was filtered by health, cooldown, context, budget, or failover.
+    const plannerScored = isPlannerRoute
+      ? scored.filter(({ model }) => model.good_at.includes('planning'))
+      : [];
+    const ranked = plannerScored.length > 0 ? plannerScored : scored;
+    if (isPlannerRoute && plannerScored.length > 0) {
+      for (const candidate of scored.filter(({ model }) => !model.good_at.includes('planning'))) {
+        rejected.push({
+          modelId: candidate.model.id,
+          why: 'not tagged for planning; a planner-capable model is available',
+        });
+      }
+    }
+
+    ranked.sort((a, b) => b.score - a.score);
+    const winner = ranked[0];
+    if (isPlannerRoute && plannerScored.length === 0) {
+      winner.parts.unshift('no usable planner-capable model; analysis fallback');
+    }
+    for (const loser of ranked.slice(1)) {
       rejected.push({ modelId: loser.model.id, why: `scored ${loser.score.toFixed(1)} vs ${winner.score.toFixed(1)}` });
     }
 

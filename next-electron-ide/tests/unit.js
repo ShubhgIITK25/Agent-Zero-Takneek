@@ -194,6 +194,30 @@ t('failover excludes the model that just failed', () => {
     'ollama:qwen2.5-coder-7b'
   );
 });
+t('planner role prefers the designated OpenRouter planner over the 27B coder', () => {
+  const plannerRouter = new Router(
+    ['groq:qwen3.8-27b', 'openrouter:qwen3-next-80b-thinking'],
+    new RateLimitTracker(),
+    undefined,
+    [],
+    'groq:qwen3.8-27b',
+  );
+  const result = plannerRouter.route({ ...base, role: 'planner', budgetRemaining: 0.4 });
+  assert.ok(result, 'planner route should be available');
+  assert.strictEqual(result.model.id, 'openrouter:qwen3-next-80b-thinking', result.reason);
+  assert.ok(
+    result.rejected.some((entry) => entry.modelId === 'groq:qwen3.8-27b' && /not tagged for planning/.test(entry.why)),
+    'the 27B coder should be rejected from a planner route when a planner model is available',
+  );
+});
+t('planner role falls back explicitly when no planner-capable model is usable', () => {
+  const result = new Router(['groq:qwen3.8-27b'], new RateLimitTracker()).route({
+    ...base,
+    role: 'planner',
+  });
+  assert.ok(result, 'analysis fallback should keep a task runnable');
+  assert.ok(/analysis fallback/.test(result.reason), result.reason);
+});
 
 console.log('\n== budget: ceilings enforced before dispatch, not after ==');
 t('the reserve stops spending before the hard ceiling', () => {

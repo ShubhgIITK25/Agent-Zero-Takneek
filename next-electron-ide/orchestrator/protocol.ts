@@ -90,6 +90,8 @@ export type Subtask = {
 
 export type RoutingSignals = {
   category: Subtask['category'];
+  /** The agent role making this call. Planner calls need planner-grade routing. */
+  role?: AgentRole;
   estimatedContextTokens: number;
   budgetRemaining: number;
   timeRemaining: number;

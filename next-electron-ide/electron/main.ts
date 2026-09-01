@@ -1013,9 +1013,10 @@ type AgentSettings = {
 
 const DEFAULT_AGENT_SETTINGS: AgentSettings = {
   envVars: {},
-  // The local tool-capable model is the safest default: it needs no API key
-  // and is small enough for the reference 16GB RAM / 8GB VRAM machine.
-  enabledModelIds: ["groq:qwen3.8-27b"],
+  // Keep the 27B model as the cost-efficient coding core, but include the
+  // dedicated planner so a fresh install does not silently plan with the
+  // coder. If OpenRouter is unavailable, router failover still falls back.
+  enabledModelIds: ["groq:qwen3.8-27b", "openrouter:qwen3-next-80b-thinking"],
   coreModelId: "groq:qwen3.8-27b",
   customModels: [],
   maxCostUsd: 0.5,

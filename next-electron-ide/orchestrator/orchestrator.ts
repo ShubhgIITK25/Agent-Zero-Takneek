@@ -534,7 +534,13 @@ export class TaskRunner {
 
     for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
       if (this.cancelled) return null;
-      const route = tried.length === 0 ? this.router.route(opts.signals) : this.router.routeFallback(opts.signals, tried);
+      // Keep the role attached to the route even if a caller omitted it from
+      // its signal object. This is what makes planner/re-planner calls use the
+      // planner policy consistently, including failover attempts.
+      const routingSignals = opts.signals.role === opts.role
+        ? opts.signals
+        : { ...opts.signals, role: opts.role };
+      const route = tried.length === 0 ? this.router.route(routingSignals) : this.router.routeFallback(routingSignals, tried);
       if (!route) {
         const waitMs = this.rateLimits.soonestReadyMs();
         if (waitMs > 0 && waits < MAX_WAITS) {
@@ -1035,6 +1041,7 @@ export class TaskRunner {
     const messages = agents.plannerMessages(this.prompt, overview, this.snapshot.agentsMd);
     const signals: RoutingSignals = {
       category: 'analysis',
+      role: 'planner',
       estimatedContextTokens: estimateMessageTokens(messages),
       budgetRemaining: this.budget.costRemaining,
       timeRemaining: this.budget.timeRemaining,
@@ -1456,6 +1463,7 @@ export class TaskRunner {
       tools: [],
       signals: {
         category: 'analysis',
+        role: 'planner',
         estimatedContextTokens: estimateMessageTokens(messages),
         budgetRemaining: this.budget.costRemaining,
         timeRemaining: this.budget.timeRemaining,
