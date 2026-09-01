@@ -28,6 +28,10 @@ TEXT_EXTENSIONS = {
 MAX_FILE_BYTES = 1_500_000  # skip anything absurdly large (generated bundles etc.)
 
 
+class IndexCancelled(Exception):
+    """Raised at a safe file boundary when the user cancels indexing."""
+
+
 def _load_gitignore(root: str):
     patterns = [
         "node_modules/", ".git/", "dist/", "build/", "__pycache__/",
@@ -80,6 +84,10 @@ def _index_one_file(db, abs_path: str, rel_path: str):
 
     chunks = chunk_file(rel_path, text)
     if not chunks:
+        # Empty files are still completed work. Persist their hash so a
+        # restart does not repeatedly reconsider them.
+        mtime = os.path.getmtime(abs_path)
+        store.insert_file_chunks(db, rel_path, text, [], [], mtime)
         return 0
 
     texts_to_embed = [f"{c['symbol']}\n{c.get('docstring', '')}\n{c['code'][:800]}" for c in chunks]
@@ -92,9 +100,26 @@ def _index_one_file(db, abs_path: str, rel_path: str):
     return len(chunks)
 
 
-def full_index(data_dir: str, root_path: str, codebase_id: str, progress_cb=None):
+def full_index(data_dir: str, root_path: str, codebase_id: str, progress_cb=None, cancel_cb=None):
     db = store.get_db(data_dir, codebase_id)
     spec = _load_gitignore(root_path)
+    # Materialise the small path list once so the UI can report a meaningful
+    # total. File contents and embeddings are still processed one at a time,
+    # and each completed file is committed before moving to the next one.
+    source_files = []
+    for source_file in _iter_source_files(root_path, spec):
+        if cancel_cb and cancel_cb():
+            raise IndexCancelled()
+        source_files.append(source_file)
+    total_files = len(source_files)
+    if progress_cb:
+        progress_cb({
+            "files_scanned": 0,
+            "files_total": total_files,
+            "files_updated": 0,
+            "chunks_updated": 0,
+            "current_file": None,
+        })
 
     known = {r["path"] for r in db.execute("SELECT path FROM files")}
     seen = set()
@@ -102,15 +127,23 @@ def full_index(data_dir: str, root_path: str, codebase_id: str, progress_cb=None
     chunks_indexed = 0
     files_scanned = 0
 
-    for abs_path, rel_path in _iter_source_files(root_path, spec):
+    for abs_path, rel_path in source_files:
+        if cancel_cb and cancel_cb():
+            raise IndexCancelled()
         seen.add(rel_path)
         n = _index_one_file(db, abs_path, rel_path)
         files_scanned += 1
         if n:
             files_touched += 1
             chunks_indexed += n
-        if progress_cb and files_scanned % 25 == 0:
-            progress_cb(files_scanned)
+        if progress_cb:
+            progress_cb({
+                "files_scanned": files_scanned,
+                "files_total": total_files,
+                "files_updated": files_touched,
+                "chunks_updated": chunks_indexed,
+                "current_file": rel_path,
+            })
 
     # files that were indexed before but no longer exist / no longer match
     for stale in known - seen:
@@ -118,7 +151,8 @@ def full_index(data_dir: str, root_path: str, codebase_id: str, progress_cb=None
         db.commit()
 
     db.commit()
-    return {**store.stats(db), "files_scanned": files_scanned, "files_updated": files_touched,
+    return {**store.stats(db), "files_scanned": files_scanned,
+            "files_total": total_files, "files_updated": files_touched,
             "chunks_updated": chunks_indexed}
 
 

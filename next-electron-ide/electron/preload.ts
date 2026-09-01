@@ -50,11 +50,14 @@ export type RetrievalFileResult = {
 };
 
 export type RetrievalStatus = {
-  state: "idle" | "indexing" | "ready" | "error" | "unavailable";
+  state: "idle" | "indexing" | "cancelling" | "cancelled" | "ready" | "error" | "unavailable";
   codebaseId?: string;
   message?: string;
   files_indexed?: number;
   chunks_indexed?: number;
+  files_total?: number;
+  files_scanned?: number;
+  current_file?: string | null;
   files_updated?: number;
   chunks_updated?: number;
   vector_search?: boolean;
@@ -214,6 +217,8 @@ const api = {
     ipcRenderer.invoke("retrieval:getStatus"),
   retrievalReindex: (): Promise<{ ok?: boolean; error?: string }> =>
     ipcRenderer.invoke("retrieval:reindex"),
+  retrievalCancelIndex: (): Promise<{ ok?: boolean; error?: string; state?: string }> =>
+    ipcRenderer.invoke("retrieval:cancelIndex"),
   onRetrievalStatus: (cb: (status: RetrievalStatus) => void) => {
     const listener = (_evt: unknown, status: RetrievalStatus) => cb(status);
     ipcRenderer.on("retrieval:status", listener);

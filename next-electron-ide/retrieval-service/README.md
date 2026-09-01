@@ -130,6 +130,8 @@ All requests are `POST` with a JSON body (except `/health`).
 |------------|----------------------------------------------------------------|---------------------------------------------|
 | `/health`  | (GET, no body)                                                 | readiness + `{embeddings, sqlite_vec, ast_chunking, reranker, python}` capability flags |
 | `/index`   | `{root_path, codebase_id?}`                                     | full index build (first open of a project)   |
+| `/index-status` | `{codebase_id}`                                             | progress/result of the background index job  |
+| `/cancel-index` | `{codebase_id}`                                             | cancel at the next safe file boundary       |
 | `/update`  | `{root_path, codebase_id, changed_paths}`                       | incremental reindex (file watcher-driven)    |
 | `/query`   | `{codebase_id, query, k?}`                                      | `retrieve_context` tool backing              |
 | `/file`    | `{root_path, path, line_start?, line_end?}`                     | `open_file` tool backing                     |

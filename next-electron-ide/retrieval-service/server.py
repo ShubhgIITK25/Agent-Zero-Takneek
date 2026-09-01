@@ -80,10 +80,48 @@ def _capabilities():
 CAPABILITIES = {}  # filled in main(), served from /health
 _index_locks = {}  # codebase_id -> Lock, so concurrent /index and /update on
                     # the same project don't race each other's SQLite writes
+_index_jobs = {}  # codebase_id -> latest background indexing status
+_index_jobs_lock = threading.Lock()
+_index_cancel_events = {}  # codebase_id -> cooperative cancellation Event
 
 
 def _lock_for(codebase_id: str) -> threading.Lock:
     return _index_locks.setdefault(codebase_id, threading.Lock())
+
+
+def _set_index_status(codebase_id: str, **patch):
+    with _index_jobs_lock:
+        current = _index_jobs.setdefault(codebase_id, {})
+        current.update(patch)
+        return dict(current)
+
+
+def _run_index(codebase_id: str, root_path: str, cancel_event: threading.Event):
+    def progress(update):
+        _set_index_status(codebase_id, **update)
+        if cancel_event.is_set():
+            raise indexer.IndexCancelled()
+
+    try:
+        with _lock_for(codebase_id):
+            result = indexer.full_index(
+                DATA_DIR,
+                root_path,
+                codebase_id,
+                progress_cb=progress,
+                cancel_cb=cancel_event.is_set,
+            )
+        _set_index_status(codebase_id, state="ready", current_file=None, **result)
+    except indexer.IndexCancelled:
+        _set_index_status(codebase_id, state="cancelled", current_file=None)
+        print(f"[retrieval-service] indexing cancelled for {codebase_id}", flush=True)
+    except Exception as exc:
+        _set_index_status(codebase_id, state="error", message=str(exc))
+        print(f"[retrieval-service] indexing failed for {codebase_id}: {exc}", flush=True)
+    finally:
+        with _index_jobs_lock:
+            if _index_cancel_events.get(codebase_id) is cancel_event:
+                _index_cancel_events.pop(codebase_id, None)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -120,6 +158,10 @@ class Handler(BaseHTTPRequestHandler):
 
             if self.path == "/index":
                 self._handle_index(body)
+            elif self.path == "/index-status":
+                self._handle_index_status(body)
+            elif self.path == "/cancel-index":
+                self._handle_cancel_index(body)
             elif self.path == "/update":
                 self._handle_update(body)
             elif self.path == "/query":
@@ -141,10 +183,62 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json({"error": "root_path is required"}, 400)
             return
         codebase_id = body.get("codebase_id") or store.codebase_id_for(root_path)
-        print(codebase_id)
-        with _lock_for(codebase_id):
-            result = indexer.full_index(DATA_DIR, root_path, codebase_id)
-        self._send_json({"codebase_id": codebase_id, **result})
+        with _index_jobs_lock:
+            current = _index_jobs.get(codebase_id)
+            if current and current.get("state") in ("indexing", "cancelling"):
+                self._send_json({"codebase_id": codebase_id, **current})
+                return
+            cancel_event = threading.Event()
+            _index_cancel_events[codebase_id] = cancel_event
+            _index_jobs[codebase_id] = {
+                "state": "indexing",
+                "files_scanned": 0,
+                "files_total": 0,
+                "files_updated": 0,
+                "chunks_updated": 0,
+                "current_file": None,
+            }
+            initial = dict(_index_jobs[codebase_id])
+
+        # The HTTP handler returns immediately. The worker owns the index
+        # lock, parses/embeds one file at a time, and commits every file.
+        threading.Thread(
+            target=_run_index,
+            args=(codebase_id, root_path, cancel_event),
+            name=f"index-{codebase_id}",
+            daemon=True,
+        ).start()
+        self._send_json({"codebase_id": codebase_id, **initial})
+
+    def _handle_cancel_index(self, body):
+        codebase_id = body.get("codebase_id")
+        if not codebase_id:
+            self._send_json({"error": "codebase_id is required"}, 400)
+            return
+        with _index_jobs_lock:
+            status = _index_jobs.get(codebase_id)
+            event = _index_cancel_events.get(codebase_id)
+            if (
+                not status
+                or status.get("state") not in ("indexing", "cancelling")
+                or event is None
+            ):
+                state = status.get("state", "idle") if status else "idle"
+                self._send_json({"codebase_id": codebase_id, "state": state})
+                return
+            event.set()
+            status["state"] = "cancelling"
+            response = dict(status)
+        self._send_json({"codebase_id": codebase_id, **response})
+
+    def _handle_index_status(self, body):
+        codebase_id = body.get("codebase_id")
+        if not codebase_id:
+            self._send_json({"error": "codebase_id is required"}, 400)
+            return
+        with _index_jobs_lock:
+            status = dict(_index_jobs.get(codebase_id, {"state": "idle"}))
+        self._send_json({"codebase_id": codebase_id, **status})
 
     def _handle_update(self, body):
         root_path = body.get("root_path")

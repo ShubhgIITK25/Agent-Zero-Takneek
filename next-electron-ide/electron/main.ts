@@ -87,6 +87,7 @@ let currentCodebaseId: string | null = null;
 // with the state of an old session/project.
 let retrievalGeneration = 0;
 let lastRetrievalStatus: Record<string, unknown> | null = null;
+let retrievalIndexRun = 0;
 
 function sendRetrievalStatus(status: Record<string, unknown>) {
   lastRetrievalStatus = status;
@@ -312,6 +313,7 @@ async function indexCurrentFolder() {
   const folderPath = openFolderPath;
   const codebaseId = codebaseIdFor(folderPath);
   const generation = retrievalGeneration;
+  const indexRun = ++retrievalIndexRun;
   currentCodebaseId = codebaseId;
   sendRetrievalStatus({
     state: "indexing",
@@ -336,20 +338,61 @@ async function indexCurrentFolder() {
       codebaseId,
       message: result.error,
     });
+  } else if (result?.state === "indexing") {
+    publishIndexStatus(codebaseId, result);
+    void monitorIndex(folderPath, codebaseId, generation, indexRun);
   } else {
-    sendRetrievalStatus({
-      state: "ready",
-      codebaseId,
-      ...result,
-      // The /index response reports vector_search for this run; fold in the
-      // process-wide capability picture so the status bar can say "keyword
-      // only" when the interpreter is missing dependencies.
-      degraded:
-        retrievalCapabilities != null &&
-        (!retrievalCapabilities.vectorSearch ||
-          !retrievalCapabilities.astChunking ||
-          !retrievalCapabilities.reranker),
+    publishIndexStatus(codebaseId, result);
+  }
+}
+
+function publishIndexStatus(codebaseId: string, status: Record<string, unknown>) {
+  const state = typeof status.state === "string" ? status.state : "ready";
+  sendRetrievalStatus({
+    ...status,
+    state,
+    codebaseId,
+    // Fold in the process-wide capability picture so the status bar can say
+    // "keyword only" when the interpreter is missing dependencies.
+    degraded:
+      retrievalCapabilities != null &&
+      (!retrievalCapabilities.vectorSearch ||
+        !retrievalCapabilities.astChunking ||
+        !retrievalCapabilities.reranker),
+  });
+}
+
+async function monitorIndex(
+  folderPath: string,
+  codebaseId: string,
+  generation: number,
+  indexRun: number,
+) {
+  while (
+    generation === retrievalGeneration &&
+    indexRun === retrievalIndexRun &&
+    retrievalReady &&
+    openFolderPath === folderPath &&
+    currentCodebaseId === codebaseId
+  ) {
+    await new Promise((resolve) => setTimeout(resolve, 350));
+    if (
+      generation !== retrievalGeneration ||
+      indexRun !== retrievalIndexRun ||
+      !retrievalReady ||
+      openFolderPath !== folderPath ||
+      currentCodebaseId !== codebaseId
+    ) return;
+
+    const status = await retrievalRequest("/index-status", {
+      codebase_id: codebaseId,
     });
+    if (status?.error) {
+      publishIndexStatus(codebaseId, { state: "error", message: status.error });
+      return;
+    }
+    publishIndexStatus(codebaseId, status);
+    if (status.state === "ready" || status.state === "error" || status.state === "cancelled") return;
   }
 }
 
@@ -789,6 +832,15 @@ ipcMain.handle("retrieval:reindex", async () => {
     void indexCurrentFolder();
   }
   return { ok: true };
+});
+
+ipcMain.handle("retrieval:cancelIndex", async () => {
+  if (!currentCodebaseId) return { error: "No project is being indexed." };
+  const result = await retrievalRequest("/cancel-index", {
+    codebase_id: currentCodebaseId,
+  });
+  if (result?.error) return { error: result.error };
+  return { ok: true, state: result?.state };
 });
 
 ipcMain.handle(

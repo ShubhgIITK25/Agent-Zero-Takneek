@@ -384,6 +384,14 @@ button:hover {
   animation: status-retrieval-pulse 1.2s ease-in-out infinite;
 }
 
+.status-retrieval-cancelling::before {
+  background: #f0c645;
+}
+
+.status-retrieval-cancelled::before {
+  background: rgba(255, 255, 255, 0.45);
+}
+
 .status-retrieval-ready::before {
   background: #6fcf7f;
 }

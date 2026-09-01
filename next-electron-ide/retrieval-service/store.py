@@ -265,6 +265,9 @@ def insert_file_chunks(db, path: str, text: str, chunks: list, embeddings, mtime
                 (cid, sqlite_vec.serialize_float32(vec)),
             )
 
+    # This is the resumability checkpoint: indexing never wraps the whole
+    # project in one transaction, so closing the IDE preserves every file
+    # completed before the current one.
     db.commit()
     return chunk_ids
 

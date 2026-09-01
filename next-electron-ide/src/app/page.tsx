@@ -59,6 +59,19 @@ export default function Home() {
     }
   }, []);
 
+  const cancelRetrieval = useCallback(async () => {
+    if (!window.electronAPI) return;
+    setRetrievalStatus((previous) =>
+      previous ? { ...previous, state: 'cancelling' } : previous,
+    );
+    const result = await window.electronAPI.retrievalCancelIndex();
+    if (result.error) {
+      setRetrievalStatus((previous) =>
+        previous ? { ...previous, state: 'error', message: result.error } : previous,
+      );
+    }
+  }, []);
+
   const handleTraceEvent = useCallback((e: TraceEvent) => {
     setTrace((prev) => applyEvent(e.type === 'task_started' ? emptyTrace() : prev, e));
 
@@ -479,6 +492,7 @@ export default function Home() {
           taskCost={trace.status === 'running' ? trace.budget.costUsd : null}
           retrievalStatus={retrievalStatus}
           onRetryRetrieval={electronReady ? retryRetrieval : undefined}
+          onCancelRetrieval={electronReady ? cancelRetrieval : undefined}
         />
       </main>
       {electronReady && chatOpen && (

@@ -1,6 +1,6 @@
 'use client';
 
-import { ChevronDown, ChevronRight, LayoutDashboard, Settings, Terminal as LucideTerminal, MessageSquare, Search, RefreshCw } from 'lucide-react';
+import { ChevronDown, ChevronRight, LayoutDashboard, Settings, Terminal as LucideTerminal, MessageSquare, Search, RefreshCw, X } from 'lucide-react';
 import { languageFromPath } from '../lib/language';
 import type { RetrievalStatus } from '../lib/electron-api';
 
@@ -19,13 +19,19 @@ type StatusBarProps = {
   taskCost?: number | null;
   retrievalStatus?: RetrievalStatus | null;
   onRetryRetrieval?: () => void;
+  onCancelRetrieval?: () => void;
 };
 
 function retrievalLabel(status: RetrievalStatus | null | undefined): string | null {
   if (!status) return null;
   switch (status.state) {
-    case 'indexing':
-      return 'Indexing…';
+    case 'indexing': {
+      const scanned = status.files_scanned;
+      const total = status.files_total;
+      return scanned != null && total != null && total > 0
+        ? `Indexing ${scanned}/${total}…`
+        : 'Indexing…';
+    }
     case 'ready': {
       const files = status.files_indexed;
       const chunks = status.chunks_indexed;
@@ -35,6 +41,10 @@ function retrievalLabel(status: RetrievalStatus | null | undefined): string | nu
     }
     case 'error':
       return `Index error: ${status.message ?? 'unknown'}`;
+    case 'cancelling':
+      return 'Stopping index…';
+    case 'cancelled':
+      return 'Index paused';
     case 'unavailable':
       return 'Retrieval unavailable';
     case 'idle':
@@ -56,6 +66,7 @@ export default function StatusBar({
   taskCost,
   retrievalStatus,
   onRetryRetrieval,
+  onCancelRetrieval,
 }: StatusBarProps) {
   const retrievalText = retrievalLabel(retrievalStatus);
 
@@ -69,7 +80,9 @@ export default function StatusBar({
               retrievalStatus?.degraded ? ' status-retrieval-degraded' : ''
             }`}
             title={
-              retrievalStatus?.degraded
+              retrievalStatus?.state === 'indexing' && retrievalStatus.current_file
+                ? `Indexing ${retrievalStatus.current_file}`
+                : retrievalStatus?.degraded
                 ? 'Retrieval is running keyword-only: the Python service is missing tree-sitter / fastembed / sqlite-vec. Install retrieval-service/requirements.txt or set CODENAWABS_PYTHON (README §2.3).'
                 : 'Code retrieval index status'
             }
@@ -78,8 +91,21 @@ export default function StatusBar({
             {retrievalText}
           </span>
         )}
+        {onCancelRetrieval && retrievalStatus?.state === 'indexing' && (
+          <button
+            type="button"
+            className="status-toggle-btn"
+            onClick={onCancelRetrieval}
+            title="Stop indexing after the current file is committed"
+          >
+            <X size={13} style={{ marginRight: '4px' }} />
+            Cancel index
+          </button>
+        )}
         {onRetryRetrieval &&
-          (retrievalStatus?.state === 'unavailable' || retrievalStatus?.state === 'error') && (
+          (retrievalStatus?.state === 'unavailable' ||
+            retrievalStatus?.state === 'error' ||
+            retrievalStatus?.state === 'cancelled') && (
             <button
               type="button"
               className="status-toggle-btn"

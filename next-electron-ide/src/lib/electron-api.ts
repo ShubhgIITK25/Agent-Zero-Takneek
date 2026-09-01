@@ -96,11 +96,14 @@ export type RetrievalFileResult = {
 };
 
 export type RetrievalStatus = {
-  state: 'idle' | 'indexing' | 'ready' | 'error' | 'unavailable';
+  state: 'idle' | 'indexing' | 'cancelling' | 'cancelled' | 'ready' | 'error' | 'unavailable';
   codebaseId?: string;
   message?: string;
   files_indexed?: number;
   chunks_indexed?: number;
+  files_total?: number;
+  files_scanned?: number;
+  current_file?: string | null;
   files_updated?: number;
   chunks_updated?: number;
   vector_search?: boolean;
@@ -174,6 +177,7 @@ export interface ElectronAPI {
   retrievalOpenFile: (path: string, lineStart?: number, lineEnd?: number) => Promise<RetrievalFileResult>;
   retrievalGetStatus: () => Promise<RetrievalStatus | null>;
   retrievalReindex: () => Promise<{ ok?: boolean; error?: string }>;
+  retrievalCancelIndex: () => Promise<{ ok?: boolean; error?: string; state?: string }>;
   onRetrievalStatus: (cb: (status: RetrievalStatus) => void) => () => void;
 }
 
