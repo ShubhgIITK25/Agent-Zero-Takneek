@@ -2,7 +2,7 @@ import type { Metadata } from 'next';
 import './globals.css';
 
 export const metadata: Metadata = {
-  title: 'NEXide',
+  title: 'CodéNawabs',
   description: 'A minimal desktop IDE built with Next.js + Electron + Monaco',
 };
 

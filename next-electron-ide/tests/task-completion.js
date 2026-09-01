@@ -66,8 +66,8 @@ const { TaskRunner } = require(path.join(D, 'orchestrator'));
 const { TaskStore } = require(path.join(D, 'store'));
 
 async function main() {
-  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nexide-test-'));
-  const rootPath = fs.mkdtempSync(path.join(os.tmpdir(), 'nexide-project-'));
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codenawabs-test-'));
+  const rootPath = fs.mkdtempSync(path.join(os.tmpdir(), 'codenawabs-project-'));
   const store = new TaskStore(dataDir, 'cb-test', 'task-completion-test');
 
   const events = [];

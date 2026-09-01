@@ -1,8 +1,8 @@
-# Running NEXide on a local model
+# Running CodéNawabs on a local model
 
 Local models cost nothing per token. Since cost is the heaviest term in `S_task` (weighted roughly 2� -  time), a subtask that a 7B model can do locally is a subtask that costs literally zero - which is the single strongest lever available. The trade is latency, and a local model is meaningfully worse at hard reasoning, so the point isn't to run everything locally. It's to run the *cheap, high-volume* work locally and keep the hosted models for planning, verification and tie-breaks.
 
-NEXide talks to local models through [Ollama](https://ollama.com). No API key, no account.
+CodéNawabs talks to local models through [Ollama](https://ollama.com). No API key, no account.
 
 ---
 
@@ -38,13 +38,13 @@ Pull the one that matches your hardware - see the table below. If you're not sur
 ollama pull qwen2.5-coder:7b
 ```
 
-The tag must match the registry's `apiId` **exactly**. `qwen2.5-coder` and `qwen2.5-coder:7b` are different tags to Ollama, and NEXide asks for the exact one. If it's missing you get a clear error naming the pull command rather than a silent failure:
+The tag must match the registry's `apiId` **exactly**. `qwen2.5-coder` and `qwen2.5-coder:7b` are different tags to Ollama, and CodéNawabs asks for the exact one. If it's missing you get a clear error naming the pull command rather than a silent failure:
 
 > `Ollama has no model "qwen2.5-coder:7b" pulled. Run: ollama pull qwen2.5-coder:7b`
 
 ### If you already installed `llama3:latest`
 
-NEXide does not silently substitute the original Llama 3 tag. That tag is not
+CodéNawabs does not silently substitute the original Llama 3 tag. That tag is not
 the registered agent model and does not provide the tool-calling template the
 orchestrator needs. Pull the compatible replacement instead:
 
@@ -52,12 +52,12 @@ orchestrator needs. Pull the compatible replacement instead:
 ollama pull llama3.1:8b
 ```
 
-NEXide migrates the old saved model ID `ollama:llama3` to
+CodéNawabs migrates the old saved model ID `ollama:llama3` to
 `ollama:llama3.1-8b` when settings are loaded. The original `llama3:latest`
 can remain installed, but it will not be selected for the tool-using agent
 loop.
 
-## 3. Enable it in NEXide
+## 3. Enable it in CodéNawabs
 
 Open **Settings**:
 

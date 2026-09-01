@@ -41,7 +41,6 @@ type ChatPanelProps = {
   onOpenSettings: () => void;
   onOpenDashboard: () => void;
   onRunCommand: (command: string) => void;
-  onFileChanged: (path: string) => void;
   onOpenFileAt: (path: string, line?: number) => void;
 };
 
@@ -147,7 +146,6 @@ export default function ChatPanel({
   onOpenSettings,
   onOpenDashboard,
   onRunCommand,
-  onFileChanged,
   onOpenFileAt,
   onClearTrace,
 }: ChatPanelProps) {
@@ -155,10 +153,12 @@ export default function ChatPanel({
   const [input, setInput] = useState('');
   const [selectedModelId, setSelectedModelId] = useState('');
   const [pinned, setPinned] = useState<PinnedItem[]>([]);
-  const [running, setRunning] = useState(false);
-  const [taskId, setTaskId] = useState<string | null>(null);
+  const [running, setRunning] = useState(trace.status === 'running');
+  const [taskId, setTaskId] = useState<string | null>(trace.taskId);
   const [resumable, setResumable] = useState<{ taskId: string; prompt: string; step: number } | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const seenEventKeys = useRef<Set<string>>(new Set());
+  const eventKey = (e: TraceEvent) => `${e.taskId ?? ''}:${e.seq ?? e.ts}:${e.type}`;
   const push = (b: Bubble) => setBubbles((prev) => [...prev, b]);
   // Which routing rows are expanded to show their full reason / rejected
   // candidates / signals. Keyed by bubble id so it survives re-renders.
@@ -174,22 +174,17 @@ export default function ChatPanel({
   const [historyTasks, setHistoryTasks] = useState<any[]>([]);
   const [autoApprove, setAutoApprove] = useState(() => {
     if (typeof window !== 'undefined') {
-      return localStorage.getItem('nexide-auto-approve') !== 'false';
+      return (localStorage.getItem('codenawabs-auto-approve') ?? localStorage.getItem('nexide-auto-approve')) !== 'false';
     }
     return true;
   });
   const toggleAutoApprove = () => {
     setAutoApprove((v) => {
       const next = !v;
-      localStorage.setItem('nexide-auto-approve', String(next));
+      localStorage.setItem('codenawabs-auto-approve', String(next));
       return next;
     });
   };
-  const autoApproveRef = useRef(true);
-  useEffect(() => {
-    autoApproveRef.current = autoApprove;
-  }, [autoApprove]);
-
   useEffect(() => {
     window.electronAPI?.settingsGet().then((settings) =>
       setSelectedModelId(settings.enabledModelIds[0] ?? MODEL_REGISTRY[0]?.id ?? '')
@@ -306,45 +301,100 @@ export default function ChatPanel({
 
   useEffect(() => {
     (async () => {
-      const tasks = await window.electronAPI?.orchestratorListTasks();
-      const interrupted = (tasks ?? []).find((t: any) => t.status === 'running' || t.status === 'paused');
-      if (interrupted) {
-        setResumable({ taskId: interrupted.taskId, prompt: interrupted.prompt, step: interrupted.step });
+      // The parent keeps the live trace while this component is closed. A task
+      // that is still running here is active, not resumable; showing Resume
+      // would start a second runner against the same checkpoint.
+      if (trace.taskId && trace.status === 'running') {
+        setTaskId(trace.taskId);
+        setRunning(true);
+        setResumable(null);
+        return;
       }
+
+      const tasks = await window.electronAPI?.orchestratorListTasks();
+      const interrupted = (tasks ?? []).find(
+        (t: any) =>
+          (t.status === 'running' || t.status === 'paused') &&
+          t.taskId !== trace.taskId,
+      );
+      setResumable(
+        interrupted
+          ? { taskId: interrupted.taskId, prompt: interrupted.prompt, step: interrupted.step }
+          : null,
+      );
     })();
-  }, [rootPath]);
+  }, [rootPath, trace.taskId, trace.status]);
 
   // Turn the orchestrator's stream into chat bubbles. The dashboard consumes
   // the same events through the shared reducer; this view is the human-facing
   // digest of them, not a second source of truth.
   useEffect(() => {
     const off = window.electronAPI?.onOrchestratorEvent((e: TraceEvent) => {
-      onTraceEvent(e);
+      const key = eventKey(e);
+      if (seenEventKeys.current.has(key)) return;
+      seenEventKeys.current.add(key);
       setBubbles((prev) => processEventIntoBubbles(e, prev));
-
-      if (e.type === 'approval_request' && autoApproveRef.current && e.request) {
-        const ids = Array.isArray(e.request.diff)
-          ? e.request.diff.flatMap((d: { blocks?: { id: string }[] }) => (d.blocks ?? []).map((b) => b.id))
-          : [];
-        void window.electronAPI?.orchestratorApprove({
-          requestId: e.request.requestId,
-          approved: true,
-          acceptedBlockIds: ids,
-        });
-      }
 
       if (['task_finished', 'task_failed', 'task_cancelled'].includes(e.type)) {
         setRunning(false);
         setTaskId(null);
         setAutoApprove(false);
-        if (e.type === 'task_finished') onFileChanged('');
       }
     });
     const offStatus = window.electronAPI?.onOrchestratorStatus((s) => {
       if (s.state !== 'ready') push({ id: nextId(), kind: 'error', text: s.message ?? s.state });
     });
     return () => { off?.(); offStatus?.(); };
-  }, [onTraceEvent, onFileChanged]);
+  }, []);
+
+  // Rebuild the local chat projection from the durable event log whenever the
+  // panel is mounted again. The parent trace is already current while the app
+  // is open, so replay only fills bubbles here; it does not apply the same
+  // events to the parent twice. Events received live while the read is in
+  // flight are de-duplicated by task id + sequence number.
+  useEffect(() => {
+    const id = trace.taskId;
+    if (!id || !window.electronAPI?.orchestratorReadTaskEvents) return;
+    let cancelled = false;
+    const parentAlreadyHasTask = trace.taskId === id && trace.status !== 'idle';
+
+    (async () => {
+      try {
+        const events: TraceEvent[] = await window.electronAPI!.orchestratorReadTaskEvents(id);
+        if (cancelled) return;
+
+        const replay: TraceEvent[] = [];
+        for (const e of events) {
+          const key = eventKey(e);
+          if (seenEventKeys.current.has(key)) continue;
+          seenEventKeys.current.add(key);
+          replay.push(e);
+          if (!parentAlreadyHasTask) onTraceEvent(e);
+        }
+        if (replay.length > 0) {
+          setBubbles((previous) => replay.reduce((next, e) => processEventIntoBubbles(e, next), previous));
+        }
+
+        const terminal = events.some((e) =>
+          e.type === 'task_finished' || e.type === 'task_failed' || e.type === 'task_cancelled',
+        );
+        if (terminal) {
+          setRunning(false);
+          setTaskId(null);
+        } else if (trace.status === 'running') {
+          setRunning(true);
+          setTaskId(id);
+        }
+      } catch {
+        // The live subscription remains useful even if a task log is briefly
+        // unavailable while the orchestrator is checkpointing it.
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [trace.taskId, trace.status, onTraceEvent]);
 
   // Follow the tail only when the user is already at it. Unconditionally
   // scrolling to the bottom on every event yanked the view away mid-review of
@@ -401,6 +451,7 @@ export default function ChatPanel({
       
       let replayedBubbles: Bubble[] = [];
       for (const e of events) {
+        seenEventKeys.current.add(eventKey(e));
         onTraceEvent(e);
         replayedBubbles = processEventIntoBubbles(e, replayedBubbles);
       }

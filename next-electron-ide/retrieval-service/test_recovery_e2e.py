@@ -128,8 +128,8 @@ def run(datadir, cid, query, k=5):
 
 
 def main():
-    wd = tempfile.mkdtemp(prefix="nexide-e2e-proj-")
-    dd = tempfile.mkdtemp(prefix="nexide-e2e-index-")
+    wd = tempfile.mkdtemp(prefix="codenawabs-e2e-proj-")
+    dd = tempfile.mkdtemp(prefix="codenawabs-e2e-index-")
     try:
         for rel, body in CORPUS.items():
             full = os.path.join(wd, rel)
@@ -218,7 +218,7 @@ def main():
         if not os.path.isdir(src):
             print("  (skipped: orchestrator/ not found)")
         else:
-            dd2 = tempfile.mkdtemp(prefix="nexide-e2e-real-")
+            dd2 = tempfile.mkdtemp(prefix="codenawabs-e2e-real-")
             try:
                 cid2 = store.codebase_id_for(src)
                 r2 = indexer.full_index(dd2, src, cid2)

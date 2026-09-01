@@ -67,7 +67,7 @@ export default function StatusBar({
             }`}
             title={
               retrievalStatus?.degraded
-                ? 'Retrieval is running keyword-only: the Python service is missing tree-sitter / fastembed / sqlite-vec. Install retrieval-service/requirements.txt or set NEXIDE_PYTHON (README §2.3).'
+                ? 'Retrieval is running keyword-only: the Python service is missing tree-sitter / fastembed / sqlite-vec. Install retrieval-service/requirements.txt or set CODENAWABS_PYTHON (README §2.3).'
                 : 'Code retrieval index status'
             }
           >

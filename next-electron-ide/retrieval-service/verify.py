@@ -452,7 +452,7 @@ def main():
         # to delete a file that's still open - the cleanup raises
         # PermissionError (WinError 32) after a completely successful run.
         # Close the connections first, then delete, tolerating leftovers.
-        data_dir = tempfile.mkdtemp(prefix="nexide-verify-")
+        data_dir = tempfile.mkdtemp(prefix="codenawabs-verify-")
         try:
             codebase_id = run_index(root_path, data_dir)
             show_breakdown(data_dir, codebase_id)

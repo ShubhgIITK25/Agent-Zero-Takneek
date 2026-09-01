@@ -25,7 +25,7 @@ const path = require('path');
 const os = require('os');
 
 const script = path.join(__dirname, '..', 'orchestrator-dist', 'index.js');
-const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nexide-resume-'));
+const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codenawabs-resume-'));
 const codebaseId = 'test';
 const taskId = 'resume1';
 

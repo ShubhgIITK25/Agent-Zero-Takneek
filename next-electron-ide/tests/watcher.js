@@ -20,7 +20,7 @@ let passed = 0;
 const ok = (name) => { console.log('  ok  ', name); passed++; };
 
 function mkroot() {
-  return fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'nexide-watch-')));
+  return fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'codenawabs-watch-')));
 }
 
 (async () => {

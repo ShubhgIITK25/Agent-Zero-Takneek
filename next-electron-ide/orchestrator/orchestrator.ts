@@ -169,7 +169,7 @@ export class TaskRunner {
   private reportedRateLimits = new Set<string>();
   /** Re-plans spent on this task. Bounded by MAX_REPLANS_PER_TASK. */
   private replansUsed = 0;
-  /** .nexideignore / .ignore - loaded once per task, not re-read on every tool call. */
+  /** .codenawabsignore (or legacy .nexideignore) / .ignore - loaded once per task, not re-read on every tool call. */
   private ignore: ReturnType<typeof loadIgnoreMatcher>;
   /**
    * CALL HIERARCHY. Every node the dashboard draws hangs off one of these two.

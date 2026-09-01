@@ -94,8 +94,8 @@ const t = (name, fn) => {
 
 async function run({ subtasks, maxParallelSubtasks }) {
   planSubtasks = subtasks;
-  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nexide-sched-'));
-  const rootPath = fs.mkdtempSync(path.join(os.tmpdir(), 'nexide-schedproj-'));
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codenawabs-sched-'));
+  const rootPath = fs.mkdtempSync(path.join(os.tmpdir(), 'codenawabs-schedproj-'));
   const id = `sched-${Math.random().toString(36).slice(2)}`;
   const store = new TaskStore(dataDir, 'cb-sched', id);
 

@@ -423,7 +423,6 @@ export default function SettingsPanel({ onClose }: SettingsPanelProps) {
                     <div className="custom-field custom-field-wide">
                       <label>Model ID</label>
                       <input value={customDraft.apiId} onChange={(e) => setCustomDraft({ ...customDraft, apiId: e.target.value })} placeholder={customDraft.provider === 'gemini' ? 'e.g. gemini-2.5-flash' : 'e.g. qwen/qwen3-coder'} spellCheck={false} />
-                      {customDraft.provider === 'gemini' && <span className="custom-field-hint">Paste the name from Gemini&apos;s <code>/v1beta/models</code> response. <code>models/</code> and <code>gemini/</code> prefixes are accepted.</span>}
                     </div>
                     <div className="custom-field custom-field-wide">
                       <label>Display Name (optional)</label>
@@ -466,13 +465,8 @@ export default function SettingsPanel({ onClose }: SettingsPanelProps) {
                     </div>
                   </div>
                   <p className="settings-hint custom-quality-hint">
-                    <strong>How quality works:</strong> this is a 0–100 estimate of how capable the model is, not a live
-                    test and not a direct calculation from parameter count. For custom models, enter a benchmark score if
-                    you have one; otherwise use a conservative estimate: 0–20 basic, 21–40 moderate, 41–60 strong,
-                    61–80 very strong, and 81–100 exceptional. Older custom entries without a score use
-                    <code>min(30, parameters in billions × 0.4)</code>. The router combines quality with the selected
-                    capability, price, context window, speed, retry number, and verification history. Verification also
-                    requires the minimum quality set in Advanced Settings.
+                    <strong>How quality works:</strong> 0-20 basic, 21-40 moderate, 41-60 strong,
+                    61-80 very strong, and 81-100 exceptional.
                   </p>
 
                   <div className="custom-model-actions">

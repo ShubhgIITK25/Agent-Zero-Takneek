@@ -14,7 +14,7 @@ const path = require('path');
 const os = require('os');
 
 const script = path.join(__dirname, '..', 'orchestrator-dist', 'index.js');
-const dataDir = path.join(os.tmpdir(), 'nexide-protocol-test');
+const dataDir = path.join(os.tmpdir(), 'codenawabs-protocol-test');
 
 const child = spawn(process.execPath, [script, '--data-dir', dataDir], { stdio: ['pipe', 'pipe', 'pipe'] });
 const rl = readline.createInterface({ input: child.stdout });

@@ -1,5 +1,5 @@
 /**
- * Dependency-free unit tests for the .nexideignore / .ignore matcher.
+ * Dependency-free unit tests for the .codenawabsignore / .nexideignore / .ignore matcher.
  *   npm run build:orchestrator && node tests/ignore.js
  */
 const assert = require('assert');
@@ -80,18 +80,26 @@ t('.git is always excluded even with no ignore file at all', () => {
 
 console.log('\n== ignore: loading from disk ==');
 
-t('.nexideignore is preferred over .ignore when both exist', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nexide-ignore-'));
-  fs.writeFileSync(path.join(dir, '.nexideignore'), '*.nx\n');
+t('.codenawabsignore is preferred over .ignore when both exist', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codenawabs-ignore-'));
+  fs.writeFileSync(path.join(dir, '.codenawabsignore'), '*.nx\n');
   fs.writeFileSync(path.join(dir, '.ignore'), '*.legacy\n');
   const m = loadIgnoreMatcher(dir);
-  assert.strictEqual(m.sourceFile, '.nexideignore');
+  assert.strictEqual(m.sourceFile, '.codenawabsignore');
   assert.ok(m.isIgnored('thing.nx'));
-  assert.ok(!m.isIgnored('thing.legacy'), '.ignore should not apply once .nexideignore is found');
+  assert.ok(!m.isIgnored('thing.legacy'), '.ignore should not apply once .codenawabsignore is found');
 });
 
-t('falls back to .ignore when .nexideignore is absent', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nexide-ignore-'));
+t('legacy .nexideignore is supported when the new file is absent', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codenawabs-ignore-'));
+  fs.writeFileSync(path.join(dir, '.nexideignore'), '*.legacy-name\n');
+  const m = loadIgnoreMatcher(dir);
+  assert.strictEqual(m.sourceFile, '.nexideignore');
+  assert.ok(m.isIgnored('thing.legacy-name'));
+});
+
+t('falls back to .ignore when both named files are absent', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codenawabs-ignore-'));
   fs.writeFileSync(path.join(dir, '.ignore'), '*.legacy\n');
   const m = loadIgnoreMatcher(dir);
   assert.strictEqual(m.sourceFile, '.ignore');
@@ -99,7 +107,7 @@ t('falls back to .ignore when .nexideignore is absent', () => {
 });
 
 t('neither file present means nothing is ignored beyond .git', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nexide-ignore-'));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codenawabs-ignore-'));
   const m = loadIgnoreMatcher(dir);
   assert.strictEqual(m.sourceFile, null);
   assert.strictEqual(m.patternCount, 0);

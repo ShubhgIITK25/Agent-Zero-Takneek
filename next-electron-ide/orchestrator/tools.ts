@@ -36,7 +36,7 @@ export type ToolContext = {
    *  The /query endpoint requires this and does NOT derive it from rootPath. */
   codebaseId: string;
   retrievalUrl: string | null;
-  /** .nexideignore / .ignore matcher - gates the AUTOMATIC tools below.
+  /** .codenawabsignore (or legacy .nexideignore) / .ignore matcher - gates the AUTOMATIC tools below.
    *  See orchestrator/ignore.ts for what it does and does not cover. */
   ignore: { isIgnored: (relPath: string) => boolean; sourceFile: string | null };
   /** Mirrors a command into the IDE's visible terminal panel. */

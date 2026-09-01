@@ -32,7 +32,7 @@ async function main() {
   assert.ok(git, 'no `git` tool in the registry');
   assert.strictEqual(git.sideEffecting, false, 'the git tool must not be side-effecting - the write path is run_command');
 
-  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'nexide-git-'));
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'codenawabs-git-'));
   const g = (...a) => execFileSync('git', a, { cwd: repo }).toString();
   g('init', '-q');
   g('config', 'user.email', 't@t');

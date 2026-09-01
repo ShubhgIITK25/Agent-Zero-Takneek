@@ -202,7 +202,7 @@ export default function InlineDiffEditor({
       // A synthetic scheme keeps this buffer's model separate from the real
       // editor's model for the same file - otherwise opening the file being
       // reviewed would show the diff preview as if it were the file on disk.
-      path={`nexide-review://${diff.path}`}
+      path={`codenawabs-review://${diff.path}`}
       language={languageFromPath(diff.path)}
       value={value}
       onMount={handleMount}

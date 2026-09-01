@@ -33,8 +33,8 @@ const { TaskRunner } = require(path.join(D, 'orchestrator'));
 const { TaskStore } = require(path.join(D, 'store'));
 
 (async () => {
-  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nexide-cancel-'));
-  const rootPath = fs.mkdtempSync(path.join(os.tmpdir(), 'nexide-cancel-project-'));
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codenawabs-cancel-'));
+  const rootPath = fs.mkdtempSync(path.join(os.tmpdir(), 'codenawabs-cancel-project-'));
   const id = 'cancel-regression';
   const store = new TaskStore(dataDir, 'cb-cancel', id);
   const events = [];

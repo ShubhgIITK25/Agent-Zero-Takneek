@@ -93,8 +93,8 @@ function installMock(opts) {
 }
 
 async function runTask(label, opts) {
-  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nexide-replan-data-'));
-  const rootPath = fs.mkdtempSync(path.join(os.tmpdir(), 'nexide-replan-proj-'));
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codenawabs-replan-data-'));
+  const rootPath = fs.mkdtempSync(path.join(os.tmpdir(), 'codenawabs-replan-proj-'));
   const store = new TaskStore(dataDir, 'cb-replan', label);
   const events = [];
 

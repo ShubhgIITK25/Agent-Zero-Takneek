@@ -2,8 +2,9 @@
  * ============================================================================
  *  CONTEXT IGNORE - files that must never be pulled into agent context
  * ============================================================================
- * `.nexideignore` in the project root (falling back to a plain `.ignore` if
- * that's the name already in use - either works), one pattern per line, in
+ * `.codenawabsignore` in the project root (falling back to the legacy
+ * `.nexideignore` and then a plain `.ignore` if either is already in use), one
+ * pattern per line, in
  * gitignore syntax:
  *   - blank lines and `#` comments are skipped
  *   - `*` matches within one path segment, `**` matches across segments
@@ -99,12 +100,12 @@ export function matchIgnored(rules: IgnoreRule[], relPath: string): boolean {
 
 export type IgnoreMatcher = {
   isIgnored: (relPath: string) => boolean;
-  /** `.nexideignore`, `.ignore`, or null if neither exists (nothing is ignored beyond ALWAYS_IGNORED_SEGMENTS). */
+  /** `.codenawabsignore`, legacy `.nexideignore`, `.ignore`, or null if neither exists (nothing is ignored beyond ALWAYS_IGNORED_SEGMENTS). */
   sourceFile: string | null;
   patternCount: number;
 };
 
-const CANDIDATE_FILENAMES = ['.nexideignore', '.ignore'];
+const CANDIDATE_FILENAMES = ['.codenawabsignore', '.nexideignore', '.ignore'];
 
 export function loadIgnoreMatcher(rootPath: string): IgnoreMatcher {
   let sourceFile: string | null = null;

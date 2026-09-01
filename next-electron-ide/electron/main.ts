@@ -35,7 +35,7 @@ let orchestrator: OrchestratorBridge | null = null;
 
 function createWindow() {
   mainWindow = new BrowserWindow({
-    title: "NEXide",
+    title: "CodéNawabs",
     width: 1400,
     height: 900,
     minWidth: 800,
@@ -164,7 +164,7 @@ async function startRetrievalService() {
         "If tree-sitter / fastembed / sqlite-vec are not installed there, " +
         "retrieval runs in keyword-only mode (no AST chunking, no vector " +
         "search, no reranking). Create retrieval-service/.venv or set " +
-        "NEXIDE_PYTHON - see README section 2.3.",
+        "CODENAWABS_PYTHON - see README section 2.3 (NEXIDE_PYTHON remains supported as a legacy alias).",
     );
   }
 

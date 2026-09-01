@@ -117,8 +117,8 @@ async function runScenario({ subtasks, maxParallelSubtasks, edits = false }) {
   gauge.live = 0;
   gauge.peak = 0;
 
-  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nexide-par-'));
-  const rootPath = fs.mkdtempSync(path.join(os.tmpdir(), 'nexide-parproj-'));
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codenawabs-par-'));
+  const rootPath = fs.mkdtempSync(path.join(os.tmpdir(), 'codenawabs-parproj-'));
   const id = `par-${Math.random().toString(36).slice(2)}`;
   const store = new TaskStore(dataDir, 'cb-par', id);
 

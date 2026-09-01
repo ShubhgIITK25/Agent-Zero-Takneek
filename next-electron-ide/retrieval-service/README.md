@@ -1,6 +1,6 @@
 # Retrieval service
 
-The code retrieval pipeline for NEXide's agent: a real AST-based codebase
+The code retrieval pipeline for CodéNawabs' agent: a real AST-based codebase
 index (not naive keyword or vector search alone), with per-project
 isolation. Runs as a separate local Python process, spawned by Electron's
 main process (`electron/main.ts`) and talked to over
@@ -18,10 +18,10 @@ pip install -r requirements.txt
 That's it  -  `npm run dev` spawns `server.py` automatically once the
 dependencies are installed (see `startRetrievalService()` in
 `electron/main.ts`). Interpreter resolution
-(`electron/python-interpreter.ts`) tries, in order: `$NEXIDE_PYTHON`, then
+(`electron/python-interpreter.ts`) tries, in order: `$CODENAWABS_PYTHON`, then
 this `.venv`, then an activated `$VIRTUAL_ENV`, then `python3` (`python`
 on Windows) on `PATH`. So a `.venv` created at `retrieval-service/.venv`
-is picked up with no configuration; set `NEXIDE_PYTHON` only if your
+is picked up with no configuration; set `CODENAWABS_PYTHON` only if your
 interpreter lives elsewhere.
 
 If the service fails to start, the status bar shows "retrieval

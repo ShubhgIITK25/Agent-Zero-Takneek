@@ -70,7 +70,7 @@ function parseHunkHeader(line: string): HunkHeader | null {
 }
 
 function gitDiffOutput(oldContent: string | null, newContent: string): string {
-  const dir = mkdtempSync(join(tmpdir(), 'nexide-git-diff-'));
+  const dir = mkdtempSync(join(tmpdir(), 'codenawabs-git-diff-'));
   const before = join(dir, 'before');
   const after = join(dir, 'after');
   try {

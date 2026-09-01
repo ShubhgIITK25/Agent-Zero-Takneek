@@ -95,8 +95,8 @@ const { TaskRunner } = require(path.join(D, 'orchestrator'));
 const { TaskStore } = require(path.join(D, 'store'));
 
 async function main() {
-  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nexide-bt-data-'));
-  const rootPath = fs.mkdtempSync(path.join(os.tmpdir(), 'nexide-bt-proj-'));
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codenawabs-bt-data-'));
+  const rootPath = fs.mkdtempSync(path.join(os.tmpdir(), 'codenawabs-bt-proj-'));
   fs.writeFileSync(path.join(rootPath, 'good.txt'), ORIGINAL_GOOD);
 
   const store = new TaskStore(dataDir, 'cb-bt', 'backtrack-test');

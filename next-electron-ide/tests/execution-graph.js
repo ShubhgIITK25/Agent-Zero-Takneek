@@ -10,8 +10,8 @@ const path = require('path');
 
 const { TaskStore } = require(path.join(__dirname, '..', 'orchestrator-dist', 'store'));
 
-const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nexide-execution-graph-'));
-const rootPath = fs.mkdtempSync(path.join(os.tmpdir(), 'nexide-execution-workspace-'));
+const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codenawabs-execution-graph-'));
+const rootPath = fs.mkdtempSync(path.join(os.tmpdir(), 'codenawabs-execution-workspace-'));
 const store = new TaskStore(dataDir, 'graph-test-codebase', 'graph-test-task');
 
 const emit = (body) => {

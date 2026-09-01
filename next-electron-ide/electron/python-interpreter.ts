@@ -13,7 +13,9 @@
  * So before falling back to PATH we look for the virtualenv the setup docs
  * (README §2.3) tell you to create. Resolution order, first hit wins:
  *
- *   1. NEXIDE_PYTHON             explicit override, always respected. If it
+ *   1. CODENAWABS_PYTHON         explicit override, always respected. If it
+ *                               is unset, legacy NEXIDE_PYTHON is checked
+ *                               next for existing installations. If either
  *                               looks like a path it must exist; a bare
  *                               command name (e.g. "python3.12") is trusted.
  *   2. retrieval-service/.venv  the project-local venv - the common case in
@@ -41,7 +43,7 @@ export type InterpreterResolution = {
 export type ResolveOptions = {
   /** Absolute path to the retrieval-service directory. */
   serviceDir: string;
-  /** Environment to read NEXIDE_PYTHON / VIRTUAL_ENV from. */
+  /** Environment to read CODENAWABS_PYTHON / legacy NEXIDE_PYTHON / VIRTUAL_ENV from. */
   env: NodeJS.ProcessEnv;
   /** `process.platform`. */
   platform: NodeJS.Platform;
@@ -81,16 +83,22 @@ export function resolvePythonInterpreter(
   const join = opts.join ?? defaultJoin(platform);
   const sep = platform === "win32" ? "\\" : "/";
 
-  // 1. Explicit override.
-  const override = env.NEXIDE_PYTHON?.trim();
-  if (override) {
+  // 1. Explicit override. The new variable wins, but an invalid new path
+  // should not prevent a valid legacy override from being used.
+  const overrides: { value: string; source: string }[] = [];
+  const namedOverride = env.CODENAWABS_PYTHON?.trim();
+  const legacyOverride = env.NEXIDE_PYTHON?.trim();
+  if (namedOverride) overrides.push({ value: namedOverride, source: "CODENAWABS_PYTHON" });
+  if (legacyOverride) overrides.push({ value: legacyOverride, source: "NEXIDE_PYTHON (legacy)" });
+
+  for (const { value: override, source } of overrides) {
     const looksLikePath =
       override.includes("/") || override.includes("\\") || override.includes(sep);
     if (looksLikePath && !exists(override)) {
       // Misconfigured - fall through rather than spawn a path that isn't there.
       // The caller logs the whole resolution, so this stays visible.
     } else {
-      return { command: override, source: "NEXIDE_PYTHON", isFallback: false };
+      return { command: override, source, isFallback: false };
     }
   }
 

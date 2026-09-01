@@ -89,9 +89,9 @@ export default function Home() {
     setElectronReady(typeof window !== 'undefined' && !!window.electronAPI);
     
     if (typeof window !== 'undefined') {
-      const savedChat = localStorage.getItem('nexide-chat-open');
+      const savedChat = localStorage.getItem('codenawabs-chat-open') ?? localStorage.getItem('nexide-chat-open');
       if (savedChat !== null) setChatOpen(savedChat === 'true');
-      const savedTerminal = localStorage.getItem('nexide-terminal-open');
+      const savedTerminal = localStorage.getItem('codenawabs-terminal-open') ?? localStorage.getItem('nexide-terminal-open');
       if (savedTerminal !== null) setTerminalOpen(savedTerminal === 'true');
     }
 
@@ -301,6 +301,31 @@ export default function Home() {
     refreshWorkspaceRef.current = refreshWorkspace;
   }, [refreshWorkspace]);
 
+  // The chat panel is deliberately mountable/unmountable, but the task stream
+  // is not. Keep consuming events here so closing chat cannot stop the trace,
+  // lose a pending approval, or make the editor miss an agent-written file.
+  useEffect(() => {
+    const off = window.electronAPI?.onOrchestratorEvent((e: TraceEvent) => {
+      handleTraceEvent(e);
+
+      if (e.type === 'approval_request' && e.request && typeof window !== 'undefined' && (localStorage.getItem('codenawabs-auto-approve') ?? localStorage.getItem('nexide-auto-approve')) !== 'false') {
+        const acceptedBlockIds = Array.isArray(e.request.diff)
+          ? e.request.diff.flatMap((d: { blocks?: { id: string }[] }) => (d.blocks ?? []).map((b) => b.id))
+          : [];
+        void window.electronAPI?.orchestratorApprove({
+          requestId: e.request.requestId,
+          approved: true,
+          acceptedBlockIds,
+        });
+      }
+
+      if (e.type === 'task_finished') {
+        void refreshWorkspaceRef.current();
+      }
+    });
+    return () => off?.();
+  }, [handleTraceEvent]);
+
   // Answers the approval the orchestrator is blocked on. Returns false when
   // the decision could not be delivered so the pane can re-enable its buttons
   // and let the user retry, rather than the task hanging with a dead UI.
@@ -352,7 +377,7 @@ export default function Home() {
   const toggleTerminal = useCallback(() => {
     setTerminalOpen((open) => {
       const next = !open;
-      if (typeof window !== 'undefined') localStorage.setItem('nexide-terminal-open', String(next));
+      if (typeof window !== 'undefined') localStorage.setItem('codenawabs-terminal-open', String(next));
       return next;
     });
   }, []);
@@ -360,7 +385,7 @@ export default function Home() {
   const toggleChat = useCallback(() => {
     setChatOpen((open) => {
       const next = !open;
-      if (typeof window !== 'undefined') localStorage.setItem('nexide-chat-open', String(next));
+      if (typeof window !== 'undefined') localStorage.setItem('codenawabs-chat-open', String(next));
       return next;
     });
   }, []);
@@ -453,7 +478,6 @@ export default function Home() {
           onOpenSettings={() => setSettingsOpen(true)}
           onOpenDashboard={() => setDashboardOpen(true)}
           onRunCommand={runInTerminal}
-          onFileChanged={refreshWorkspace}
           onOpenFileAt={openFileAt}
         />
       )}

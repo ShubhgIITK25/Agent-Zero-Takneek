@@ -1,8 +1,8 @@
 {
-  "name": "next-electron-ide",
+  "name": "codenawabs",
   "version": "0.1.0",
   "private": true,
-  "description": "A minimal desktop IDE built with Next.js (renderer) + Electron (shell) and Monaco Editor.",
+  "description": "CodéNawabs, a desktop AI coding IDE built with Next.js, Electron, and Monaco Editor.",
   "homepage": "https://github.com/ShubhgIITK25/Agent-Zero-Takneek",
   "main": "electron-dist/main.js",
   "scripts": {
@@ -47,8 +47,8 @@
     "wait-on": "^7.2.0"
   },
   "build": {
-    "appId": "com.example.nextelectronide",
-    "productName": "NEXide",
+    "appId": "com.codenawabs.ide",
+    "productName": "CodéNawabs",
     "files": [
       "electron-dist/**/*",
       "orchestrator-dist/**/*",

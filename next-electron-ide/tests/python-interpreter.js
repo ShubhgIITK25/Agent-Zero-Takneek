@@ -8,7 +8,7 @@
  * tree-sitter / fastembed / sqlite-vec, so the retrieval service runs in
  * permanent keyword-only degraded mode on any machine that did not pip-install
  * the requirements globally. Resolution must prefer, in order: an explicit
- * NEXIDE_PYTHON, the project-local retrieval-service/.venv, an activated
+ * CODENAWABS_PYTHON, the legacy NEXIDE_PYTHON alias, the project-local retrieval-service/.venv, an activated
  * $VIRTUAL_ENV, and only then fall back to PATH - flagging the fallback so the
  * caller can warn.
  *
@@ -61,27 +61,27 @@ const posixVenv = path.posix.join(SERVICE, '.venv', 'bin', 'python');
 const winVenv = path.win32.join(SERVICE_WIN, '.venv', 'Scripts', 'python.exe');
 
 // --------------------------------------------------------------------------
-console.log('\n== NEXIDE_PYTHON is the explicit override ==');
+console.log('\n== CODENAWABS_PYTHON is the explicit override ==');
 
 t('a bare command name is trusted without an existence check', () => {
-  const r = resolve({ env: { NEXIDE_PYTHON: 'python3.12' }, existing: [] });
+  const r = resolve({ env: { CODENAWABS_PYTHON: 'python3.12' }, existing: [] });
   assert.strictEqual(r.command, 'python3.12');
-  assert.strictEqual(r.source, 'NEXIDE_PYTHON');
+  assert.strictEqual(r.source, 'CODENAWABS_PYTHON');
   assert.strictEqual(r.isFallback, false);
 });
 
 t('an override path that exists is used', () => {
   const r = resolve({
-    env: { NEXIDE_PYTHON: '/opt/py/bin/python' },
+    env: { CODENAWABS_PYTHON: '/opt/py/bin/python' },
     existing: ['/opt/py/bin/python'],
   });
   assert.strictEqual(r.command, '/opt/py/bin/python');
-  assert.strictEqual(r.source, 'NEXIDE_PYTHON');
+  assert.strictEqual(r.source, 'CODENAWABS_PYTHON');
 });
 
 t('an override path that does NOT exist is rejected, and resolution continues', () => {
   const r = resolve({
-    env: { NEXIDE_PYTHON: '/opt/py/bin/python' },
+    env: { CODENAWABS_PYTHON: '/opt/py/bin/python' },
     existing: [posixVenv], // the venv is there to fall through to
   });
   assert.strictEqual(r.command, posixVenv);
@@ -90,10 +90,23 @@ t('an override path that does NOT exist is rejected, and resolution continues', 
 
 t('override beats an existing local venv', () => {
   const r = resolve({
-    env: { NEXIDE_PYTHON: 'my-python' },
+    env: { CODENAWABS_PYTHON: 'my-python' },
     existing: [posixVenv],
   });
   assert.strictEqual(r.command, 'my-python');
+});
+
+t('the legacy NEXIDE_PYTHON alias still works', () => {
+  const r = resolve({ env: { NEXIDE_PYTHON: 'legacy-python' }, existing: [] });
+  assert.strictEqual(r.command, 'legacy-python');
+  assert.strictEqual(r.source, 'NEXIDE_PYTHON (legacy)');
+  assert.strictEqual(r.isFallback, false);
+});
+
+t('the new variable wins when both names are configured', () => {
+  const r = resolve({ env: { CODENAWABS_PYTHON: 'new-python', NEXIDE_PYTHON: 'legacy-python' }, existing: [] });
+  assert.strictEqual(r.command, 'new-python');
+  assert.strictEqual(r.source, 'CODENAWABS_PYTHON');
 });
 
 // --------------------------------------------------------------------------
@@ -154,8 +167,8 @@ t('nothing found -> python on windows, marked as fallback', () => {
   assert.strictEqual(r.isFallback, true);
 });
 
-t('an empty NEXIDE_PYTHON is ignored, not spawned', () => {
-  const r = resolve({ env: { NEXIDE_PYTHON: '   ' }, existing: [] });
+t('an empty CODENAWABS_PYTHON is ignored, not spawned', () => {
+  const r = resolve({ env: { CODENAWABS_PYTHON: '   ' }, existing: [] });
   assert.strictEqual(r.command, 'python3');
   assert.strictEqual(r.isFallback, true);
 });

@@ -1,4 +1,4 @@
-# NEXide
+# CodéNawabs
 
 An agentic coding IDE built for the Takneek PS (IIT Kanpur Programming Club). Electron + Next.js shell around a standalone multi-agent orchestrator that plans, routes, executes, verifies, backtracks and re-plans coding subtasks against a curated roster of **≤80B-parameter** models  -  with a live observability dashboard, block-level diff review, and crash-safe resume.
 
@@ -90,12 +90,12 @@ retrieval-service/.venv/bin/pip install -r retrieval-service/requirements.txt
 
 This pulls `tree-sitter` + per-language grammars, `fastembed` (ONNX, ~120MB of models on first use  -  no PyTorch), `sqlite-vec` and `pathspec`. See [retrieval-service/requirements.txt](retrieval-service/requirements.txt), which documents why each one was picked.
 
-**The app finds this virtualenv automatically.** Interpreter resolution ([`electron/python-interpreter.ts`](electron/python-interpreter.ts)) tries, in order: `$NEXIDE_PYTHON` if you set it, then `retrieval-service/.venv`, then an activated `$VIRTUAL_ENV`, then bare `python3` on `PATH`. So creating the venv at that path is all you need  -  no environment variable, no shell-rc edit.
+**The app finds this virtualenv automatically.** Interpreter resolution ([`electron/python-interpreter.ts`](electron/python-interpreter.ts)) tries, in order: `$CODENAWABS_PYTHON` if you set it, then `retrieval-service/.venv`, then an activated `$VIRTUAL_ENV`, then bare `python3` on `PATH`. So creating the venv at that path is all you need  -  no environment variable, no shell-rc edit.
 
-Only set `NEXIDE_PYTHON` if your interpreter lives somewhere else:
+Only set `CODENAWABS_PYTHON` if your interpreter lives somewhere else. The old `NEXIDE_PYTHON` variable is still accepted as a compatibility alias:
 
 ```bash
-export NEXIDE_PYTHON=/path/to/your/python
+export CODENAWABS_PYTHON=/path/to/your/python
 ```
 
 **Confirming it worked.** On startup the Electron log prints the interpreter it chose and `full pipeline available`, or `DEGRADED  -  missing: …` if that interpreter lacks the packages. The status bar shows `Index ready (… )` normally, or `Index ready (… ) · keyword-only` in amber when degraded. If you see degraded, the venv either was not created at `retrieval-service/.venv` or the `pip install` did not finish.
@@ -249,7 +249,7 @@ flowchart TD
 
 ### 4.1 Decompose
 
-A planning-tier model turns the prompt into 1–6 subtasks with explicit dependencies, a category (`analysis` / `codegen` / `simple_edit` / `verification`) and a declared list of files each expects to modify.
+A planning-tier model turns the prompt into 1-6 subtasks with explicit dependencies, a category (`analysis` / `codegen` / `simple_edit` / `verification`) and a declared list of files each expects to modify.
 
 Three rules in the planner prompt exist purely to make the plan *cheap to execute*, and each was a measured problem first:
 
@@ -287,7 +287,7 @@ Undo points are **per subtask**: rolling back one must not revert a parallel sib
 
 When a subtask has spent *every* retry, the system stops retrying and changes the plan instead.
 
-The retry ladder has already re-run that subtask on a stronger model with the verifier's complaint fed back in. If three of those failed, the model is not the problem  -  **the subtask is**, and a fourth retry is precisely the "blindly retrying the same action" the PS penalises. So a re-planner is asked to *diagnose* the failure and either decompose the subtask into 2–3 genuinely different steps, or say it is impossible. `abandon` is a first-class answer: a re-planner that always produces a new decomposition is one that spends the remaining budget rewording the same impossible subtask.
+The retry ladder has already re-run that subtask on a stronger model with the verifier's complaint fed back in. If three of those failed, the model is not the problem  -  **the subtask is**, and a fourth retry is precisely the "blindly retrying the same action" the PS penalises. So a re-planner is asked to *diagnose* the failure and either decompose the subtask into 2-3 genuinely different steps, or say it is impossible. `abandon` is a first-class answer: a re-planner that always produces a new decomposition is one that spends the remaining budget rewording the same impossible subtask.
 
 The replaced subtask becomes `replaced`  -  a status distinct from `failed` on purpose, because the work is still being attempted under new ids, and counting it as incomplete would make a *successful* re-plan report failure. Anything that depended on it is rewired to the last replacement; without that rewire the dependents wait forever on an id that can never be `done`.
 
@@ -422,7 +422,7 @@ The cross-encoder gets two thresholds, not one, because its usable range on code
 | | top reranker score | agreement (of top 3) |
 |---|---|---|
 | Answerable queries (6) | **−4.1 … +4.5** | 3/3 every time |
-| Absent queries (5) | **−11.2 … −9.0** | 0–1/3 |
+| Absent queries (5) | **−11.2 … −9.0** | 0-1/3 |
 
 There is a wide empty band between ≈−9 and ≈−4 separating "the model is grumpy about code" from "nothing here is on topic". Both thresholds sit inside it:
 
@@ -463,8 +463,8 @@ The one place we constrain the schema harder than the obvious design: the `git` 
 | Tool | Side-effecting | Notes |
 |---|---|---|
 | `retrieve_context` | no | The primary way to see code. Returns ranked chunks with a confidence header, never whole files. |
-| `read_file` | no | Explicit read, honours `.nexideignore`. |
-| `list_dir` | no | Honours `.nexideignore`. |
+| `read_file` | no | Explicit read, honours `.codenawabsignore` (or legacy `.nexideignore`). |
+| `list_dir` | no | Honours `.codenawabsignore` (or legacy `.nexideignore`). |
 | `git` | no | Read-only subcommands only: `status`, `log`, `diff`, `show`, `branch`, `blame`, `ls-files`, `rev-parse`. Anything state-changing is refused with a pointer to `run_command`. |
 | `web_search` | no | DuckDuckGo Lite, HTML stripped to text. For current docs, API signatures, compiler errors. No key required. |
 | `propose_edit` | **yes** | The only write path the orchestrator controls. Always goes to block-level human review. |
@@ -542,8 +542,8 @@ Grouped by subsystem. The **"chosen against"** column is the failure the current
 
 | Constant | Value | Bounds | Chosen against |
 |---|---|---|---|
-| `MAX_RETRIES_PER_SUBTASK` | **3** | attempts on one subtask before it re-plans or fails | Attempt 1 is the routed model; 2–3 escalate to a stronger model *with the verifier's complaint fed back in*. Three genuinely different attempts is enough evidence that the **subtask** is wrong, not the model. A 4th is the "blindly retrying the same action" the PS explicitly penalises. |
-| `MAX_STEPS_PER_SUBTASK` | **12** | tool-calling turns before a forced stop | A real subtask  -  retrieve → read 2–3 files → edit → self-check  -  runs 5–8 steps. 12 is comfortable headroom. 20+ is a model that has lost the thread and is now just burning the time ceiling. |
+| `MAX_RETRIES_PER_SUBTASK` | **3** | attempts on one subtask before it re-plans or fails | Attempt 1 is the routed model; 2-3 escalate to a stronger model *with the verifier's complaint fed back in*. Three genuinely different attempts is enough evidence that the **subtask** is wrong, not the model. A 4th is the "blindly retrying the same action" the PS explicitly penalises. |
+| `MAX_STEPS_PER_SUBTASK` | **12** | tool-calling turns before a forced stop | A real subtask  -  retrieve → read 2-3 files → edit → self-check  -  runs 5-8 steps. 12 is comfortable headroom. 20+ is a model that has lost the thread and is now just burning the time ceiling. |
 | `MAX_TOKENS_PER_SUBTASK` | **60 000** | cumulative tokens spent on one subtask | ≈ 45 % of a 131k window. Past this the subtask is accreting context it will never use, and input tokens are re-billed on *every* remaining turn  -  cheaper to stop and re-plan than to keep paying. |
 | `MAX_IDENTICAL_REPEATS` | **3** | identical consecutive tool calls with identical arguments | 2 can be a legitimate re-read of a file right after editing it. 3 in a row carries no new information and is a loop. |
 
@@ -618,7 +618,7 @@ Both thresholds are a **fraction of the active model's real context window**, no
 | `MIN_CANDIDATE_POOL` | **6** | Fewer than 6 distinct chunks matching *anything* signals a recall failure  -  **but only relative to index size** (`< 50 %` of a tiny index is fine). An absolute floor fired on every query in a small repo; see §16. |
 | `WEAK_CONFIDENCE` | **0.5** | Below this the result set is flagged and handed *up* to the agent (already a model in a loop) rather than rewritten by a dedicated model call. |
 | `RERANK_WEAK_BELOW` / `RERANK_IRRELEVANT_BELOW` | **−6.0 / −8.0** | Two thresholds, not one, because ms-marco MiniLM was trained on web passages and systematically under-scores code. Measured on this repo's own `orchestrator/` source: answerable queries top out at −4.1…+4.5, absent queries at −11.2…−9.0. Both thresholds sit in the empty band between. |
-| `DECISIVE_PENALTY` / `CONTRIBUTING_PENALTY` / `SHORTFALL_PENALTY` | **0.55 / 0.30 / 0.20** | The same signal means different things with vs. without independent-retriever agreement, so penalties are assigned in code by context rather than as one fixed weight per signal (a flat additive scheme left "decisive" signals stuck at 0.6–0.7, never crossing the 0.5 bar  -  see §16). |
+| `DECISIVE_PENALTY` / `CONTRIBUTING_PENALTY` / `SHORTFALL_PENALTY` | **0.55 / 0.30 / 0.20** | The same signal means different things with vs. without independent-retriever agreement, so penalties are assigned in code by context rather than as one fixed weight per signal (a flat additive scheme left "decisive" signals stuck at 0.6-0.7, never crossing the 0.5 bar  -  see §16). |
 
 #### Indexing · `retrieval-service/indexer.py`
 
@@ -630,7 +630,7 @@ Both thresholds are a **fraction of the active model's real context window**, no
 
 | Limit | Value | Reasoning |
 |---|---|---|
-| Subtasks per plan (prompt) | **1–6** | "Fewer, well-scoped subtasks beat many tiny ones"  -  each subtask carries a full context-assembly and verification cost. A genuinely one-shot request returns a single `trivial: true` subtask; the system never manufactures steps to look busy. |
+| Subtasks per plan (prompt) | **1-6** | "Fewer, well-scoped subtasks beat many tiny ones"  -  each subtask carries a full context-assembly and verification cost. A genuinely one-shot request returns a single `trivial: true` subtask; the system never manufactures steps to look busy. |
 | Subtasks per plan (parser clamp) | **8** | A defensive ceiling above the prompt's stated max, in case a model over-produces  -  the parser truncates rather than letting an unbounded DAG through. |
 
 #### Process & infrastructure
@@ -677,7 +677,7 @@ A model whose provider does not publish a parameter count is treated as ineligib
 | Llama 3.3 70B | Groq | 70B | $0.59 → $0.79 |  -  | Long-context analysis only; **not** tagged for codegen |
 | Llama 3.1 8B Instant | Groq | 8B | $0.05 → $0.08 |  -  | Cheap floor |
 | LFM 2.5 2.6B | OpenRouter | 2.6B | **free** |  -  | Trivial classification only |
-| Qwen2.5 Coder 7B · Granite 4 7B-A1B · Qwen2.5 Coder 14B · Gemma 3 12B · Qwen3 Coder 30B-A3B | Ollama | 7–30B | **$0** |  -  | [Local models →](docs/local-models.md) |
+| Qwen2.5 Coder 7B · Granite 4 7B-A1B · Qwen2.5 Coder 14B · Gemma 3 12B · Qwen3 Coder 30B-A3B | Ollama | 7-30B | **$0** |  -  | [Local models →](docs/local-models.md) |
 
 ¹ Artificial Analysis intelligence index, as published in the OpenRouter catalogue. Omitted where the model has not been benchmarked.
 
@@ -714,7 +714,7 @@ Every id, price, context window and parameter count is a factual claim about a c
 
 **Both directions are clickable.** Typing `@path:line` in the input turns it into a pin; anywhere the agent writes `path:line` or `path:line-line` in its reply, the chat renders it as a link that opens that file at that line  -  so the agent can point back at exact code as easily as you can point it at some.
 
-**`.nexideignore`.** A gitignore-syntax file in the project root keeps matching paths out of *automatic* context  -  `retrieve_context`, `read_file`, `list_dir`. It does **not** override an explicit `@path` pin: an explicit pin is a direct instruction, and letting a blanket rule silently veto it would be the more surprising behaviour (the same asymmetry `.gitignore` has, where `git add -f` still works). `.git` is always excluded.
+**`.codenawabsignore`.** A gitignore-syntax file in the project root keeps matching paths out of *automatic* context  -  `retrieve_context`, `read_file`, `list_dir`. It does **not** override an explicit `@path` pin: an explicit pin is a direct instruction, and letting a blanket rule silently veto it would be the more surprising behaviour (the same asymmetry `.gitignore` has, where `git add -f` still works). `.git` is always excluded. The legacy `.nexideignore` filename is still recognized when `.codenawabsignore` is absent.
 
 ### Commands
 
@@ -787,7 +787,7 @@ Real problems that came up while building, and what they changed. Each of these 
 
 **1. Keyword search could not match any natural-language query.** BM25 looked implemented and correct, but FTS5 indexes `computeDelinquencyGraceWindow` as one atomic token, so `delinquency` scored zero hits  -  retrieval was silently vector-only for every phrased query. Found by querying the index directly instead of trusting end-to-end results. Fixed with the pre-split `tokens` column (§6.1); the index format was versioned in the same change.
 
-**2. Stub-based tests hid four wrong assumptions.** The retrieval recovery logic passed a full stubbed suite. Installing the real dependencies and running against a real index broke it four different ways: an absolute "fewer than 6 candidates" weakness floor fired on *every* query in a small repo; flat additive signal weights meant "decisive" signals scored 0.60–0.70 and never crossed the 0.5 bar; a single lexical coincidence on the word "values" let `kubernetes ingress controller helm values` pass as *strong* against a codebase with no Kubernetes; and the cross-encoder's nominal 0 boundary flagged correct code results as weak. Fixes: pool size relative to index size, a decisive/contributing split, majority agreement, and two empirically-measured reranker thresholds (§6.2).
+**2. Stub-based tests hid four wrong assumptions.** The retrieval recovery logic passed a full stubbed suite. Installing the real dependencies and running against a real index broke it four different ways: an absolute "fewer than 6 candidates" weakness floor fired on *every* query in a small repo; flat additive signal weights meant "decisive" signals scored 0.60-0.70 and never crossed the 0.5 bar; a single lexical coincidence on the word "values" let `kubernetes ingress controller helm values` pass as *strong* against a codebase with no Kubernetes; and the cross-encoder's nominal 0 boundary flagged correct code results as weak. Fixes: pool size relative to index size, a decisive/contributing split, majority agreement, and two empirically-measured reranker thresholds (§6.2).
 
 **3. Query reformulation was manufacturing false confidence.** An early version synthesised identifier spellings (`userSession`, `user_session`, `usersession`, …) and ORed a dozen guesses into the FTS query. Once index-level splitting landed this bought nothing  -  and it actively *created* agreement where none existed, so a query with no real answer came back "confident". Reformulation is now strictly subtractive: it can only remove terms, never invent matches.
 
@@ -803,7 +803,7 @@ Real problems that came up while building, and what they changed. Each of these 
 
 **9. Model ids that looked hallucinated were real.** An early pass "corrected" several registry entries that did not exist in the assistant's training data. They were all live. The lesson generalised into `npm run verify:models`: registry claims are checked against live provider catalogues rather than against anyone's memory.
 
-**10. The retrieval service ran degraded on every machine but the author's.** Electron spawned bare `python3` from `PATH`  -  which does not have `tree-sitter`, `fastembed` or `sqlite-vec` unless someone `pip install`ed them globally. The service started fine, answered `/health`, indexed without error, and returned `vector_search: False`  -  so retrieval was keyword-only over line-window chunks and nothing said so. The author only had the full pipeline because they had exported `NEXIDE_PYTHON` months earlier and forgotten. Fixed two ways: interpreter resolution now prefers `retrieval-service/.venv` before `PATH` ([`electron/python-interpreter.ts`](electron/python-interpreter.ts)), and `/health` now reports which pipeline stages are actually available so the startup log and the status bar both say `DEGRADED` / `keyword-only` instead of pretending.
+**10. The retrieval service ran degraded on every machine but the author's.** Electron spawned bare `python3` from `PATH`  -  which does not have `tree-sitter`, `fastembed` or `sqlite-vec` unless someone `pip install`ed them globally. The service started fine, answered `/health`, indexed without error, and returned `vector_search: False`  -  so retrieval was keyword-only over line-window chunks and nothing said so. The author only had the full pipeline because they had exported `CODENAWABS_PYTHON` months earlier and forgotten. Fixed two ways: interpreter resolution now prefers `retrieval-service/.venv` before `PATH` ([`electron/python-interpreter.ts`](electron/python-interpreter.ts)), and `/health` now reports which pipeline stages are actually available so the startup log and the status bar both say `DEGRADED` / `keyword-only` instead of pretending.
 
 ---
 
@@ -817,9 +817,9 @@ npm run typecheck # all three tsconfigs (root, electron/, orchestrator/), --noEm
 | Suite | What it pins |
 |---|---|
 | `watcher.js` | A vanished directory cannot kill the main process; `ENOENT` is absorbed, `ENOSPC` surfaced, abort still ends the loop cleanly |
-| `python-interpreter.js` | Interpreter resolution prefers `NEXIDE_PYTHON` → `retrieval-service/.venv` → `$VIRTUAL_ENV` → `PATH`; the PATH fallback is flagged; a missing override path is skipped, not spawned |
+| `python-interpreter.js` | Interpreter resolution prefers `CODENAWABS_PYTHON` → legacy `NEXIDE_PYTHON` → `retrieval-service/.venv` → `$VIRTUAL_ENV` → `PATH`; the PATH fallback is flagged; a missing override path is skipped, not spawned |
 | `unit.js` | Router scoring, budget math, diff and compaction units |
-| `ignore.js` | `.nexideignore` semantics, including that an explicit pin overrides it |
+| `ignore.js` | `.codenawabsignore` semantics, legacy `.nexideignore` support, and that an explicit pin overrides it |
 | `review-buffer.js` | Block-level accept/reject and file reconstruction |
 | `tree.js` · `health.js` | File tree behaviour; provider health-state mapping |
 | `model-health.js` | All five health states, with `fetch` stubbed so it is deterministic and offline |
@@ -858,14 +858,14 @@ Installers are written to `release/`. The Python retrieval service is copied in 
 
 The repository ships a **GitHub Actions workflow** ([`.github/workflows/build.yml`](../.github/workflows/build.yml), at the repo root) that runs `npm ci && npm run build` and then `electron-builder` on native `ubuntu-latest`, `windows-latest` and `macos-latest` runners on every push to `main` and on manual dispatch, uploading each platform's installer as a build artifact. CI artifacts are unsigned (`CSC_IDENTITY_AUTO_DISCOVERY: false`); production signing and macOS notarization would need the platform certificates added as repository secrets.
 
-> **One thing to know before shipping a build.** `.venv` is deliberately not bundled (233 MB, and tied to one OS and Python minor version). So a packaged app on a machine with no matching interpreter falls through to `python3` on `PATH`; if that lacks the retrieval packages, the pipeline runs keyword-only  -  visibly (the status bar says `keyword-only`, the log says `DEGRADED`), not silently. For a real deployment, ship the requirements alongside the installer or set `NEXIDE_PYTHON` in the launch environment.
+> **One thing to know before shipping a build.** `.venv` is deliberately not bundled (233 MB, and tied to one OS and Python minor version). So a packaged app on a machine with no matching interpreter falls through to `python3` on `PATH`; if that lacks the retrieval packages, the pipeline runs keyword-only  -  visibly (the status bar says `keyword-only`, the log says `DEGRADED`), not silently. For a real deployment, ship the requirements alongside the installer or set `CODENAWABS_PYTHON` in the launch environment. `NEXIDE_PYTHON` remains accepted for older launch scripts.
 
 ---
 
 ## 19. Known limitations
 
 - **Retrieval degrades to keyword-only without its Python dependencies.** No AST chunking, no vector search, no reranking. This no longer happens quietly: the app auto-selects `retrieval-service/.venv`, and if it ends up on a bare interpreter anyway the startup log says `DEGRADED` and the status bar reads `keyword-only` in amber. The remaining failure mode is forgetting to create the venv or run `pip install` (§2.3).
-- **The packaged app does not bundle `.venv`.** On a machine without a suitable interpreter it uses `python3` from `PATH`; set `NEXIDE_PYTHON` or install the requirements there (§18).
+- **The packaged app does not bundle `.venv`.** On a machine without a suitable interpreter it uses `python3` from `PATH`; set `CODENAWABS_PYTHON` or install the requirements there (§18).
 - **Backtracking covers `propose_edit` writes only**  -  the only write path the orchestrator controls. Files mutated by an approved `run_command` (a formatter, a build step, a generator) are not captured and survive a rollback. The intervention names exactly which files it did revert, so it never claims a clean tree it cannot deliver. Undo points also live in memory, so after a resume a rollback only reaches edits made since that resume.
 - **Ollama models need a local server** the judges' machine may not have running; keep a Groq/OpenRouter fallback in any demo.
 - **Provider catalogues churn.** Run `npm run verify:models` before a demo. The Gemini entry is unverifiable without a key and is marked as such.
