@@ -1,4 +1,25 @@
-# server for retrieval service, which is a separate process from the main Electron IDE.
+"""
+Local HTTP server for the retrieval service. Spawned as a child process by
+Electron's main process (electron/main.ts) and talked to over
+http://127.0.0.1:<port> - a separate process on purpose:
+
+  - embeddings/tree-sitter are easiest in Python; the orchestrator/IDE
+    logic is Node/TS for Electron IPC. Keep them as separate processes
+    talking over localhost HTTP instead of forcing one language to do
+    both jobs badly.
+  - the index has to survive independently of any single agent task -
+    it's built once, reused across many orchestrator runs, and updated
+    incrementally by a file watcher. Coupling it to an agent task's
+    lifecycle would mean rebuilding it every session.
+  - it gives a clean isolation boundary: this process is the ONLY thing
+    that touches the on-disk indexes, and every endpoint below requires
+    codebase_id - there's no code path in this service that can answer a
+    query without knowing which project it's for.
+
+Every route is deliberately tiny; the real logic lives in indexer.py /
+retrieval.py / store.py so this file stays readable as "here's the API
+shape" on its own.
+"""
 import argparse
 import json
 import os
@@ -21,7 +42,7 @@ def _capabilities():
     and reads this back to tell the user, in the status bar, when retrieval is
     running degraded rather than letting it silently serve worse results.
 
-    These are import-level checks on purpose — cheap, and the "deps not
+    These are import-level checks on purpose - cheap, and the "deps not
     installed" case is exactly what they need to catch. They do NOT download
     or load a model (fastembed does that lazily on first real use), and they
     do not prove sqlite was built with extension-loading enabled; store.py
@@ -203,7 +224,7 @@ def main():
     ]
     if missing:
         print(
-            f"[retrieval-service] DEGRADED — missing: {', '.join(missing)}. "
+            f"[retrieval-service] DEGRADED - missing: {', '.join(missing)}. "
             f"Interpreter: {sys.executable}. "
             f"Install requirements.txt into it for the full pipeline.",
             flush=True,

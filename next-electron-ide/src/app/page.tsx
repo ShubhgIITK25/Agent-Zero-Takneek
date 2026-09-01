@@ -13,7 +13,7 @@ import type { ReviewDiff } from '../lib/review-buffer';
 import { TraceView, TraceEvent, applyEvent, emptyTrace } from '../lib/trace';
 
 // Monaco touches `self`/`window` at module load time, so it must never be
-// evaluated during SSR/static export — load it only on the client.
+// evaluated during SSR/static export - load it only on the client.
 const EditorPane = dynamic(() => import('../components/EditorPane'), { ssr: false });
 // xterm.js has the same constraint (touches `window`/`navigator` at import time).
 const TerminalPanel = dynamic(() => import('../components/TerminalPanel'), { ssr: false });
@@ -33,7 +33,7 @@ export default function Home() {
   const autoSaveTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
   const [electronReady, setElectronReady] = useState(false);
   const [terminalOpen, setTerminalOpen] = useState(false);
-  const [chatOpen, setChatOpen] = useState(false);
+  const [chatOpen, setChatOpen] = useState(true);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [refreshToken, setRefreshToken] = useState(0);
   const [pendingLine, setPendingLine] = useState<{ path: string; line: number } | null>(null);
@@ -61,7 +61,7 @@ export default function Home() {
         diffs: e.request.diff,
       });
     }
-    // Clear on the orchestrator's own resolution too, not just ours — an
+    // Clear on the orchestrator's own resolution too, not just ours - an
     // approval answered from anywhere must not leave a dead pane holding the
     // editor hostage.
     if (e.type === 'approval_resolved') {
@@ -87,8 +87,16 @@ export default function Home() {
 
   useEffect(() => {
     setElectronReady(typeof window !== 'undefined' && !!window.electronAPI);
+    
+    if (typeof window !== 'undefined') {
+      const savedChat = localStorage.getItem('nexide-chat-open');
+      if (savedChat !== null) setChatOpen(savedChat === 'true');
+      const savedTerminal = localStorage.getItem('nexide-terminal-open');
+      if (savedTerminal !== null) setTerminalOpen(savedTerminal === 'true');
+    }
+
     // Main may have restored a folder before this window finished loading, so
-    // its 'folder:opened' push landed with nobody listening — ask directly.
+    // its 'folder:opened' push landed with nobody listening - ask directly.
     window.electronAPI?.getCurrentFolder().then((folderPath) => {
       if (folderPath) adoptFolder(folderPath);
     });
@@ -202,7 +210,7 @@ export default function Home() {
 
   // Re-reads the file tree from disk, and reloads any open, non-dirty
   // file's content from disk (never clobbers unsaved edits). Pass a
-  // specific path to only reload that one file — used when the agent's
+  // specific path to only reload that one file - used when the agent's
   // write_file/delete_path tools change something; called with no argument
   // for a full manual refresh (the "Refresh Files" menu item / button).
   const refreshWorkspace = useCallback(
@@ -221,7 +229,7 @@ export default function Home() {
           contents.current.set(path, text);
           savedContents.current.set(path, text);
         } catch {
-          // File may have been deleted/moved outside the app — leave the
+          // File may have been deleted/moved outside the app - leave the
           // tab showing whatever it last had rather than crashing.
         }
       }
@@ -286,7 +294,7 @@ export default function Home() {
 
   // The files:refresh IPC listener is set up once (empty-deps effect,
   // above) but refreshWorkspace's identity changes whenever rootPath/
-  // openFiles change — this ref lets that listener always call the latest
+  // openFiles change - this ref lets that listener always call the latest
   // version instead of one closed over stale state.
   const refreshWorkspaceRef = useRef(refreshWorkspace);
   useEffect(() => {
@@ -334,7 +342,7 @@ export default function Home() {
         await openFile(full);
         if (line) setPendingLine({ path: full, line });
       } catch {
-        // Path the agent mentioned does not exist locally — ignore rather
+        // Path the agent mentioned does not exist locally - ignore rather
         // than throwing inside a click handler.
       }
     },
@@ -342,15 +350,23 @@ export default function Home() {
   );
 
   const toggleTerminal = useCallback(() => {
-    setTerminalOpen((open) => !open);
+    setTerminalOpen((open) => {
+      const next = !open;
+      if (typeof window !== 'undefined') localStorage.setItem('nexide-terminal-open', String(next));
+      return next;
+    });
   }, []);
 
   const toggleChat = useCallback(() => {
-    setChatOpen((open) => !open);
+    setChatOpen((open) => {
+      const next = !open;
+      if (typeof window !== 'undefined') localStorage.setItem('nexide-chat-open', String(next));
+      return next;
+    });
   }, []);
 
   // Runs a command in the integrated terminal on the agent's behalf. If the
-  // terminal panel isn't open yet, this opens it first — the short delay
+  // terminal panel isn't open yet, this opens it first - the short delay
   // gives TerminalPanel's mount effect time to spawn the pty (see
   // terminal:create) before we type into it. Good enough for a frontend
   // demo; a sturdier version would wait for an explicit "terminal ready"

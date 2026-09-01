@@ -1,6 +1,6 @@
 /**
  * ============================================================================
- *  MODEL REGISTRY — and the eligibility rule that gates it
+ *  MODEL REGISTRY - and the eligibility rule that gates it
  * ============================================================================
  * The PS constraint is: every model used anywhere in the pipeline must have
  * TOTAL parameter count <= 80B. "Total, not active" is the part that actually
@@ -16,7 +16,7 @@
  * settings screen can show *why* it is blocked instead of silently omitting it.
  *
  * `paramsBTotal: null` means the provider does not publish a parameter count.
- * Unpublished is treated as INELIGIBLE, not as "probably fine" — an
+ * Unpublished is treated as INELIGIBLE, not as "probably fine" - an
  * unverifiable model is a disqualification risk, which is exactly why the
  * Gemini wiring this replaced had to go.
  *
@@ -26,10 +26,10 @@
  * scores roughly a fifth of it on coding. The router uses this number, not
  * size, to decide what "escalate to something more capable" means. Where a
  * model has not been benchmarked the field is omitted and the router falls
- * back to size — stated rather than hidden.
+ * back to size - stated rather than hidden.
  *
  * VERIFY BEFORE SUBMISSION: provider catalogues churn. Every id, price, and
- * context window below was checked on 2026-08-30 against the live sources —
+ * context window below was checked on 2026-08-30 against the live sources -
  * openrouter.ai/api/v1/models, console.groq.com/docs/models, and
  * ollama.com/library. `npm run verify:models` (scripts/verify-models.mjs)
  * re-runs that check so a renamed model surfaces as a failing script rather
@@ -67,7 +67,35 @@ export type ModelEntry = {
 
 export const PARAM_LIMIT_B = 80;
 
-export const MODEL_REGISTRY: ModelEntry[] = [
+const LEGACY_MODEL_REGISTRY: ModelEntry[] = [
+  // Ineligible on purpose: the settings/tests need a visible reason, not a hole.
+  {
+    id: "groq:gpt-oss-120b",
+    apiId: "openai/gpt-oss-120b",
+    label: "GPT-OSS 120B (ineligible)",
+    provider: "groq",
+    paramsBTotal: 120,
+    contextWindow: 131072,
+    pricing: { inputPerM: 0.15, outputPerM: 0.6 },
+    tier: "payg",
+    good_at: ["codegen", "analysis"],
+    speed: "medium",
+    notes: "Listed so the 80B TOTAL rule has a concrete blocked example.",
+  },
+  {
+    id: "openrouter:nemotron-super-120b",
+    apiId: "nvidia/nemotron-3-super-120b-a12b",
+    label: "Nemotron Super 120B-A12B (ineligible)",
+    provider: "openrouter",
+    paramsBTotal: 120,
+    paramsBActive: 12,
+    contextWindow: 262144,
+    pricing: { inputPerM: 0, outputPerM: 0 },
+    tier: "free",
+    good_at: ["codegen", "analysis"],
+    speed: "medium",
+    notes: "120B total / 12B active. The active count is a trap; the rule counts total.",
+  },
   // ---------------------------------------------------------------- Groq ---
   // Free tier, OpenAI-compatible, and by far the fastest of the three, which
   // matters for the T term in S_task even though cost is weighted ~2x harder.
@@ -113,7 +141,7 @@ export const MODEL_REGISTRY: ModelEntry[] = [
     good_at: ["codegen", "analysis", "planning", "verification"],
     speed: "fast",
     notes:
-      "Superseded by qwen3.8-27b on the same provider at similar cost — keep it enabled only as a same-provider fallback.",
+      "Superseded by qwen3.8-27b on the same provider at similar cost - keep it enabled only as a same-provider fallback.",
   },
   {
     // The single most capable model that fits under 80B anywhere in the live
@@ -132,7 +160,7 @@ export const MODEL_REGISTRY: ModelEntry[] = [
     good_at: ["planning", "analysis", "codegen", "verification"],
     speed: "fast",
     notes:
-      "Best-in-class under the 80B ceiling. Dense 27B, so quality does not come with a hidden total-parameter cost. Priciest per token here — the router only reaches for it on hard subtasks and tie-breaks.",
+      "Best-in-class under the 80B ceiling. Dense 27B, so quality does not come with a hidden total-parameter cost. Priciest per token here - the router only reaches for it on hard subtasks and tie-breaks.",
   },
   {
     id: "groq:llama-3.3-70b",
@@ -214,7 +242,7 @@ export const MODEL_REGISTRY: ModelEntry[] = [
     good_at: ["codegen", "simple"],
     speed: "fast",
     notes:
-      "Purpose-built agentic coding model, and free. Coding index 36.5 — higher than the 120B model we are not allowed to use. Best zero-cost codegen route available.",
+      "Purpose-built agentic coding model, and free. Coding index 36.5 - higher than the 120B model we are not allowed to use. Best zero-cost codegen route available.",
   },
   {
     id: "openrouter:nemotron-3.5-lightning",
@@ -262,7 +290,7 @@ export const MODEL_REGISTRY: ModelEntry[] = [
     good_at: ["analysis", "verification", "planning"],
     speed: "fast",
     notes:
-      "Reasoning-tuned MoE, 30B total, free. Kept as a cheap third opinion, but qwen3.8-27b outscores it heavily — enable it for cost, not for quality.",
+      "Reasoning-tuned MoE, 30B total, free. Kept as a cheap third opinion, but qwen3.8-27b outscores it heavily - enable it for cost, not for quality.",
   },
   {
     id: "openrouter:lfm-2.5-2.6b",
@@ -285,7 +313,7 @@ export const MODEL_REGISTRY: ModelEntry[] = [
   // `contextWindow` here is NOT the model's architectural maximum. It is the
   // window we ask Ollama to allocate (`num_ctx`), and the KV cache for it has
   // to fit in memory alongside the weights. Advertising gemma3's 131k here and
-  // sending a 100k prompt would not fail loudly — Ollama would silently drop
+  // sending a 100k prompt would not fail loudly - Ollama would silently drop
   // the front of the conversation, which is the worst possible failure mode for
   // an agent that just put its instructions there. So these are the windows the
   // reference machine can genuinely hold.
@@ -301,7 +329,7 @@ export const MODEL_REGISTRY: ModelEntry[] = [
     good_at: ["simple", "codegen", "verification"],
     speed: "medium",
     notes:
-      "~4.7GB at Q4 plus a 16k KV cache — the largest local model that fits 8GB VRAM entirely. Best cost lever available.",
+      "~4.7GB at Q4 plus a 16k KV cache - the largest local model that fits 8GB VRAM entirely. Best cost lever available.",
   },
   {
     id: "ollama:llama3.1-8b",
@@ -315,7 +343,7 @@ export const MODEL_REGISTRY: ModelEntry[] = [
     good_at: ["simple", "verification"],
     speed: "medium",
     notes:
-      "Note the .1 — the original `llama3` tag has no tool-calling template and cannot drive an agent loop. 3.1 added it. Weak at code (coding index ~5), so it is tagged for simple edits and pass/fail verification only.",
+      "Note the .1 - the original `llama3` tag has no tool-calling template and cannot drive an agent loop. 3.1 added it. Weak at code (coding index ~5), so it is tagged for simple edits and pass/fail verification only.",
   },
   {
     id: "ollama:granite4-7b-a1b",
@@ -401,11 +429,24 @@ export const MODEL_REGISTRY: ModelEntry[] = [
   },
 ];
 
+/** The deliberately small role roster shown in Settings. Verified against the
+ * current Groq and OpenRouter catalogues on 2026-08-31. */
+export const MODEL_REGISTRY: ModelEntry[] = [
+  { id: 'openrouter:qwen3-next-80b-thinking', apiId: 'qwen/qwen3-next-80b-a3b-thinking', label: 'Planner: Qwen3 Next 80B-A3B Thinking', provider: 'openrouter', paramsBTotal: 80, paramsBActive: 3, contextWindow: 262144, pricing: { inputPerM: .15, outputPerM: 1.2 }, tier: 'payg', qualityIndex: 55, good_at: ['planning', 'analysis'], speed: 'medium', notes: 'Primary planner; thinking-only and tool-capable.' },
+  { id: 'groq:llama-3.3-70b', apiId: 'llama-3.3-70b-versatile', label: 'Planner backup: Llama 3.3 70B', provider: 'groq', paramsBTotal: 70, contextWindow: 131072, pricing: { inputPerM: .59, outputPerM: .79 }, tier: 'payg', good_at: ['planning', 'analysis'], speed: 'fast', notes: 'Deprecated by Groq for free/developer tiers; keep only if your account still serves it.' },
+  { id: 'openrouter:gemma-4-31b', apiId: 'google/gemma-4-31b-it:free', label: 'Verifier / review: Gemma 4 31B', provider: 'openrouter', paramsBTotal: 31, contextWindow: 262144, pricing: { inputPerM: 0, outputPerM: 0 }, tier: 'free', good_at: ['verification', 'analysis', 'simple'], speed: 'medium' },
+  { id: 'groq:qwen3.8-27b', apiId: 'qwen/qwen3.8-27b', label: 'Main coder: Qwen 3.8 27B (Groq)', provider: 'groq', paramsBTotal: 27, contextWindow: 131042, pricing: { inputPerM: .8, outputPerM: 4 }, tier: 'payg', qualityIndex: 68.1, good_at: ['codegen', 'analysis', 'verification', 'simple'], speed: 'fast' },
+  { id: 'openrouter:north-mini-code', apiId: 'cohere/north-mini-code:free', label: 'Agentic coder: North Mini Code', provider: 'openrouter', paramsBTotal: 30, paramsBActive: 3, contextWindow: 262144, pricing: { inputPerM: 0, outputPerM: 0 }, tier: 'free', good_at: ['codegen', 'simple'], speed: 'medium' },
+  { id: 'openrouter:laguna-xs-2.1', apiId: 'poolside/laguna-xs-2.1:free', label: 'Agentic coder: Laguna XS 2.1', provider: 'openrouter', paramsBTotal: 33, paramsBActive: 3, contextWindow: 262144, pricing: { inputPerM: 0, outputPerM: 0 }, tier: 'free', good_at: ['codegen', 'simple'], speed: 'medium' },
+  { id: 'openrouter:qwen3-coder-30b', apiId: 'qwen/qwen3-coder-30b-a3b-instruct', label: 'Agentic coder: Qwen3-Coder-30B-A3B', provider: 'openrouter', paramsBTotal: 30.5, paramsBActive: 3, contextWindow: 262144, pricing: { inputPerM: .07, outputPerM: .27 }, tier: 'payg', good_at: ['codegen', 'simple'], speed: 'medium' },
+  { id: 'openrouter:nemotron-3-nano', apiId: 'nvidia/nemotron-3-nano-30b-a3b', label: 'Hard implement: Nemotron 3 Nano 30B-A3B', provider: 'openrouter', paramsBTotal: 30, paramsBActive: 3, contextWindow: 262144, pricing: { inputPerM: .05, outputPerM: .2 }, tier: 'payg', good_at: ['codegen', 'analysis', 'simple'], speed: 'medium' },
+];
+
 export type Eligibility = { eligible: boolean; reason: string };
 
 /**
- * The single gate. Everything that picks a model calls this — the router at
- * runtime AND the settings screen at display time — so there is exactly one
+ * The single gate. Everything that picks a model calls this - the router at
+ * runtime AND the settings screen at display time - so there is exactly one
  * definition of "allowed" in the codebase and no path around it.
  */
 export function checkEligibility(m: ModelEntry): Eligibility {
@@ -413,7 +454,7 @@ export function checkEligibility(m: ModelEntry): Eligibility {
     return {
       eligible: false,
       reason:
-        "Provider does not publish a parameter count — unverifiable, treated as ineligible.",
+        "Provider does not publish a parameter count - unverifiable, treated as ineligible.",
     };
   }
   if (m.paramsBTotal > PARAM_LIMIT_B) {
@@ -437,7 +478,7 @@ export function eligibleModels(): ModelEntry[] {
 }
 
 export function findModel(id: string): ModelEntry | undefined {
-  return MODEL_REGISTRY.find((m) => m.id === id);
+  return MODEL_REGISTRY.find((m) => m.id === id) ?? LEGACY_MODEL_REGISTRY.find((m) => m.id === id);
 }
 
 /** USD for one call. Local models are genuinely free, not nominally free. */
@@ -467,3 +508,11 @@ export const PROVIDER_CONFIG: Record<
   },
   gemini: { keyName: "GEMINI_API_KEY", label: "Gemini" },
 };
+
+/** Return all eligible model IDs from the registry - used by the main process
+ *  to auto-populate the enabled pool when the user only picks a core model. */
+export function getDefaultEnabledIds(): string[] {
+  return MODEL_REGISTRY
+    .filter(m => checkEligibility(m).eligible)
+    .map(m => m.id);
+}

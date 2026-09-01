@@ -1,6 +1,6 @@
 /**
  * ============================================================================
- *  ORCHESTRATOR BRIDGE — main process side of the stdio channel
+ *  ORCHESTRATOR BRIDGE - main process side of the stdio channel
  * ============================================================================
  * Owns the child process lifecycle and translates between two worlds:
  *   renderer  <-- ipcMain/webContents -->  main  <-- stdio JSON-RPC -->  child
@@ -10,7 +10,7 @@
  * 1. SPAWNING WITHOUT A SYSTEM NODE. We launch `process.execPath` (the Electron
  *    binary) with ELECTRON_RUN_AS_NODE=1, which makes it behave as a plain
  *    Node runtime. This is why the packaged app does not require the user to
- *    have Node installed — unlike the Python retrieval service, which does
+ *    have Node installed - unlike the Python retrieval service, which does
  *    need an interpreter. Same reason `orchestrator-dist` is plain CommonJS.
  *
  * 2. THE WATCHDOG. EOF on stdout means the child is gone. We restart it (with

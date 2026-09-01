@@ -1,4 +1,20 @@
-# creates embeddings for text and reranks search results using a cross-encoder
+"""
+Local embedding + reranking via fastembed (ONNX runtime, no torch).
+
+Both models are lazy-loaded singletons - nothing downloads or loads into
+memory until the first real request, so opening the IDE doesn't pay this
+cost, and a machine with no network access at first run only pays it once
+(fastembed caches the ONNX weights under its own cache dir after first
+download).
+
+Failure is graceful and explicit everywhere: if the embedding model can't
+load (no network for the first-run download, disk full, etc.) the service
+still runs - vector search is just disabled and retrieval falls back to
+BM25 + graph expansion only. Same story for the reranker: if it's
+unavailable, Stage 3 falls back to a heuristic score instead of failing
+the whole query.
+"""
+
 EMBED_MODEL = "BAAI/bge-small-en-v1.5"          # 33M params, 384-dim
 RERANK_MODEL = "Xenova/ms-marco-MiniLM-L-6-v2"  # ~23M params
 
@@ -37,6 +53,7 @@ def get_reranker():
 
 
 def embed_texts(texts):
+    """Returns list[list[float]] or None if the embedder is unavailable."""
     if not texts:
         return []
     embedder = get_embedder()
@@ -51,6 +68,8 @@ def embed_query(text: str):
 
 
 def rerank(query: str, documents: list):
+    """Returns list[float] scores aligned with `documents`, or None if the
+    reranker is unavailable (caller should use a heuristic fallback)."""
     if not documents:
         return []
     reranker = get_reranker()

@@ -5,7 +5,7 @@
  *
  * Block-by-block accept/reject plus accept-all/reject-all. The blocks are real
  * unified-diff hunks computed by orchestrator/diff.ts from the file on disk vs
- * the agent's proposal — nothing has been written yet when this renders, so
+ * the agent's proposal - nothing has been written yet when this renders, so
  * rejecting is genuinely a no-op on the filesystem rather than an undo.
  *
  * Partial approval is the interesting case: the orchestrator rebuilds the file
@@ -16,7 +16,7 @@
  * LAYOUT: this lives in a ~360px sidebar and a diff is arbitrarily long, so the
  * hunks scroll inside their own box and the action bar is sticky. Previously a
  * 40-line proposal pushed Accept/Reject past the bottom of the panel, which
- * made the gate look broken — the orchestrator was blocked waiting on a button
+ * made the gate look broken - the orchestrator was blocked waiting on a button
  * the user could not reach. Each hunk also collapses past a threshold, so a
  * multi-hunk review stays navigable instead of being one endless column.
  */
@@ -96,7 +96,7 @@ export default function DiffReview({ summary, diffs, onDecide }: DiffReviewProps
   const allBlockIds = diffs.flatMap((d) => d.blocks.map((b) => b.id));
   const [accepted, setAccepted] = useState<Set<string>>(new Set(allBlockIds));
   // The orchestrator is blocked on this decision, so a double-click must not
-  // send two answers — the second would have no pending approval to resolve.
+  // send two answers - the second would have no pending approval to resolve.
   const [sent, setSent] = useState(false);
 
   const toggle = (id: string) => {

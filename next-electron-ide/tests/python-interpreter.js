@@ -9,7 +9,7 @@
  * permanent keyword-only degraded mode on any machine that did not pip-install
  * the requirements globally. Resolution must prefer, in order: an explicit
  * NEXIDE_PYTHON, the project-local retrieval-service/.venv, an activated
- * $VIRTUAL_ENV, and only then fall back to PATH — flagging the fallback so the
+ * $VIRTUAL_ENV, and only then fall back to PATH - flagging the fallback so the
  * caller can warn.
  *
  * The function is pure (fs check and paths are injected), so every branch is

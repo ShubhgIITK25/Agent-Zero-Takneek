@@ -1,6 +1,6 @@
 /**
  * ============================================================================
- *  AGENTS.md — per-project rules that must survive compaction
+ *  AGENTS.md - per-project rules that must survive compaction
  * ============================================================================
  * The file is free-form markdown by convention, so "parsing" it into a rigid
  * schema would be inventing a format nobody writes. Instead we do two things:
@@ -37,7 +37,7 @@ export function loadAgentsMd(rootPath: string): AgentsMd {
 }
 
 /**
- * Pull out the lines that read as rules — bullets and numbered items — and
+ * Pull out the lines that read as rules - bullets and numbered items - and
  * keep them short enough to re-inject cheaply on every compaction. Headings
  * and prose paragraphs stay in the full content but are not pinned, because
  * pinning everything would defeat the point of compacting at all.
@@ -53,7 +53,7 @@ function extractRules(content: string): string[] {
     }
   }
   // A very long rule list would blow up every compacted prompt. Keep the first
-  // 25 — projects that need more should be putting them in prose sections.
+  // 25 - projects that need more should be putting them in prose sections.
   return rules.slice(0, 25);
 }
 

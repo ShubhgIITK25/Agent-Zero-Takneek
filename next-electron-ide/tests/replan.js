@@ -7,14 +7,14 @@
  * Runs a REAL TaskRunner with only providers.callModel mocked, so the DAG
  * rewiring, the scheduler, and the completion predicate are all the real ones.
  *
- * Three scenarios, because "it re-plans" is the easy half — the bounds are the
+ * Three scenarios, because "it re-plans" is the easy half - the bounds are the
  * part that stops a struggling task from rewriting its own plan forever:
  *
  *   A. RECOVERY   a subtask fails every retry, the re-planner decomposes it,
  *                 the replacements pass, and the TASK STILL REPORTS DONE.
  *                 That last clause is the one that breaks if `replaced` is
  *                 treated as just another non-`done` status.
- *   B. NO NESTING a replacement that also fails is failed outright — depth is
+ *   B. NO NESTING a replacement that also fails is failed outright - depth is
  *                 capped, so re-plans never recurse.
  *   C. ABANDON    a re-planner that judges the work impossible leaves the
  *                 original failure standing instead of burning budget on a
@@ -163,7 +163,7 @@ async function main() {
     assert.deepStrictEqual(A.snap.subtasks.find((s) => s.id === 's2r1').dependsOn, ['s1']);
     assert.deepStrictEqual(A.snap.subtasks.find((s) => s.id === 's2r2').dependsOn, ['s2r1']);
   });
-  t('the TASK reports done — a replaced subtask must not count as incomplete', () => {
+  t('the TASK reports done - a replaced subtask must not count as incomplete', () => {
     assert.strictEqual(A.snap.status, 'done', `task ended ${A.snap.status}`);
     assert.ok(
       A.events.some((e) => e.type === 'task_finished'),
@@ -188,7 +188,7 @@ async function main() {
   });
 
   // ---------------------------------------------------------------- B ------
-  console.log('\n== re-plan B: re-plans do not nest — a failing replacement is failed, not re-planned ==');
+  console.log('\n== re-plan B: re-plans do not nest - a failing replacement is failed, not re-planned ==');
   let replanCalls = 0;
   const B = await runTask('replan-depth', {
     // Every replacement also fails, so a depth bound is the only thing that
@@ -209,7 +209,7 @@ async function main() {
     assert.strictEqual(B.snap.subtasks.find((s) => s.id === 's2r1').replanDepth, 1);
   });
   t('a depth-1 replacement that fails is NOT re-planned again', () => {
-    assert.strictEqual(replanCalls, 1, `re-planner ran ${replanCalls}x — depth bound did not hold`);
+    assert.strictEqual(replanCalls, 1, `re-planner ran ${replanCalls}x - depth bound did not hold`);
   });
   t('a "replan_declined" intervention explains which bound stopped it', () => {
     const d = B.events.find((e) => e.type === 'intervention' && e.cause === 'replan_declined');

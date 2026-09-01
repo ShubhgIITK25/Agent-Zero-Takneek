@@ -1,6 +1,6 @@
 /**
  * ============================================================================
- *  WIRE PROTOCOL — Electron main  <->  orchestrator child process
+ *  WIRE PROTOCOL - Electron main  <->  orchestrator child process
  * ============================================================================
  * Newline-delimited JSON over stdio. One JSON object per line, no framing
  * header, no length prefix.
@@ -35,7 +35,7 @@ export type AgentRole = 'planner' | 'implementer' | 'verifier' | 'tiebreak' | 'c
 /**
  * `replaced` is distinct from `failed` on purpose. It means the re-planner
  * decided this subtask was badly scoped and swapped it for a different
- * decomposition — the work it represented is still being attempted, just under
+ * decomposition - the work it represented is still being attempted, just under
  * new ids. So it is terminal for the scheduler but must NOT make the task fail,
  * which is the one thing `failed` and `skipped` both do.
  */
@@ -76,12 +76,12 @@ export type Subtask = {
    * planner. Advisory, never enforced: an agent may edit a file that is not
    * listed, and a listed file may go untouched.
    *
-   * The scheduler uses it for ONE thing — refusing to run two subtasks at the
+   * The scheduler uses it for ONE thing - refusing to run two subtasks at the
    * same time when their declared files overlap. That is not a safety
    * mechanism (the stale-proposal guard already makes a concurrent write
    * impossible to apply silently); it is a COST mechanism. Without it, two
    * parallel subtasks editing one file means the loser's proposal is refused
-   * and it must re-read and re-propose — a whole extra model round-trip. The
+   * and it must re-read and re-propose - a whole extra model round-trip. The
    * declaration lets the planner mark subtasks independent aggressively
    * without that being a gamble.
    */
@@ -148,10 +148,13 @@ export type TaskConfig = {
   env: Record<string, string>;
   /** model ids (from models.ts) the user enabled, in preference order */
   enabledModelIds: string[];
+  coreModelId?: string;
+  /** User-defined model entries saved in Settings, available to routing and failover. */
+  customModels?: import('./models').ModelEntry[];
   /**
    * Last known health per model id, from the Settings screen's probe (see
    * electron/model-health.ts). Optional: a task started before any check ever
-   * ran, or resumed from an older snapshot, simply has none — and "not
+   * ran, or resumed from an older snapshot, simply has none - and "not
    * checked" must never be read as "broken".
    */
   modelHealth?: Record<string, { state: string; detail: string; checkedAt: number }>;
@@ -175,7 +178,7 @@ export type Command =
   | { kind: 'command'; type: 'isolated_query'; id: string; question: string; config: TaskConfig }
   | { kind: 'command'; type: 'ping'; id: string };
 
-/** Reply to a command that carried an `id`. Not an Event — never rendered. */
+/** Reply to a command that carried an `id`. Not an Event - never rendered. */
 export type CommandReply = {
   kind: 'reply';
   id: string;
@@ -199,7 +202,7 @@ export type EventBody =
   | { type: 'replan'; failedSubtaskId: string; diagnosis: string; replacements: Subtask[]; replansRemaining: number }
   | { type: 'subtask_started'; subtaskId: string; title: string; attempt: number }
   | { type: 'subtask_finished'; subtaskId: string; status: SubtaskStatus; note?: string }
-  /** Emitted the instant the router decides — never reconstructed after the fact. */
+  /** Emitted the instant the router decides - never reconstructed after the fact. */
   | { type: 'routing_decision'; subtaskId: string; nodeId: string; modelId: string; provider: string; reason: string; signals: RoutingSignals; rejected: { modelId: string; why: string }[] }
   | { type: 'agent_call_start'; nodeId: string; parentId: string | null; role: AgentRole; subtaskId: string | null; modelId: string; provider: string; prompt: string }
   | { type: 'agent_call_end'; nodeId: string; promptTokens: number; completionTokens: number; costUsd: number; latencyMs: number; output: string; error?: string }

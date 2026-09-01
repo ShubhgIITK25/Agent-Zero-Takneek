@@ -1,12 +1,12 @@
 'use client';
 
 /**
- * INLINE DIFF REVIEW, IN THE EDITOR — the VSCode-style approval surface.
+ * INLINE DIFF REVIEW, IN THE EDITOR - the VSCode-style approval surface.
  *
  * One read-only Monaco buffer holding the whole file with the agent's proposal
  * spliced in: deleted lines red and struck through, added lines green, and a
- * small Keep / Deny toolbar floating above each hunk. Nothing is on disk yet —
- * the orchestrator is blocked on the decision this collects — so "Deny" is
+ * small Keep / Deny toolbar floating above each hunk. Nothing is on disk yet -
+ * the orchestrator is blocked on the decision this collects - so "Deny" is
  * genuinely a no-op rather than an undo.
  *
  * WHY VIEW ZONES RATHER THAN ABSOLUTELY-POSITIONED REACT OVERLAYS.
@@ -18,7 +18,7 @@
  * This is the same mechanism VSCode's own inline chat uses.
  *
  * The zones are built once per mount and only their `data-state` is touched
- * afterwards — the parent keys this component per approval, so a new proposal
+ * afterwards - the parent keys this component per approval, so a new proposal
  * is a fresh mount rather than a diff of DOM that Monaco half-owns.
  */
 
@@ -34,7 +34,7 @@ type InlineDiffEditorProps = {
   /** Block ids the user has denied. Everything else is kept. */
   denied: Set<string>;
   onSetDecision: (blockId: string, decision: HunkDecision) => void;
-  /** Scroll this hunk into view — set by the pane's next/previous buttons. */
+  /** Scroll this hunk into view - set by the pane's next/previous buttons. */
   focusBlockId?: string | null;
   /** Locked while the decision is in flight, so a hunk cannot change under it. */
   locked?: boolean;
@@ -200,7 +200,7 @@ export default function InlineDiffEditor({
       height="100%"
       theme="vs-dark"
       // A synthetic scheme keeps this buffer's model separate from the real
-      // editor's model for the same file — otherwise opening the file being
+      // editor's model for the same file - otherwise opening the file being
       // reviewed would show the diff preview as if it were the file on disk.
       path={`nexide-review://${diff.path}`}
       language={languageFromPath(diff.path)}

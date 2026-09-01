@@ -1,4 +1,25 @@
-# getUserById -> get, user, by, id; get_user_by_id -> get, user, by, id; get_user_by_id2 -> get, user, by, id2; getUserByID2 -> get, user, by, id2; getUserByID2AndName -> get, user, by, id2, and, name; getUserByID2AndName3 -> get, user, by, id2, and, name3
+"""
+Identifier <-> word-list conversion, shared by the indexer and the query path.
+
+The problem this solves is concrete: SQLite's FTS5 tokeniser treats
+`computeDelinquencyGraceWindow` as ONE token. A user asking "delinquency grace
+window" - or any natural-language phrasing - cannot match it through BM25, no
+matter how the query is worded, because the *indexed* form is atomic.
+
+So at index time every identifier in a chunk's symbol and code is ALSO stored
+split into its sub-words (`compute delinquency grace window`), in a dedicated
+FTS column. The raw code is still indexed verbatim, so an exact-identifier
+search is unchanged; the split column is pure additional recall.
+
+At query time the same split is applied to the query, so a pasted symbol name
+(`getUserById`) also searches as `get user by id`.
+
+WHY NOT a custom FTS5 tokeniser. That is the "correct" answer and it needs a C
+extension compiled per platform - the exact dependency this service was built
+to avoid (see requirements.txt on why sqlite-vec was chosen over a vector DB).
+A pre-split column is pure Python, costs one pass over each chunk at index
+time, and is transparent in the DB browser.
+"""
 import re
 
 # camelCase / PascalCase / snake_case / SCREAMING_CASE / digits, one pass.
@@ -9,7 +30,7 @@ _IDENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]{2,}")
 def split_identifier(word: str) -> list:
     """`createUserSession` -> [create, user, session]; `user_session` -> [user, session].
 
-    Words of one sub-token (`retry`, `parse`) return [] — there is nothing to
+    Words of one sub-token (`retry`, `parse`) return [] - there is nothing to
     split, and returning the word itself would just duplicate what the raw
     index already has.
     """

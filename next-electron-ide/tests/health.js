@@ -8,7 +8,7 @@
  * two halves of the fix:
  *
  *   1. the health snapshot is a HARD filter, applied before any call is made;
- *   2. runtime evidence outranks the snapshot in BOTH directions — a 404 takes
+ *   2. runtime evidence outranks the snapshot in BOTH directions - a 404 takes
  *      a model out even if the probe liked it, and a success puts one back even
  *      if the probe did not.
  *
@@ -35,7 +35,7 @@ const t = (name, fn) => {
 };
 
 // Two eligible models on DIFFERENT providers, so a provider-wide block still
-// leaves somewhere to route — otherwise these tests would pass for the wrong
+// leaves somewhere to route - otherwise these tests would pass for the wrong
 // reason (nothing left, rather than the right thing excluded).
 const eligible = MODEL_REGISTRY.filter((m) => checkEligibility(m).eligible);
 const A = eligible.find((m) => m.provider === 'groq');
@@ -90,7 +90,7 @@ t('routing returns null when every model is unhealthy, rather than picking one',
 
 console.log('\n== health: what must NOT be blocked ==');
 
-t('an unprobed model still routes — "not checked" is not "broken"', () => {
+t('an unprobed model still routes - "not checked" is not "broken"', () => {
   const r = routerWith(new HealthRegistry({}));
   assert.ok(r.route(signals()), 'an empty health map must not disable routing');
 });
@@ -105,7 +105,7 @@ t('"unknown" does not block', () => {
   assert.ok(r.route(signals()));
 });
 
-t('"rate-limited" does not block — a quota resets, a health block would not', () => {
+t('"rate-limited" does not block - a quota resets, a health block would not', () => {
   const health = new HealthRegistry({ [A.id]: snap('rate-limited'), [B.id]: snap('rate-limited') });
   assert.ok(routerWith(health).route(signals()), 'rate-limited belongs to the cooldown, not the health gate');
   assert.strictEqual(health.blockReason(A.id, A.provider), null);
@@ -132,7 +132,7 @@ t('a 404 blocks only that model, not its whole provider', () => {
   assert.strictEqual(health.blockReason(sibling.id, sibling.provider), null);
 });
 
-t('a 401 blocks the whole provider — the key is bad for all of its models', () => {
+t('a 401 blocks the whole provider - the key is bad for all of its models', () => {
   const health = new HealthRegistry({});
   const scope = health.recordFailure(A.id, A.provider, {
     status: 401,
@@ -164,7 +164,7 @@ t('a transient failure (500, timeout) is NOT recorded as a health block', () => 
   assert.strictEqual(health.blockReason(A.id, A.provider), null);
 });
 
-t('an ambiguous 400 is not attributed — it is as likely to be our own payload', () => {
+t('an ambiguous 400 is not attributed - it is as likely to be our own payload', () => {
   const health = new HealthRegistry({});
   assert.strictEqual(
     health.recordFailure(A.id, A.provider, {

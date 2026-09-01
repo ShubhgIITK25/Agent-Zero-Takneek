@@ -1,7 +1,7 @@
 'use client';
 
 /**
- * AGENT PANEL — drives the orchestrator and renders its stream.
+ * AGENT PANEL - drives the orchestrator and renders its stream.
  *
  * Three things live here beyond plain chat:
  *
@@ -23,8 +23,12 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { CheckCheck, ChevronDown, ChevronRight, Clock, LayoutDashboard, Settings, X, Send, Plus, Bot, User, Zap, ShieldCheck, Play, Square, Sparkles, Circle, Cpu } from 'lucide-react';
 import type { FileDiffView } from './DiffReview';
 import { TraceView, TraceEvent, applyEvent, emptyTrace, formatUsd } from '../lib/trace';
+import { MODEL_REGISTRY } from '../../orchestrator/models';
+
+const ICON = { size: 14, strokeWidth: 1.75 } as const;
 
 type ChatPanelProps = {
   rootPath: string | null;
@@ -71,7 +75,7 @@ const nextId = () => `b${++bubbleSeq}`;
 
 /**
  * The router's `reason` already opens with "<label> (<provider>): ", and the
- * event carries modelId and provider separately — printing all three put the
+ * event carries modelId and provider separately - printing all three put the
  * same words on screen three times and turned every routing line into a
  * three-line paragraph. Keep the short model name and the actual justification.
  */
@@ -149,6 +153,7 @@ export default function ChatPanel({
 }: ChatPanelProps) {
   const [bubbles, setBubbles] = useState<Bubble[]>([]);
   const [input, setInput] = useState('');
+  const [selectedModelId, setSelectedModelId] = useState('');
   const [pinned, setPinned] = useState<PinnedItem[]>([]);
   const [running, setRunning] = useState(false);
   const [taskId, setTaskId] = useState<string | null>(null);
@@ -167,6 +172,35 @@ export default function ChatPanel({
     });
   const [showHistory, setShowHistory] = useState(false);
   const [historyTasks, setHistoryTasks] = useState<any[]>([]);
+  const [autoApprove, setAutoApprove] = useState(() => {
+    if (typeof window !== 'undefined') {
+      return localStorage.getItem('nexide-auto-approve') !== 'false';
+    }
+    return true;
+  });
+  const toggleAutoApprove = () => {
+    setAutoApprove((v) => {
+      const next = !v;
+      localStorage.setItem('nexide-auto-approve', String(next));
+      return next;
+    });
+  };
+  const autoApproveRef = useRef(true);
+  useEffect(() => {
+    autoApproveRef.current = autoApprove;
+  }, [autoApprove]);
+
+  useEffect(() => {
+    window.electronAPI?.settingsGet().then((settings) =>
+      setSelectedModelId(settings.enabledModelIds[0] ?? MODEL_REGISTRY[0]?.id ?? '')
+    );
+  }, []);
+
+  const selectModel = async (id: string) => {
+    setSelectedModelId(id);
+    const settings = await window.electronAPI?.settingsGet();
+    if (settings) await window.electronAPI?.settingsSet({ ...settings, coreModelId: id });
+  };
 
   const processEventIntoBubbles = (e: TraceEvent, currentBubbles: Bubble[]) => {
     let nextBubbles = [...currentBubbles];
@@ -180,7 +214,7 @@ export default function ChatPanel({
         pushLocal({
           id: nextId(),
           kind: 'system',
-          text: e.shortCircuited ? 'Handling this directly — too simple to be worth decomposing.' : `Plan: ${e.subtasks.map((s: any, i: number) => `${i + 1}. ${s.title}`).join('  ')}`,
+          text: e.shortCircuited ? 'Handling this directly - too simple to be worth decomposing.' : `Plan: ${e.subtasks.map((s: any, i: number) => `${i + 1}. ${s.title}`).join('  ')}`,
         });
         break;
       case 'routing_decision': {
@@ -221,7 +255,7 @@ export default function ChatPanel({
         break;
       case 'intervention': {
         // Severity comes from the orchestrator rather than being inferred from
-        // the cause here. The same cause can be routine or fatal — a failover
+        // the cause here. The same cause can be routine or fatal - a failover
         // that found another model is not an error, and a rate limit never was
         // one: it is a documented free-tier behaviour the router is built to
         // route around. Only a genuine dead end is rendered red.
@@ -233,7 +267,7 @@ export default function ChatPanel({
         pushLocal({
           id: nextId(),
           kind,
-          text: `${e.cause.replace(/_/g, ' ')} — ${e.detail}\n${e.action}`,
+          text: `${e.cause.replace(/_/g, ' ')} - ${e.detail}\n${e.action}`,
         });
         break;
       }
@@ -287,10 +321,22 @@ export default function ChatPanel({
     const off = window.electronAPI?.onOrchestratorEvent((e: TraceEvent) => {
       onTraceEvent(e);
       setBubbles((prev) => processEventIntoBubbles(e, prev));
-      
+
+      if (e.type === 'approval_request' && autoApproveRef.current && e.request) {
+        const ids = Array.isArray(e.request.diff)
+          ? e.request.diff.flatMap((d: { blocks?: { id: string }[] }) => (d.blocks ?? []).map((b) => b.id))
+          : [];
+        void window.electronAPI?.orchestratorApprove({
+          requestId: e.request.requestId,
+          approved: true,
+          acceptedBlockIds: ids,
+        });
+      }
+
       if (['task_finished', 'task_failed', 'task_cancelled'].includes(e.type)) {
         setRunning(false);
         setTaskId(null);
+        setAutoApprove(false);
         if (e.type === 'task_finished') onFileChanged('');
       }
     });
@@ -302,7 +348,7 @@ export default function ChatPanel({
 
   // Follow the tail only when the user is already at it. Unconditionally
   // scrolling to the bottom on every event yanked the view away mid-review of
-  // a pending diff — and that diff is the one thing the whole task is blocked
+  // a pending diff - and that diff is the one thing the whole task is blocked
   // on, so it is the last thing that should scroll off screen.
   useEffect(() => {
     const el = scrollRef.current;
@@ -398,7 +444,7 @@ export default function ChatPanel({
       });
     }
 
-    // `/run` — manual bypass straight to the visible terminal, no agent.
+    // `/run` - manual bypass straight to the visible terminal, no agent.
     if (text.startsWith('/run ')) {
       const command = text.slice(5).trim();
       if (command) {
@@ -408,7 +454,7 @@ export default function ChatPanel({
       return;
     }
 
-    // `/bytheway` — isolated, zero-context. Runs as its own command in the
+    // `/bytheway` - isolated, zero-context. Runs as its own command in the
     // orchestrator and never touches a running task's history.
     if (text.startsWith('/bytheway') || text.startsWith('/btw')) {
       const question = text.replace(/^\/(bytheway|btw)\s*/, '');
@@ -419,7 +465,7 @@ export default function ChatPanel({
       push({ id: nextId(), kind: 'user', text });
       try {
         const res = await window.electronAPI!.orchestratorIsolatedQuery(question);
-        push({ id: nextId(), kind: 'system', text: `isolated · ${res.modelId} · ${formatUsd(res.costUsd)} — no project context, no tools, not added to the task` });
+        push({ id: nextId(), kind: 'system', text: `isolated · ${res.modelId} · ${formatUsd(res.costUsd)} - no project context, no tools, not added to the task` });
         push({ id: nextId(), kind: 'agent', text: res.answer });
       } catch (err) {
         push({ id: nextId(), kind: 'error', text: err instanceof Error ? err.message : String(err) });
@@ -445,7 +491,7 @@ export default function ChatPanel({
   const decide = async (requestId: string, approved: boolean, acceptedBlockIds: string[]): Promise<boolean> => {
     // Send FIRST, then collapse the widget. Marking it resolved optimistically
     // and then failing to deliver left the orchestrator blocked on an approval
-    // the user could no longer answer — the task just hung with the UI
+    // the user could no longer answer - the task just hung with the UI
     // claiming it had been handled.
     try {
       await window.electronAPI?.orchestratorApprove({ requestId, approved, acceptedBlockIds });
@@ -453,7 +499,7 @@ export default function ChatPanel({
       push({
         id: nextId(),
         kind: 'error',
-        text: `Could not deliver that decision: ${err instanceof Error ? err.message : String(err)}. The task is still waiting — try again.`,
+        text: `Could not deliver that decision: ${err instanceof Error ? err.message : String(err)}. The task is still waiting - try again.`,
       });
       return false;
     }
@@ -488,17 +534,24 @@ export default function ChatPanel({
       <div className="chat-header">
         <span>AI AGENT</span>
         <div className="chat-header-actions">
+          <button
+            className={`chat-icon-btn${autoApprove ? ' active' : ''}`}
+            onClick={toggleAutoApprove}
+            title={autoApprove ? 'Auto-approve is on: every pending change and command will be applied' : 'Approve all remaining changes and commands this task'}
+          >
+            <ShieldCheck {...ICON} />
+          </button>
           <button className="chat-icon-btn" onClick={toggleHistory} title="Task History">
-            🕒
+            <Clock {...ICON} />
           </button>
           <button className="chat-icon-btn" onClick={onOpenDashboard} title="Observability dashboard (Ctrl+Shift+D)">
-            ▤
+            <LayoutDashboard {...ICON} />
           </button>
           <button className="chat-icon-btn" onClick={onOpenSettings} title="Agent Settings (Ctrl+,)">
-            ⚙
+            <Settings {...ICON} />
           </button>
           <button className="terminal-close-btn" onClick={onClose} title="Close chat">
-            ×
+            <X size={14} />
           </button>
         </div>
       </div>
@@ -539,9 +592,16 @@ export default function ChatPanel({
             />
           </div>
           <span className="chat-budget-text">
-            {formatUsd(trace.budget.costUsd)} / ${trace.budget.maxCostUsd} · {Math.round(trace.budget.elapsedSeconds)}s
-            / {trace.budget.maxSeconds}s
+            ${trace.budget.costUsd.toFixed(2)} / ${trace.budget.maxCostUsd.toFixed(2)} · {Math.floor(trace.budget.elapsedSeconds / 60)}:{(Math.round(trace.budget.elapsedSeconds) % 60).toString().padStart(2, '0')} / {Math.floor(trace.budget.maxSeconds / 60)}:{(trace.budget.maxSeconds % 60).toString().padStart(2, '0')}
           </span>
+          <button
+            type="button"
+            className={`chat-approve-all-btn${autoApprove ? ' on' : ''}`}
+            onClick={toggleAutoApprove}
+            title="Automatically apply every remaining file change and command this task"
+          >
+            {autoApprove ? 'Auto-approving' : 'Approve remaining'}
+          </button>
           <button type="button" className="chat-cancel-btn" onClick={() => taskId && window.electronAPI?.orchestratorCancelTask(taskId)}>
             Stop
           </button>
@@ -578,7 +638,7 @@ export default function ChatPanel({
               if (b.resolved) {
                 return (
                   <div key={b.id} className="chat-approval-resolved">
-                    {b.summary} — <strong>{b.resolved}</strong>
+                    {b.summary} - <strong>{b.resolved}</strong>
                   </div>
                 );
               }
@@ -586,7 +646,7 @@ export default function ChatPanel({
               // DiffReviewPane) where there is room to read code in context
               // and a real Monaco buffer to read it in. Duplicating the whole
               // review inside a 360px sidebar would give the user two places
-              // to answer the same blocking approval — and two chances to
+              // to answer the same blocking approval - and two chances to
               // answer it differently.
               if (b.approvalKind === 'diff' && b.diffs) {
                 const files = b.diffs;
@@ -607,6 +667,15 @@ export default function ChatPanel({
                     <div className="chat-diff-pointer-hint">
                       Keep or deny each change in the editor, then apply.
                     </div>
+                    <div className="chat-approval-actions">
+                      <button
+                        type="button"
+                        className="chat-approve-btn"
+                        onClick={() => decide(b.requestId, true, files.flatMap((d) => d.blocks.map((blk) => blk.id)))}
+                      >
+                        Approve all
+                      </button>
+                    </div>
                   </div>
                 );
               }
@@ -618,6 +687,16 @@ export default function ChatPanel({
                     <button type="button" className="chat-approve-btn" onClick={() => decide(b.requestId, true, [])}>
                       Approve
                     </button>
+                    <button
+                      type="button"
+                      className="chat-approve-btn"
+                      onClick={() => {
+                        setAutoApprove(true);
+                        void decide(b.requestId, true, []);
+                      }}
+                    >
+                      Approve remaining
+                    </button>
                     <button type="button" className="chat-reject-btn" onClick={() => decide(b.requestId, false, [])}>
                       Reject
                     </button>
@@ -627,25 +706,23 @@ export default function ChatPanel({
             }
             if (b.kind === 'routing') {
               const open = expandedRouting.has(b.id);
-              const hasDetail = b.rejected.length > 0 || readableSignals(b.signals).length > 0;
               const sig = readableSignals(b.signals);
+              const categoryStr = typeof b.signals?.category === 'string' ? b.signals.category : 'task';
               return (
                 <div key={b.id} className={`chat-routing${open ? ' chat-routing-open' : ''}`}>
                   <button
                     type="button"
                     className="chat-routing-head"
-                    onClick={() => hasDetail && toggleRouting(b.id)}
+                    onClick={() => toggleRouting(b.id)}
                     aria-expanded={open}
-                    disabled={!hasDetail}
-                    title={hasDetail ? (open ? 'Hide routing detail' : 'Show why this model won') : b.text}
+                    title={open ? 'Hide routing detail' : 'Show routing detail'}
                   >
-                    <span className="chat-routing-icon">{hasDetail ? (open ? '▾' : '▸') : '⇄'}</span>
-                    <span className="chat-routing-model">{b.model}</span>
-                    <span className="chat-routing-why">{b.text}</span>
+                    <Sparkles size={14} />
+                    <span className="chat-routing-icon">
+                      {open ? <ChevronDown {...ICON} /> : <ChevronRight {...ICON} />}
+                    </span>
+                    <span className="chat-routing-model">Used {b.model} for {categoryStr}</span>
                     {b.count > 1 && <span className="chat-routing-count">×{b.count}</span>}
-                    {!open && b.rejected.length > 0 && (
-                      <span className="chat-routing-rejcount">{b.rejected.length} not picked</span>
-                    )}
                   </button>
 
                   {open && (
@@ -711,7 +788,13 @@ export default function ChatPanel({
             }
             return (
               <div key={b.id} className={`chat-message ${b.kind === 'user' ? 'user' : 'assistant'}`}>
-                <div className="chat-message-role">{b.kind === 'user' ? 'You' : 'Agent'}</div>
+                <div className="chat-message-role">
+                  {b.kind === 'user' ? (
+                    <><User size={14} /> You</>
+                  ) : (
+                    <><Bot size={14} /> Agent</>
+                  )}
+                </div>
                 <div className="chat-message-text">
                   <LinkedText text={b.text} onOpenFileAt={onOpenFileAt} />
                 </div>
@@ -741,7 +824,7 @@ export default function ChatPanel({
                 onClick={() => setPinned((prev) => prev.filter((_, j) => j !== i))}
                 aria-label={`Remove ${p.path} from context`}
               >
-                ×
+                <X size={14} />
               </button>
             </span>
           ))}
@@ -766,7 +849,7 @@ export default function ChatPanel({
           disabled={running}
         />
         <button type="button" onClick={send} disabled={running || !input.trim()}>
-          Send
+          <Send size={16} /> Send
         </button>
       </div>
     </aside>

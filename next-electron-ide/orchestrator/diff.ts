@@ -1,6 +1,6 @@
 /**
  * ============================================================================
- *  DIFFS — Git-generated hunks with block-level acceptance
+ *  DIFFS - Git-generated hunks with block-level acceptance
  * ============================================================================
  * The HITL requirement has three parts:
  *   (a) a real Git unified diff,

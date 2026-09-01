@@ -1,12 +1,12 @@
 /**
- * Parallel subtask execution — that it happens, and that it is still safe.
+ * Parallel subtask execution - that it happens, and that it is still safe.
  *   npm run build:orchestrator && node tests/parallel.js
  *
  * Runs a REAL TaskRunner end to end with only the network boundary
  * (providers.callModel) mocked, the same technique as tests/task-completion.js.
  * The implementer mock holds an artificial delay and records how many subtasks
  * are inside it at once, so "did these actually overlap" is measured rather
- * than assumed — a scheduler that merely *looks* concurrent but awaits each
+ * than assumed - a scheduler that merely *looks* concurrent but awaits each
  * subtask in turn would pass a timing-free test and fail this one.
  *
  * The three things that could go wrong are each pinned:
@@ -261,7 +261,7 @@ async function main() {
 
   t('the run really did raise multiple approvals', () => {
     const n = gated.events.filter((e) => e.type === 'approval_request').length;
-    assert.ok(n >= 2, `only ${n} approval(s) raised — the fixture proved nothing`);
+    assert.ok(n >= 2, `only ${n} approval(s) raised - the fixture proved nothing`);
   });
 
   t('no two approvals are ever outstanding at the same time', () => {

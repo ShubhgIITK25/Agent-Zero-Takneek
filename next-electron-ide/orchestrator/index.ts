@@ -1,13 +1,13 @@
 /**
  * ============================================================================
- *  ENTRY POINT — newline-delimited JSON-RPC over stdio
+ *  ENTRY POINT - newline-delimited JSON-RPC over stdio
  * ============================================================================
  * Spawned by electron/main.ts. Reads Commands from stdin, writes Events and
  * CommandReplies to stdout, one JSON object per line.
  *
  * stdout is RESERVED for protocol frames. Anything this process wants to say
  * for a human goes to stderr, which main.ts logs. A stray console.log here
- * would corrupt the stream — that is why there are none.
+ * would corrupt the stream - that is why there are none.
  *
  * The process holds at most one running task. The IDE is single-user and a
  * second concurrent task would contend for the same repository working tree,
@@ -23,7 +23,7 @@ import { Command, CommandReply, EventBody, OrchestratorEvent } from './protocol'
 import { TaskStore } from './store';
 import { TaskRunner } from './orchestrator';
 import { callModel, ChatMessage } from './providers';
-import { findModel, eligibleModels } from './models';
+import { checkEligibility, findModel, eligibleModels } from './models';
 
 const dataDirArg = process.argv.indexOf('--data-dir');
 const DATA_DIR = dataDirArg >= 0 ? process.argv[dataDirArg + 1] : process.cwd();
@@ -178,11 +178,13 @@ async function handle(cmd: Command): Promise<void> {
 
     case 'isolated_query': {
       // `/bytheway`: genuinely isolated. It builds its own two-message
-      // conversation, passes no tools, and never touches `current` — so it
+      // conversation, passes no tools, and never touches `current` - so it
       // cannot read or contaminate a running task's history in either
       // direction. Isolation here is structural, not a convention.
       const model =
-        cmd.config.enabledModelIds.map((id) => findModel(id)).find((m) => m && eligibleModels().some((e) => e.id === m.id)) ??
+        cmd.config.enabledModelIds
+          .map((id) => cmd.config.customModels?.find((m) => m.id === id) ?? findModel(id))
+          .find((m) => m && checkEligibility(m).eligible) ??
         eligibleModels()[0];
       if (!model) {
         reply(cmd.id, false, 'No eligible model is enabled. Open Agent -> Settings.');

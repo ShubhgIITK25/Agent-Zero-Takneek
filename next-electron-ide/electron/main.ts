@@ -14,6 +14,18 @@ import { checkModelHealth, HealthCheckRequest } from "./model-health";
 import { resolvePythonInterpreter } from "./python-interpreter";
 import type { IPty } from "node-pty";
 
+// A detached Windows launcher can close the inherited console pipe while the
+// Electron process is still starting. Node emits EPIPE on stdout/stderr in
+// that case; without these listeners a harmless diagnostic console.log becomes
+// an uncaught main-process exception and takes down the editor.
+for (const stream of [process.stdout, process.stderr]) {
+  stream.on("error", (err: NodeJS.ErrnoException) => {
+    if (err.code !== "EPIPE") {
+      // Deliberately do not log here: the output stream itself may be broken.
+    }
+  });
+}
+
 const isDev = process.env.NODE_ENV === "development";
 
 let mainWindow: BrowserWindow | null = null;
@@ -23,23 +35,27 @@ let orchestrator: OrchestratorBridge | null = null;
 
 function createWindow() {
   mainWindow = new BrowserWindow({
+    title: "NEXide",
     width: 1400,
     height: 900,
     minWidth: 800,
     minHeight: 600,
     backgroundColor: "#1e1e1e",
+    show: true,
     titleBarStyle: process.platform === "darwin" ? "hiddenInset" : "default",
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: true,
+      sandbox: false,
     },
   });
 
+  mainWindow.show();
+  mainWindow.focus();
+
   if (isDev) {
     mainWindow.loadURL("http://localhost:3210");
-    mainWindow.webContents.openDevTools({ mode: "detach" });
   } else {
     mainWindow.loadFile(path.join(__dirname, "../renderer-out/index.html"));
   }
@@ -59,7 +75,7 @@ function createWindow() {
 // incrementally by the folder watcher below) instead of being rebuilt
 // every session. It also gives a clean isolation boundary: the Python
 // service is the ONLY thing that touches the on-disk per-project indexes,
-// and its API requires a codebase_id on every call — see
+// and its API requires a codebase_id on every call - see
 // retrieval-service/server.py and store.py for the enforcement side of
 // that guarantee.
 let retrievalProc: ChildProcessWithoutNullStreams | null = null;
@@ -70,8 +86,8 @@ let currentCodebaseId: string | null = null;
 /**
  * What the retrieval service can actually do right now, read from its
  * /health response once it comes up. `null` until the first successful probe.
- * When any of these is false the pipeline is running degraded — usually
- * because it was spawned with a Python that lacks the dependencies — and the
+ * When any of these is false the pipeline is running degraded - usually
+ * because it was spawned with a Python that lacks the dependencies - and the
  * status bar says so instead of quietly serving worse results.
  */
 let retrievalCapabilities: {
@@ -144,11 +160,11 @@ async function startRetrievalService() {
   );
   if (python.isFallback) {
     console.warn(
-      "[retrieval] no virtualenv found — spawning a bare PATH interpreter. " +
+      "[retrieval] no virtualenv found - spawning a bare PATH interpreter. " +
         "If tree-sitter / fastembed / sqlite-vec are not installed there, " +
         "retrieval runs in keyword-only mode (no AST chunking, no vector " +
         "search, no reranking). Create retrieval-service/.venv or set " +
-        "NEXIDE_PYTHON — see README section 2.3.",
+        "NEXIDE_PYTHON - see README section 2.3.",
     );
   }
 
@@ -176,7 +192,7 @@ async function startRetrievalService() {
     mainWindow?.webContents.send("retrieval:status", {
       state: "unavailable",
       message:
-        "Python retrieval service failed to start — see retrieval-service/README.md for setup.",
+        "Python retrieval service failed to start - see retrieval-service/README.md for setup.",
     });
   });
 
@@ -187,7 +203,7 @@ async function startRetrievalService() {
   });
 
   // Poll /health instead of assuming the process is ready the instant it's
-  // spawned — the Python process still has to import its dependencies
+  // spawned - the Python process still has to import its dependencies
   // (tree-sitter grammars, fastembed) before it can bind the socket.
   for (let attempt = 0; attempt < 30; attempt++) {
     await new Promise((r) => setTimeout(r, 300));
@@ -214,7 +230,7 @@ async function startRetrievalService() {
         const c = retrievalCapabilities;
         if (!c.vectorSearch || !c.astChunking || !c.reranker) {
           console.warn(
-            `[retrieval] running DEGRADED — vector_search=${c.vectorSearch} ` +
+            `[retrieval] running DEGRADED - vector_search=${c.vectorSearch} ` +
               `ast_chunking=${c.astChunking} reranker=${c.reranker}. ` +
               `Interpreter in use: ${c.interpreter}. ` +
               `Install retrieval-service/requirements.txt into that interpreter.`,
@@ -308,7 +324,7 @@ async function indexCurrentFolder() {
 // we watch the currently-open folder directly with Node's built-in
 // fs.watch({ recursive: true }) and reuse the exact same 'files:refresh' IPC
 // channel the manual "Refresh Files" menu item / status-bar button already
-// use — no renderer changes needed, and no new dependency (e.g. chokidar)
+// use - no renderer changes needed, and no new dependency (e.g. chokidar)
 // pulled in just for this. The same watcher also feeds the retrieval
 // service's incremental reindex (/update) with exactly the paths that
 // changed, so a file created by a terminal command shows up in both the
@@ -364,21 +380,21 @@ function watchFolder(folderPath: string) {
 
       // Recursive watching is emulated on Linux: Node walks the tree with
       // readdirSync and attaches one watcher per directory. If a directory
-      // disappears while that walk is in flight — git's transient
+      // disappears while that walk is in flight - git's transient
       // `.git/.gitstatus.XXXXXX` dirs, a build wiping its output, an npm
-      // install — readdirSync throws ENOENT and the watcher reports it by
+      // install - readdirSync throws ENOENT and the watcher reports it by
       // calling `emit("error", …)`.
       //
       // `for await` installs NO "error" listener (verified: listenerCount is
       // 0 while iterating), and an EventEmitter with no "error" listener
       // rethrows, which surfaces as an uncaught exception and a fatal Electron
-      // dialog. The try/catch around this loop cannot intercept that — the
-      // throw comes out of a libuv callback, not this promise chain — so this
+      // dialog. The try/catch around this loop cannot intercept that - the
+      // throw comes out of a libuv callback, not this promise chain - so this
       // listener is the only thing that can. Aborting still rejects the
       // for-await with AbortError and does not come through here.
       // The typings for the AbortSignal overload describe only an
       // AsyncIterable, but the object fs.watch actually returns is an
-      // FSWatcher — an EventEmitter — and it is the same object iterated
+      // FSWatcher - an EventEmitter - and it is the same object iterated
       // below. Narrow on the real shape instead of asserting the type, so that
       // if a future Node ever does return a plain async iterable this quietly
       // skips the listener rather than throwing on a missing `.on`.
@@ -390,7 +406,7 @@ function watchFolder(folderPath: string) {
           scheduleRefresh();
           return;
         }
-        // Anything else is real — on Linux, ENOSPC (the inotify watch limit,
+        // Anything else is real - on Linux, ENOSPC (the inotify watch limit,
         // which large repos do hit) is the one that matters. Watching is
         // best-effort, so log it and let the manual refresh carry on.
         console.log(`[watchFolder] watch error on ${folderPath}:`, err);
@@ -478,8 +494,8 @@ function setOpenFolder(folderPath: string) {
   if (retrievalReady) {
     // Evict the previous project's cached DB handle/embedding cache
     // before indexing the new one, so nothing from the old codebase
-    // lingers in the service's memory. This is on top of — not instead
-    // of — the server enforcing codebase_id on every call; it just keeps
+    // lingers in the service's memory. This is on top of - not instead
+    // of - the server enforcing codebase_id on every call; it just keeps
     // the resident memory bounded to the project actually open.
     if (previousCodebaseId)
       retrievalRequest("/evict", { codebase_id: previousCodebaseId });
@@ -538,7 +554,7 @@ function buildMenu() {
         {
           label: "Refresh Files",
           accelerator: "CmdOrCtrl+R",
-          // Deliberately NOT { role: 'reload' } — that reloads the whole
+          // Deliberately NOT { role: 'reload' } - that reloads the whole
           // renderer (losing the open folder, tabs, chat session, terminal).
           // This just tells the renderer to re-read the file tree and any
           // open files from disk in place.
@@ -618,7 +634,7 @@ ipcMain.handle("dialog:saveFileAs", async (_evt, defaultPath?: string) => {
 
 // The renderer asks for this on mount rather than waiting for a
 // 'folder:opened' push, because main may have restored the folder before the
-// window finished loading — in which case that event already fired into a
+// window finished loading - in which case that event already fired into a
 // renderer that had no listener attached yet.
 ipcMain.handle("folder:getCurrent", async () => openFolderPath);
 
@@ -695,12 +711,12 @@ ipcMain.handle("shell:showItemInFolder", (_evt, targetPath: string) => {
 
 // ---------- IPC: code retrieval ----------
 //
-// Both handlers are thin proxies into the Python service — see
+// Both handlers are thin proxies into the Python service - see
 // retrieval-service/retrieval.py for the actual recall/graph-expand/rerank
 // pipeline. Renderer code never talks to the service directly; it always
 // goes through here so codebase_id resolution stays centralized (the tool
 // layer in src/lib/tools.ts never has to know or guess which project is
-// open — main.ts already knows).
+// open - main.ts already knows).
 
 ipcMain.handle("retrieval:query", async (_evt, query: string, k?: number) => {
   if (!currentCodebaseId) return { results: [], error: "no folder open" };
@@ -800,7 +816,7 @@ ipcMain.handle("terminal:kill", (_evt, id: string) => {
 
 // There is no OS-level way to change another process's working directory
 // from the outside, so when a folder is opened while a terminal is already
-// running, we "type" a cd command into its shell instead — the same thing a
+// running, we "type" a cd command into its shell instead - the same thing a
 // person would do by hand. No-ops if that terminal id isn't currently
 // running (e.g. the terminal panel is closed).
 ipcMain.handle("terminal:changeDir", (_evt, id: string, dirPath: string) => {
@@ -837,10 +853,10 @@ ipcMain.handle("terminal:changeDir", (_evt, id: string, dirPath: string) => {
 // collects to a JSON file in Electron's per-user app data directory (NOT
 // inside the project repo, so it's never accidentally committed). The real
 // multi-agent implementation (src/lib/agent.ts) is expected to read these
-// values — see the comment at the top of that file for the intended wiring.
+// values - see the comment at the top of that file for the intended wiring.
 
 // ---------- IPC: orchestrator ----------
-// The renderer never talks to the orchestrator child directly — it has no
+// The renderer never talks to the orchestrator child directly - it has no
 // process access at all. Everything crosses here, which is also where the
 // task's config (project root, retrieval URL, API keys, model roster) is
 // assembled, so the renderer never has to know or hold any of it.
@@ -868,6 +884,8 @@ async function buildTaskConfig() {
         : null,
     env: settings.envVars,
     enabledModelIds: settings.enabledModelIds,
+    coreModelId: settings.coreModelId,
+    customModels: settings.customModels,
     modelHealth: freshHealth(),
     maxParallelSubtasks: settings.maxParallelSubtasks,
     maxCostUsd: settings.maxCostUsd,
@@ -917,7 +935,7 @@ ipcMain.handle(
 );
 
 // Post-hoc inspection: replay a finished task's event log from disk. This is
-// what makes the dashboard "equally usable after the task finished" — it is
+// what makes the dashboard "equally usable after the task finished" - it is
 // the same event stream the live view consumed, just read back.
 ipcMain.handle("orchestrator:listTasks", async () => {
   if (!openFolderPath) return [];
@@ -937,7 +955,7 @@ ipcMain.handle("orchestrator:listTasks", async () => {
           ),
         );
       } catch {
-        // no readable snapshot — crashed before its first checkpoint
+        // no readable snapshot - crashed before its first checkpoint
       }
     }
     return out.sort((a: any, b: any) => b.updatedAt - a.updatedAt);
@@ -976,6 +994,13 @@ type AgentSettings = {
   envVars: Record<string, string>;
   /** Model ids (see orchestrator/models.ts) the user has enabled for routing. */
   enabledModelIds: string[];
+  coreModelId?: string;
+  customModels: Array<{
+    id: string; apiId: string; label: string; provider: 'groq' | 'openrouter' | 'ollama' | 'gemini';
+    paramsBTotal: number; contextWindow: number; pricing: { inputPerM: number; outputPerM: number };
+    tier: 'free' | 'payg' | 'local'; good_at: ('planning' | 'codegen' | 'analysis' | 'simple' | 'verification')[];
+    speed: 'fast' | 'medium' | 'slow';
+  }>;
   /** Per-task hard ceilings. Defaults match the PS's evaluation limits. */
   maxCostUsd: number;
   maxSeconds: number;
@@ -987,7 +1012,9 @@ const DEFAULT_AGENT_SETTINGS: AgentSettings = {
   envVars: {},
   // The local tool-capable model is the safest default: it needs no API key
   // and is small enough for the reference 16GB RAM / 8GB VRAM machine.
-  enabledModelIds: ["ollama:llama3.1-8b"],
+  enabledModelIds: ["groq:qwen3.8-27b"],
+  coreModelId: "groq:qwen3.8-27b",
+  customModels: [],
   maxCostUsd: 0.5,
   maxSeconds: 2700,
   // 3 is a deliberate middle: enough to overlap a typical plan's independent
@@ -1003,7 +1030,39 @@ function normalizeAgentSettings(parsed: any): AgentSettings {
         .map((id: unknown) => (id === "ollama:llama3" ? "ollama:llama3.1-8b" : id))
         .filter((id: unknown): id is string => typeof id === "string")
     : DEFAULT_AGENT_SETTINGS.enabledModelIds;
-  return { ...DEFAULT_AGENT_SETTINGS, ...parsed, enabledModelIds: [...new Set(enabled)] };
+  const customModels = Array.isArray(parsed?.customModels)
+    ? parsed.customModels.filter((m: any) =>
+        m && typeof m.id === 'string' && typeof m.apiId === 'string' && typeof m.label === 'string' &&
+        ['groq', 'openrouter', 'ollama', 'gemini'].includes(m.provider) &&
+        Number.isFinite(m.paramsBTotal) && m.paramsBTotal > 0 && m.paramsBTotal <= 80 &&
+        Number.isFinite(m.contextWindow) && m.contextWindow >= 1024 &&
+        m.pricing && Number.isFinite(m.pricing.inputPerM) && Number.isFinite(m.pricing.outputPerM) &&
+        ['free', 'payg', 'local'].includes(m.tier) && Array.isArray(m.good_at) &&
+        ['fast', 'medium', 'slow'].includes(m.speed)
+      )
+    : [];
+  const customIds = new Set(customModels.map((m: any) => m.id));
+  const curatedIds = new Set(['openrouter:qwen3-next-80b-thinking', 'groq:llama-3.3-70b', 'openrouter:gemma-4-31b', 'groq:qwen3.8-27b', 'openrouter:north-mini-code', 'openrouter:laguna-xs-2.1', 'openrouter:qwen3-coder-30b', 'openrouter:nemotron-3-nano']);
+  const validEnabled = [...new Set(enabled)].filter((id) => typeof id === 'string' && (curatedIds.has(id) || customIds.has(id)));
+  // A single enabled model cannot provide failover: one 429 then aborts the
+  // whole DAG. Older settings commonly contain exactly one model (especially
+  // after selecting a core model), so heal that configuration into the full
+  // curated roster. The coreModelId remains the user's preference; these are
+  // merely the candidates the orchestrator may choose when it needs to fail
+  // over, escalate, or verify.
+  const failoverRoster = [...curatedIds];
+  
+  let normalizedEnabled;
+  if (parsed?.coreModelId) {
+    // If coreModelId is set, automatically populate enabled pool with all curated and custom models
+    normalizedEnabled = [...new Set([...failoverRoster, ...customIds])];
+  } else {
+    normalizedEnabled = validEnabled.length > 1 ? validEnabled : [...new Set([...failoverRoster, ...validEnabled.filter((id) => customIds.has(id))])];
+  }
+  
+  const coreModelId = typeof parsed?.coreModelId === 'string' && (curatedIds.has(parsed.coreModelId) || customIds.has(parsed.coreModelId))
+    ? parsed.coreModelId : normalizedEnabled[0];
+  return { ...DEFAULT_AGENT_SETTINGS, ...parsed, customModels, enabledModelIds: normalizedEnabled, coreModelId };
 }
 
 function settingsFilePath(): string {
@@ -1045,8 +1104,8 @@ ipcMain.handle(
  *
  * The Settings screen runs a probe whenever it opens or the keys change. That
  * result used to be rendered and thrown away, which is why a model visibly
- * marked "unavailable" was still routable. Caching it here — rather than
- * probing at task start — keeps task startup instant, at the cost of the data
+ * marked "unavailable" was still routable. Caching it here - rather than
+ * probing at task start - keeps task startup instant, at the cost of the data
  * being a snapshot; the orchestrator treats it as a hint that runtime evidence
  * overrides in both directions.
  */

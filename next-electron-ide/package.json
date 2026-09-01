@@ -2,13 +2,9 @@
   "name": "next-electron-ide",
   "version": "0.1.0",
   "private": true,
-  "description": "CodéNawabs — an agentic coding IDE built with Next.js, Electron, and Monaco Editor.",
+  "description": "A minimal desktop IDE built with Next.js (renderer) + Electron (shell) and Monaco Editor.",
   "homepage": "https://github.com/ShubhgIITK25/Agent-Zero-Takneek",
   "main": "electron-dist/main.js",
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/ShubhgIITK25/Agent-Zero-Takneek.git"
-  },
   "scripts": {
     "dev:next": "next dev -p 3210",
     "dev:electron": "wait-on http://localhost:3210 && tsc -p electron/tsconfig.json && tsc -p orchestrator/tsconfig.json && electron .",
@@ -32,6 +28,7 @@
     "@monaco-editor/react": "^4.6.0",
     "@xterm/addon-fit": "^0.10.0",
     "@xterm/xterm": "^5.5.0",
+    "lucide-react": "^1.38.0",
     "next": "^14.2.35",
     "node-pty": "^1.0.0",
     "nodemon": "^3.1.14",
@@ -50,8 +47,8 @@
     "wait-on": "^7.2.0"
   },
   "build": {
-    "appId": "com.codenawabs.ide",
-    "productName": "CodéNawabs",
+    "appId": "com.example.nextelectronide",
+    "productName": "NEXide",
     "files": [
       "electron-dist/**/*",
       "orchestrator-dist/**/*",
@@ -74,9 +71,7 @@
     "linux": {
       "target": [
         "AppImage",
-        "deb",
-        "rpm",
-        "pacman"
+        "deb"
       ],
       "category": "Development",
       "maintainer": "Takneek PS Team <proaditya604@gmail.com>"

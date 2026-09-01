@@ -1,6 +1,6 @@
 /**
  * ============================================================================
- *  BUDGET LEDGER — the hard ceilings, enforced before the fact
+ *  BUDGET LEDGER - the hard ceilings, enforced before the fact
  * ============================================================================
  * The PS gives two hard ceilings per evaluation task: $0.50 and 2700 seconds.
  * Breaching either scores A=0 for that task "regardless of partial progress".
@@ -93,7 +93,7 @@ export class Budget {
     return { breached: false };
   }
 
-  /** True once we are inside the reserve — time to wrap up, not start work. */
+  /** True once we are inside the reserve - time to wrap up, not start work. */
   inReserve(): boolean {
     return this.costRemaining <= 0 || this.timeRemaining <= 0;
   }
@@ -107,7 +107,7 @@ export class Budget {
    * three fresh subtask executions, so it is only worth starting while a
    * meaningful share of BOTH ceilings remains. Starting a re-plan at 90% spent
    * reliably converts a partial result into a ceiling breach, which scores
-   * zero — strictly worse than accepting the failed subtask.
+   * zero - strictly worse than accepting the failed subtask.
    */
   get fractionRemaining(): { cost: number; time: number } {
     const spendableCost = this.maxCostUsd * (1 - COST_RESERVE);

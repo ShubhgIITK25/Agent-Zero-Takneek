@@ -154,7 +154,7 @@ const api = {
 
   // ---- orchestrator ----
   // Control commands are request/response; trace events arrive on a
-  // subscription. The renderer holds no process handles and no API keys —
+  // subscription. The renderer holds no process handles and no API keys -
   // main.ts assembles the task config on every call.
   orchestratorStartTask: (taskId: string, prompt: string): Promise<unknown> =>
     ipcRenderer.invoke("orchestrator:startTask", taskId, prompt),
@@ -193,7 +193,7 @@ const api = {
   },
 
   // ---- code retrieval ----
-  // Backed by the separate Python retrieval service (retrieval-service/) —
+  // Backed by the separate Python retrieval service (retrieval-service/) -
   // see electron/main.ts's retrieval:* handlers for how codebase_id
   // resolution and isolation actually work. The renderer never needs to
   // know or pass a codebase_id itself; main.ts already knows which folder

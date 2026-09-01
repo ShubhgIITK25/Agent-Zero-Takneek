@@ -4,13 +4,14 @@
  * OBSERVABILITY DASHBOARD
  *
  * Renders the orchestrator's trace. Live and post-hoc are the SAME component
- * over the SAME reducer (src/lib/trace.ts) — live mode folds events as they
+ * over the SAME reducer (src/lib/trace.ts) - live mode folds events as they
  * arrive over IPC, history mode folds events read back from events.jsonl.
  * There is no second rendering path, which is why there are no gaps between
  * the two modes.
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { AlertTriangle, CheckCircle2, XCircle, Clock, DollarSign, Zap, GitBranch, ArrowUpDown, X, ChevronDown, ChevronRight } from 'lucide-react';
 import {
   TraceView,
   TraceNode,
@@ -50,7 +51,11 @@ function Meter({ label, value, max, unit }: { label: string; value: number; max:
   return (
     <div className="dash-meter">
       <div className="dash-meter-head">
-        <span>{label}</span>
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+          {label === 'Cost' && <DollarSign size={14} />}
+          {label === 'Wall clock' && <Clock size={14} />}
+          {label}
+        </span>
         <span className="dash-meter-value">
           {unit === '$' ? formatUsd(value) : `${Math.round(value)}s`} / {unit === '$' ? `$${max}` : `${max}s`}
         </span>
@@ -140,7 +145,7 @@ function NodeCard({ node, subtaskTitle }: { node: TraceNode; subtaskTitle?: stri
               ) : (
                 <>
                   <div className="dash-io-label">
-                    Files and chunks in this agent&apos;s context — {node.contextTotalTokens} tokens total
+                    Files and chunks in this agent&apos;s context - {node.contextTotalTokens} tokens total
                   </div>
                   <table className="dash-table">
                     <thead>
@@ -155,7 +160,7 @@ function NodeCard({ node, subtaskTitle }: { node: TraceNode; subtaskTitle?: stri
                       {node.contextItems.map((c, i) => (
                         <tr key={i}>
                           <td className="dash-mono">{c.path}</td>
-                          <td className="dash-mono">{c.lines ?? '—'}</td>
+                          <td className="dash-mono">{c.lines ?? '-'}</td>
                           <td className="dash-num">{c.tokens}</td>
                           <td>{c.source}</td>
                         </tr>
@@ -172,7 +177,10 @@ function NodeCard({ node, subtaskTitle }: { node: TraceNode; subtaskTitle?: stri
               {node.routing ? (
                 <>
                   <div className="dash-io-label">Why this model</div>
-                  <p className="dash-reason">{node.routing.reason}</p>
+                  <p className="dash-reason" style={{ display: 'flex', alignItems: 'flex-start', gap: '6px' }}>
+                    <CheckCircle2 size={14} style={{ color: 'var(--color-ok)', flexShrink: 0, marginTop: '2px' }} />
+                    <span>{node.routing.reason}</span>
+                  </p>
                   <div className="dash-io-label">Signals at decision time</div>
                   <table className="dash-table">
                     <tbody>
@@ -184,21 +192,38 @@ function NodeCard({ node, subtaskTitle }: { node: TraceNode; subtaskTitle?: stri
                       ))}
                     </tbody>
                   </table>
-                  {node.routing.rejected.length > 0 && (
-                    <>
-                      <div className="dash-io-label">Rejected candidates</div>
-                      <table className="dash-table">
-                        <tbody>
-                          {node.routing.rejected.map((r, i) => (
-                            <tr key={i}>
-                              <td className="dash-mono">{r.modelId}</td>
-                              <td className="dash-muted">{r.why}</td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </>
-                  )}
+                  {node.routing.rejected.length > 0 && (() => {
+                    const grouped = node.routing.rejected.reduce((acc, r) => {
+                      const lowerWhy = r.why.toLowerCase();
+                      let type = 'score';
+                      if (lowerWhy.includes('cooldown')) type = 'cooldown';
+                      else if (lowerWhy.includes('budget') || lowerWhy.includes('cost')) type = 'budget';
+                      acc[type] = (acc[type] || 0) + 1;
+                      return acc;
+                    }, {} as Record<string, number>);
+                    
+                    const groupSummary = Object.entries(grouped)
+                      .map(([k, v]) => `${k} (${v})`)
+                      .join(', ');
+
+                    return (
+                      <details className="dash-rejected-details">
+                        <summary className="dash-io-label" style={{ cursor: 'pointer' }}>
+                          {node.routing.rejected.length} models not selected <span style={{ fontWeight: 'normal', opacity: 0.8 }}>({groupSummary})</span>
+                        </summary>
+                        <table className="dash-table" style={{ marginTop: '8px' }}>
+                          <tbody>
+                            {node.routing.rejected.map((r, i) => (
+                              <tr key={i}>
+                                <td className="dash-mono">{r.modelId}</td>
+                                <td className="dash-muted">{r.why}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </details>
+                    );
+                  })()}
                 </>
               ) : (
                 <p className="dash-muted">No routing record for this node.</p>
@@ -338,7 +363,7 @@ function ExecutionGraph({
  * folded subtree can never quietly account for most of the bill.
  */
 /**
- * SWIMLANES — one bar per subtask on a shared time axis.
+ * SWIMLANES - one bar per subtask on a shared time axis.
  *
  * A list of subtasks with statuses cannot answer "did these actually run at
  * the same time"; only a shared axis can, because overlap is a geometric fact
@@ -383,7 +408,7 @@ function ParallelTimeline({ view }: { view: TraceView }) {
         <p className="dash-muted dash-pad">
           {view.maxParallel <= 1
             ? 'Running one subtask at a time (parallelism is set to 1 in Settings).'
-            : 'No two subtasks were ready at the same time, so nothing overlapped — the plan is a dependency chain.'}
+            : 'No two subtasks were ready at the same time, so nothing overlapped - the plan is a dependency chain.'}
         </p>
       ) : (
         <p className="dash-muted dash-pad">
@@ -407,7 +432,7 @@ function ParallelTimeline({ view }: { view: TraceView }) {
                 <div
                   className={`dash-lane-bar dash-lane-${s.status}`}
                   style={{ left: `${left}%`, width: `${width}%` }}
-                  title={`${s.title} — ${s.status}, ${secs}s`}
+                  title={`${s.title} - ${s.status}, ${secs}s`}
                 >
                   <span className="dash-lane-bar-text">{secs}s</span>
                 </div>
@@ -577,7 +602,7 @@ export default function Dashboard({ live, onClose, onWorkspaceChanged }: Dashboa
             </div>
           </div>
           <button type="button" className="dash-close" onClick={onClose} aria-label="Close dashboard">
-            ×
+            <X size={16} />
           </button>
         </header>
 
@@ -596,7 +621,7 @@ export default function Dashboard({ live, onClose, onWorkspaceChanged }: Dashboa
                 </option>
                 {tasks.map((t) => (
                   <option key={t.taskId} value={t.taskId}>
-                    [{t.status}] {new Date(t.updatedAt).toLocaleString()} — {t.prompt.slice(0, 60)}
+                    [{t.status}] {new Date(t.updatedAt).toLocaleString()} - {t.prompt.slice(0, 60)}
                   </option>
                 ))}
               </select>
@@ -609,8 +634,8 @@ export default function Dashboard({ live, onClose, onWorkspaceChanged }: Dashboa
           <div className="dash-empty">
             <p>No task is running.</p>
             <p className="dash-muted">
-              Send a request in the AI Agent panel and the full trace — routing, agent calls, tool use, context,
-              tokens and cost — appears here as it happens.
+              Send a request in the AI Agent panel and the full trace - routing, agent calls, tool use, context,
+              tokens and cost - appears here as it happens.
             </p>
           </div>
         ) : (
@@ -661,7 +686,12 @@ export default function Dashboard({ live, onClose, onWorkspaceChanged }: Dashboa
                 {view.interventions.map((iv, i) => (
                   <div key={i} className={`dash-intervention dash-cause-${iv.cause}`}>
                     <div className="dash-intervention-head">
-                      <span className="dash-badge dash-badge-cause">{iv.cause.replace(/_/g, ' ')}</span>
+                      <span className="dash-badge dash-badge-cause" style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+                        {(iv.cause === 'rate_limited' || iv.cause === 'provider_failover') && <AlertTriangle size={14} style={{ color: 'var(--color-warn)' }} />}
+                        {(iv.cause === 'cost_ceiling' || iv.cause === 'time_ceiling') && <XCircle size={14} style={{ color: 'var(--color-danger)' }} />}
+                        {(iv.cause === 'retry_cap' || iv.cause === 'step_cap') && <Zap size={14} />}
+                        {iv.cause.replace(/_/g, ' ')}
+                      </span>
                       {iv.subtaskId && <span className="dash-mono dash-muted">{iv.subtaskId}</span>}
                     </div>
                     <div className="dash-intervention-detail">{iv.detail}</div>

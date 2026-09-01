@@ -1,9 +1,9 @@
 /**
  * ============================================================================
- *  TRACE STORE — folds the orchestrator's event stream into a renderable tree
+ *  TRACE STORE - folds the orchestrator's event stream into a renderable tree
  * ============================================================================
  * The dashboard requirement is that it works identically live and after the
- * fact. That is only cheap if BOTH modes consume the same thing — so this
+ * fact. That is only cheap if BOTH modes consume the same thing - so this
  * reducer takes an array of events and returns a complete view, and the
  * component does not care whether those events arrived over IPC one at a time
  * or were read back from events.jsonl in one gulp.
@@ -159,7 +159,7 @@ export type TraceView = {
   /**
    * How many subtasks were executing at once, over time. Recorded from the
    * orchestrator's `concurrency` events rather than inferred from interleaved
-   * start/finish timestamps — inference would quietly turn "these two ran back
+   * start/finish timestamps - inference would quietly turn "these two ran back
    * to back" into "these two ran together" whenever a clock or an event
    * ordering was slightly off, which is exactly the claim a parallelism
    * feature must not fake.
@@ -266,7 +266,7 @@ function makeGraphNode(e: TraceEvent, parentSeq: number | null): ExecutionGraphN
   };
 }
 
-/** Applies one event. Pure — returns a new view, never mutates the input. */
+/** Applies one event. Pure - returns a new view, never mutates the input. */
 export function applyEvent(view: TraceView, e: TraceEvent): TraceView {
   const v: TraceView = {
     ...view,
@@ -317,7 +317,7 @@ export function applyEvent(view: TraceView, e: TraceEvent): TraceView {
      * A re-plan swapped one subtask for a different decomposition. The
      * replacements are INSERTED after the subtask they replace rather than
      * replacing the whole list, so the plan reads in execution order and the
-     * subtask that was dropped stays visible with its trace — "what we tried
+     * subtask that was dropped stays visible with its trace - "what we tried
      * and abandoned" is exactly what a reviewer needs to see.
      */
     case "replan": {
@@ -595,7 +595,7 @@ export function buildTrace(events: TraceEvent[]): TraceView {
   return events.reduce(applyEvent, emptyTrace());
 }
 
-/** Nodes grouped under their subtask, in call order — the call hierarchy. */
+/** Nodes grouped under their subtask, in call order - the call hierarchy. */
 export function groupNodesBySubtask(
   view: TraceView,
 ): { subtask: SubtaskView | null; nodes: TraceNode[] }[] {
@@ -621,19 +621,19 @@ export function formatMs(ms: number): string {
 
 /**
  * ============================================================================
- *  CALL TREE — turning the flat node list into the hierarchy it always was
+ *  CALL TREE - turning the flat node list into the hierarchy it always was
  * ============================================================================
  * Every node carries a `parentId` naming the call that caused it: the planner
  * is the root, a verifier hangs off the implementer whose claim it judges, a
  * retry hangs off the verifier that rejected the previous attempt. Read
- * top-down that spells out WHY the task did what it did — something a list
+ * top-down that spells out WHY the task did what it did - something a list
  * ordered by timestamp cannot express, because in a flat list "attempt 2" and
  * "the verifier that forced attempt 2" are just two adjacent rows.
  *
  * THE RESULT IS ALWAYS A FOREST, WHATEVER THE INPUT. The renderer recurses
  * over `children`, so a single cycle or dangling parent would hang the UI, and
  * both are reachable in practice rather than theoretical:
- *   - a dangling parent is normal — replaying a truncated events.jsonl, or
+ *   - a dangling parent is normal - replaying a truncated events.jsonl, or
  *     rendering one subtask's nodes in isolation, both leave children whose
  *     parent is not in the set;
  *   - a cycle should be impossible, but "should be impossible" is a poor
@@ -663,8 +663,8 @@ export function buildCallTree(nodes: TraceNode[]): CallTreeNode[] {
     if (parent != null && !wrapped.has(parent)) parent = null;
 
     if (parent != null) {
-      // Walk the ancestor chain. Revisiting anything means a cycle — including
-      // one that does not contain this node — so detach and let it be a root.
+      // Walk the ancestor chain. Revisiting anything means a cycle - including
+      // one that does not contain this node - so detach and let it be a root.
       const seen = new Set<string>([node.nodeId]);
       let cursor: string | null = parent;
       while (cursor != null) {
@@ -697,7 +697,7 @@ export function buildCallTree(nodes: TraceNode[]): CallTreeNode[] {
   return roots;
 }
 
-/** Rolled-up cost of a node and everything it caused — the number that makes a
+/** Rolled-up cost of a node and everything it caused - the number that makes a
  *  collapsed branch honest about what it is hiding. */
 export function subtreeTotals(item: CallTreeNode): {
   calls: number;

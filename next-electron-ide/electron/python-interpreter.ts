@@ -3,8 +3,8 @@
  *  PYTHON INTERPRETER RESOLUTION for the retrieval service
  * ============================================================================
  * The retrieval service needs tree-sitter, fastembed and sqlite-vec. None of
- * those are on a stock `python3`. Spawning bare `python3` — which is what this
- * used to do — is how the service ends up running in permanent keyword-only
+ * those are on a stock `python3`. Spawning bare `python3` - which is what this
+ * used to do - is how the service ends up running in permanent keyword-only
  * degraded mode on every machine that did not `pip install` the requirements
  * globally, which is very nearly all of them. It does not error; it just
  * quietly stops doing AST chunking, vector search and reranking, and nothing
@@ -16,12 +16,12 @@
  *   1. NEXIDE_PYTHON             explicit override, always respected. If it
  *                               looks like a path it must exist; a bare
  *                               command name (e.g. "python3.12") is trusted.
- *   2. retrieval-service/.venv  the project-local venv — the common case in
+ *   2. retrieval-service/.venv  the project-local venv - the common case in
  *                               development and the one the docs describe.
  *   3. $VIRTUAL_ENV             a venv the user activated in the shell that
  *                               launched the app.
  *   4. python3 / python on PATH last resort. `isFallback` is set so the
- *                               caller can warn — this is the path that
+ *                               caller can warn - this is the path that
  *                               silently loses half the pipeline.
  *
  * This module is deliberately free of any `electron` or `fs` import so it can
@@ -34,7 +34,7 @@ export type InterpreterResolution = {
   command: string;
   /** Human-readable provenance, for the startup log. */
   source: string;
-  /** True when this is the bare-PATH last resort — caller should warn. */
+  /** True when this is the bare-PATH last resort - caller should warn. */
   isFallback: boolean;
 };
 
@@ -87,7 +87,7 @@ export function resolvePythonInterpreter(
     const looksLikePath =
       override.includes("/") || override.includes("\\") || override.includes(sep);
     if (looksLikePath && !exists(override)) {
-      // Misconfigured — fall through rather than spawn a path that isn't there.
+      // Misconfigured - fall through rather than spawn a path that isn't there.
       // The caller logs the whole resolution, so this stays visible.
     } else {
       return { command: override, source: "NEXIDE_PYTHON", isFallback: false };

@@ -2,8 +2,8 @@
  * Regression test for the "task with failed subtasks reported as done" bug
  * (orchestrator/orchestrator.ts, TaskRunner.run()'s post-loop status logic).
  *
- * Runs a REAL TaskRunner end to end — plan, route, execute, verify, retry,
- * checkpoint, aggregate — with only the network boundary (providers.callModel)
+ * Runs a REAL TaskRunner end to end - plan, route, execute, verify, retry,
+ * checkpoint, aggregate - with only the network boundary (providers.callModel)
  * mocked, so this exercises the actual pipeline rather than re-testing the
  * one-line predicate in isolation. providers.callModel is monkey-patched on
  * the shared module object before orchestrator.js is required, which works
@@ -21,7 +21,7 @@ const path = require('path');
 const D = path.join(__dirname, '..', 'orchestrator-dist');
 const providers = require(path.join(D, 'providers'));
 
-// Route every call by which system prompt it carries — agents.ts gives each
+// Route every call by which system prompt it carries - agents.ts gives each
 // role a distinct, recognisable opening line.
 providers.callModel = async (_model, messages) => {
   const sys = (messages.find((m) => m.role === 'system') || {}).content || '';
@@ -41,7 +41,7 @@ providers.callModel = async (_model, messages) => {
     };
   }
   if (sys.includes('You are an implementer agent')) {
-    // Both subtasks' implementer claims success — the point of this test is
+    // Both subtasks' implementer claims success - the point of this test is
     // that the VERIFIER catching a bad claim must still fail the task, not
     // that the implementer misbehaves.
     return { ...base, text: 'DONE: finished this subtask' };
@@ -120,7 +120,7 @@ async function main() {
     assert.strictEqual(finalStore.subtasks.find((s) => s.id === 's1').status, 'done');
   });
   t('task_finished was NOT emitted', () => {
-    assert.strictEqual(finished.length, 0, `got ${finished.length} task_finished event(s) — a partial failure must not look like success`);
+    assert.strictEqual(finished.length, 0, `got ${finished.length} task_finished event(s) - a partial failure must not look like success`);
   });
   t('task_failed WAS emitted exactly once', () => {
     assert.strictEqual(failedEvents.length, 1);

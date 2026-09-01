@@ -1,6 +1,6 @@
 /**
  * ============================================================================
- *  ROUTER — pick a model + provider per subtask, from real signals
+ *  ROUTER - pick a model + provider per subtask, from real signals
  * ============================================================================
  * The requirement is not "have a router", it is "the decision must be based on
  * real, sensible signals" and "the routing decision can never be hidden". So
@@ -12,7 +12,7 @@
  * A tempting design is "ask a model which model to use". We rejected it: it
  * adds a full round-trip of latency and cost to every subtask (directly
  * hurting both terms of S_task) to answer a question that four numbers answer
- * deterministically. It is also unexplainable and unreproducible — the same
+ * deterministically. It is also unexplainable and unreproducible - the same
  * subtask could route differently twice, which makes the dashboard's routing
  * trace worthless as a debugging tool. Deterministic scoring is cheaper,
  * faster, reproducible, and defensible line by line.
@@ -39,7 +39,7 @@ export type RouteResult = {
 
 /**
  * ============================================================================
- *  HEALTH REGISTRY — what we know, and what we have just learned, about models
+ *  HEALTH REGISTRY - what we know, and what we have just learned, about models
  * ============================================================================
  * The Settings screen probes every provider's catalogue and labels each model
  * working / invalid-key / rate-limited / unavailable / offline. Until now that
@@ -54,13 +54,13 @@ export type RouteResult = {
  *      and a call that just SUCCEEDED proves the model works, whatever a stale
  *      probe said. Runtime evidence is therefore checked first, in both
  *      directions.
- *   2. THE HEALTH SNAPSHOT fills the gap before any call has been made — which
+ *   2. THE HEALTH SNAPSHOT fills the gap before any call has been made - which
  *      is exactly the window where the old behaviour wasted the most money,
  *      because nothing had failed yet to teach the router anything.
  *
  * WHAT IS DELIBERATELY *NOT* BLOCKED:
  *   - `rate-limited`: a quota resets. The provider cooldown in
- *     RateLimitTracker is the right tool — it expires; a health block does not.
+ *     RateLimitTracker is the right tool - it expires; a health block does not.
  *   - `unknown` / missing: "never probed" is not evidence of breakage. Blocking
  *     on absent data would mean a user who never opened Settings can route
  *     nowhere at all.
@@ -155,9 +155,15 @@ export class HealthRegistry {
 export class RateLimitTracker {
   /** provider -> epoch ms until which it is in backoff */
   private cooldownUntil = new Map<string, number>();
+  /** modelId -> epoch ms. A 429 on one route must not park every other route. */
+  private cooldownUntilModel = new Map<string, number>();
+  /** provider -> epoch ms for free-tier models only. */
+  private cooldownUntilFree = new Map<string, number>();
   private consecutiveFailures = new Map<string, number>();
   /** provider -> why it is waiting, in words a person can act on. */
   private reason = new Map<string, string>();
+  private modelReason = new Map<string, string>();
+  private freeReason = new Map<string, string>();
 
   /**
    * Back off for as long as the situation actually warrants.
@@ -165,18 +171,25 @@ export class RateLimitTracker {
    * Blind exponential backoff was wrong in both directions. Against a
    * PER-DAY quota it is far too short: the quota does not reset for hours, so
    * every retry buys another 429, another wasted round-trip, and another
-   * alarming line in the chat — which is exactly the behaviour that made a
+   * alarming line in the chat - which is exactly the behaviour that made a
    * spent free tier look like a broken system. Against a per-minute quota it
    * is often too long, when the provider has told us precisely when it will
    * accept traffic again.
    *
-   * So: use the provider's own hint when it gave one; treat a daily quota as
-   * spent for the rest of this task; otherwise fall back to exponential.
+   * Scope matters as much as duration. A free-route 429 or "Provider returned
+   * error" is a fact about THAT model, not about the API key. Parking the
+   * whole provider is how a working paid model became "no eligible model".
    */
   penalise(
     provider: string,
     rateLimited: boolean,
-    hint: { quotaScope?: 'minute' | 'day' | 'unknown'; retryAfterMs?: number; note?: string } = {}
+    hint: {
+      quotaScope?: 'minute' | 'day' | 'unknown';
+      retryAfterMs?: number;
+      note?: string;
+      scope?: 'model' | 'provider' | 'free-tier';
+      modelId?: string;
+    } = {}
   ): void {
     const n = (this.consecutiveFailures.get(provider) ?? 0) + 1;
     this.consecutiveFailures.set(provider, n);
@@ -198,7 +211,23 @@ export class RateLimitTracker {
       why = hint.note ?? (rateLimited ? 'rate limited' : 'call failed');
     }
 
-    this.cooldownUntil.set(provider, Date.now() + waitMs);
+    const until = Date.now() + waitMs;
+    // Three identical 429s in a row on one key is a provider-wide quota, even
+    // if each error named a different model. Escalate so we stop burning it.
+    const scope =
+      n >= 3 && rateLimited && hint.scope !== 'free-tier' ? 'provider' : hint.scope ?? (hint.modelId ? 'model' : 'provider');
+
+    if (scope === 'model' && hint.modelId) {
+      this.cooldownUntilModel.set(hint.modelId, until);
+      this.modelReason.set(hint.modelId, why);
+      return;
+    }
+    if (scope === 'free-tier') {
+      this.cooldownUntilFree.set(provider, until);
+      this.freeReason.set(provider, why);
+      return;
+    }
+    this.cooldownUntil.set(provider, until);
     this.reason.set(provider, why);
   }
 
@@ -206,27 +235,77 @@ export class RateLimitTracker {
     this.consecutiveFailures.delete(provider);
     this.cooldownUntil.delete(provider);
     this.reason.delete(provider);
+    this.cooldownUntilFree.delete(provider);
+    this.freeReason.delete(provider);
   }
 
-  /** Seconds remaining, for a message a person can act on. 0 if not waiting. */
-  cooldownRemainingSeconds(provider: string): number {
-    const until = this.cooldownUntil.get(provider);
+  /** A successful call proves the provider (and this model) are reachable. */
+  recordSuccess(provider: string, modelId: string, tier?: string): void {
+    this.consecutiveFailures.delete(provider);
+    this.cooldownUntil.delete(provider);
+    this.reason.delete(provider);
+    this.cooldownUntilModel.delete(modelId);
+    this.modelReason.delete(modelId);
+    if (tier === 'free') {
+      this.cooldownUntilFree.delete(provider);
+      this.freeReason.delete(provider);
+    }
+  }
+
+  private remainingSeconds(until: number | undefined): number {
     if (until == null || until <= Date.now()) return 0;
     return Math.ceil((until - Date.now()) / 1000);
   }
 
-  /** Why this provider is waiting, for the routing trace. */
-  cooldownReason(provider: string): string | null {
-    return this.inCooldown(provider) ? this.reason.get(provider) ?? 'rate limited' : null;
+  /** Seconds remaining, for a message a person can act on. 0 if not waiting. */
+  cooldownRemainingSeconds(provider: string, modelId?: string, tier?: string): number {
+    return Math.max(
+      this.remainingSeconds(this.cooldownUntil.get(provider)),
+      modelId ? this.remainingSeconds(this.cooldownUntilModel.get(modelId)) : 0,
+      tier === 'free' ? this.remainingSeconds(this.cooldownUntilFree.get(provider)) : 0
+    );
   }
 
-  inCooldown(provider: string): boolean {
-    const until = this.cooldownUntil.get(provider);
-    return until != null && until > Date.now();
+  /** Why this provider/model is waiting, for the routing trace. */
+  cooldownReason(provider: string, modelId?: string, tier?: string): string | null {
+    if (!this.inCooldown(provider, modelId, tier)) return null;
+    if (modelId && this.remainingSeconds(this.cooldownUntilModel.get(modelId)) > 0) {
+      return this.modelReason.get(modelId) ?? 'model cooling down';
+    }
+    if (tier === 'free' && this.remainingSeconds(this.cooldownUntilFree.get(provider)) > 0) {
+      return this.freeReason.get(provider) ?? 'free-tier quota';
+    }
+    return this.reason.get(provider) ?? 'rate limited';
+  }
+
+  inCooldown(provider: string, modelId?: string, tier?: string): boolean {
+    return this.cooldownRemainingSeconds(provider, modelId, tier) > 0;
   }
 
   cooldownList(): string[] {
-    return [...this.cooldownUntil.entries()].filter(([, t]) => t > Date.now()).map(([p]) => p);
+    const now = Date.now();
+    const names = [
+      ...[...this.cooldownUntil.entries()].filter(([, t]) => t > now).map(([p]) => p),
+      ...[...this.cooldownUntilFree.entries()].filter(([, t]) => t > now).map(([p]) => `${p} (free)`),
+      ...[...this.cooldownUntilModel.entries()].filter(([, t]) => t > now).map(([id]) => id),
+    ];
+    return names;
+  }
+
+  /**
+   * Milliseconds until the soonest cooldown expires. 0 if nothing is cooling.
+   * Dispatch uses this to wait-and-retry instead of declaring the roster dead
+   * after a 20s pause it never actually waited for.
+   */
+  soonestReadyMs(): number {
+    const now = Date.now();
+    const times = [
+      ...this.cooldownUntil.values(),
+      ...this.cooldownUntilModel.values(),
+      ...this.cooldownUntilFree.values(),
+    ].filter((t) => t > now);
+    if (times.length === 0) return 0;
+    return Math.min(...times) - now;
   }
 }
 
@@ -239,7 +318,7 @@ const CATEGORY_TO_CAPABILITY: Record<Subtask['category'], ModelEntry['good_at'][
 
 /** Assume a completion roughly this size when pre-costing a call. Exported so
  *  the orchestrator's pre-dispatch budget gate costs a call the same way the
- *  router does — one estimate, not two that can drift apart. */
+ *  router does - one estimate, not two that can drift apart. */
 export const ASSUMED_COMPLETION_TOKENS = 600;
 
 /**
@@ -248,13 +327,13 @@ export const ASSUMED_COMPLETION_TOKENS = 600;
  * Not a flat weight, because the cost of being wrong is not flat. A bad
  * `simple_edit` is discovered on the next line. A bad plan is discovered after
  * every subtask under it has already been paid for, and a bad verification
- * verdict is never discovered at all — it ships. The planner and the tie-break
+ * verdict is never discovered at all - it ships. The planner and the tie-break
  * both route as `analysis`, and the verifier as `verification`, so weighting
  * those two categories is precisely how "spend quality where it matters" is
  * expressed in this router.
  *
  * Cost still dominates: the penalty term below reaches 45, so a free model
- * that fits keeps beating a paid one early in a task. That is intended — C is
+ * that fits keeps beating a paid one early in a task. That is intended - C is
  * weighted ~2x T in S_task. Quality decides between models of similar price.
  */
 const QUALITY_WEIGHT: Record<Subtask['category'], number> = {
@@ -270,7 +349,7 @@ const QUALITY_WEIGHT: Record<Subtask['category'], number> = {
  * Parameter count was the original proxy and it has aged badly: llama-3.3-70b
  * is 2.6x the size of qwen3.8-27b and scores 11.9 against its 68.1 on coding.
  * So prefer the published benchmark index, and fall back to size only for
- * models nobody has scored — capped well below the top of the index, because
+ * models nobody has scored - capped well below the top of the index, because
  * "big and unmeasured" is not evidence of being good.
  */
 function capabilityOf(m: ModelEntry): number {
@@ -283,13 +362,15 @@ export class Router {
     private enabledModelIds: string[],
     private rateLimits: RateLimitTracker,
     /** Defaulted so existing callers and tests keep working unchanged. */
-    private health: HealthRegistry = new HealthRegistry()
+    private health: HealthRegistry = new HealthRegistry(),
+    private customModels: ModelEntry[] = [],
+    private coreModelId?: string,
   ) {}
 
   /** Models the user enabled AND that pass the parameter-count gate. */
   private candidates(): ModelEntry[] {
     return this.enabledModelIds
-      .map((id) => findModel(id))
+      .map((id) => this.customModels.find((m) => m.id === id) ?? findModel(id))
       .filter((m): m is ModelEntry => !!m && checkEligibility(m).eligible);
   }
 
@@ -314,16 +395,16 @@ export class Router {
         rejected.push({ modelId: m.id, why: unhealthy });
         continue;
       }
-      if (this.rateLimits.inCooldown(m.provider)) {
+      if (this.rateLimits.inCooldown(m.provider, m.id, m.tier)) {
         // Say what is being waited on and for how long. "in backoff" told the
         // user nothing they could act on; "daily quota spent, 5h58m" tells
         // them to switch provider rather than sit and retry.
-        const secs = this.rateLimits.cooldownRemainingSeconds(m.provider);
+        const secs = this.rateLimits.cooldownRemainingSeconds(m.provider, m.id, m.tier);
         const human =
           secs >= 3600 ? `${Math.round(secs / 360) / 10}h` : secs >= 60 ? `${Math.round(secs / 60)}m` : `${secs}s`;
         rejected.push({
           modelId: m.id,
-          why: `${m.provider}: ${this.rateLimits.cooldownReason(m.provider)} — retrying in ~${human}`,
+          why: `${m.provider}: ${this.rateLimits.cooldownReason(m.provider, m.id, m.tier)} - retrying in ~${human}`,
         });
         continue;
       }
@@ -348,12 +429,34 @@ export class Router {
       let score = 0;
       const parts: string[] = [];
 
-      if (m.good_at.includes(wanted)) {
+      if (m.id === this.coreModelId) {
+        score += 12;
+        parts.push('preferred core model');
+      }
+
+      const fits =
+        m.good_at.includes(wanted) ||
+        (signals.category === 'simple_edit' && m.good_at.includes('codegen'));
+      if (fits) {
         score += 40;
         parts.push(`fits ${signals.category}`);
       } else {
         score -= 25;
         parts.push(`not tuned for ${signals.category}`);
+      }
+
+      // After a failure, prefer a different provider so we do not immediately
+      // re-hit the same 429 / upstream error on a sibling model.
+      if ((opts.excludeModelIds?.length ?? 0) > 0) {
+        const failedProviders = new Set(
+          (opts.excludeModelIds ?? [])
+            .map((id) => this.customModels.find((c) => c.id === id)?.provider ?? findModel(id)?.provider)
+            .filter((p): p is ModelEntry['provider'] => !!p)
+        );
+        if (!failedProviders.has(m.provider)) {
+          score += 20;
+          parts.push('different provider');
+        }
       }
 
       // Cost pressure scales with how tight the remaining budget is: early in a
@@ -371,7 +474,7 @@ export class Router {
         parts.push(`~$${projectedCost.toFixed(4)}`);
       }
 
-      // Headroom is good, but a 131k model on a 2k prompt is wasted money —
+      // Headroom is good, but a 131k model on a 2k prompt is wasted money -
       // reward enough room, do not reward maximum room.
       const headroom = m.contextWindow / Math.max(1, signals.estimatedContextTokens);
       if (headroom > 3) score += 8;
@@ -413,7 +516,7 @@ export class Router {
   }
 
   /**
-   * Failover: same subtask, same context, different model — used when a call
+   * Failover: same subtask, same context, different model - used when a call
    * fails or the provider rate-limits. Progress is preserved because the
    * caller keeps the conversation and only swaps the model underneath it.
    */

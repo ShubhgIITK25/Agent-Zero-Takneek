@@ -7,6 +7,7 @@ const nextConfig = {
   // Electron loads files via file://, so assets must use relative paths.
   assetPrefix: './',
   trailingSlash: true,
+  transpilePackages: ['lucide-react'],
 };
 
 module.exports = nextConfig;

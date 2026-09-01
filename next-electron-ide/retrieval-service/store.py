@@ -1,4 +1,20 @@
-# creates sqlite table and stoes everything in it. also provides search functions (bm25, vector, graph) and some utility functions for managing the index.
+"""
+Per-codebase SQLite store: chunks, an FTS5 keyword index (BM25 built in),
+a sqlite-vec virtual table for vector search, and plain tables for the
+symbol/call graph - all in ONE file per project.
+
+This is the actual isolation guarantee: every call into this module takes
+a codebase_id, which maps 1:1 to one .db file under the app's data dir
+(never inside the project repo, so it's never accidentally committed and
+never shared across projects). There is no code path that lets one
+codebase's connection see another's data, because they are literally
+different files opened through different connections - not different
+rows in a shared table that a bad WHERE clause could leak across.
+
+Connections are cached per codebase_id (a project stays "warm" across
+many orchestrator calls in one session) and dropped on /evict, which is
+called whenever the IDE closes a folder or opens a different one.
+"""
 import os
 import re
 import sqlite3
@@ -6,10 +22,15 @@ import hashlib
 
 import identifiers
 
+# Bump when the on-disk schema or the way text is indexed changes in a way that
+# makes an existing index wrong rather than merely stale. get_db() rebuilds any
+# index older than this. History:
+#   1  original: chunks + FTS(symbol,docstring,code) + vec + edges
+#   2  FTS gains a `tokens` column of pre-split identifiers (identifiers.py)
 INDEX_FORMAT_VERSION = 2
 
-_connections = {} 
-_vec_enabled = {} 
+_connections = {}  # codebase_id -> sqlite3.Connection
+_vec_enabled = {}  # id(db) -> bool - sqlite3.Connection does not support arbitrary attrs
 
 VEC_DIM = 384  # must match embeddings.EMBED_MODEL's output dimension
 
@@ -98,7 +119,7 @@ def get_db(data_dir: str, codebase_id: str, vec_enabled_hint=True) -> sqlite3.Co
         except Exception as e:
             print(f"[store] sqlite-vec unavailable for {codebase_id}, vector search disabled: {e}")
 
-    # An index written by an older format is not migrated in place — the
+    # An index written by an older format is not migrated in place - the
     # cheapest correct thing is to drop its tables and let the next index pass
     # rebuild from source, which is fast and cannot leave a half-migrated file.
     #
@@ -126,12 +147,12 @@ def get_db(data_dir: str, codebase_id: str, vec_enabled_hint=True) -> sqlite3.Co
                 try:
                     db.execute(f"DROP TABLE IF EXISTS {tbl}")
                 except sqlite3.OperationalError as e:
-                    # e.g. vec0 unavailable in this process — the table is then
+                    # e.g. vec0 unavailable in this process - the table is then
                     # unusable anyway and _SCHEMA will not recreate it.
                     print(f"[store] could not drop {tbl} during rebuild: {e}")
             # _SCHEMA below recreates the plain tables, but chunks_vec is a
             # virtual table created in the sqlite-vec block above, which has
-            # already run — so it has to be put back explicitly here.
+            # already run - so it has to be put back explicitly here.
             if vec_ok:
                 db.execute(
                     f"CREATE VIRTUAL TABLE IF NOT EXISTS chunks_vec USING vec0(embedding float[{VEC_DIM}])"
@@ -190,6 +211,8 @@ _WORD_RE = re.compile(r"[A-Za-z0-9_]+")
 
 def sanitize_fts_query(text: str) -> str:
     words = _WORD_RE.findall(text)
+    # Sub-words of any multi-part identifier in the query match the `tokens`
+    # column; the raw words still match `symbol`/`code` verbatim. Both are ORed.
     expanded = identifiers.expand_text(text)
     terms = list(dict.fromkeys(words + expanded.split()))[:20]
     if not terms:
@@ -261,7 +284,7 @@ def bm25_search(db, query_text: str, limit=25):
         ).fetchall()
     except sqlite3.OperationalError:
         return []
-    # bm25() is a cost (lower = better match) — normalize to "higher is better"
+    # bm25() is a cost (lower = better match) - normalize to "higher is better"
     return [(r["chunk_id"], -r["score"]) for r in rows]
 
 
@@ -273,11 +296,14 @@ def vector_search(db, query_vec, limit=25):
         "SELECT rowid, distance FROM chunks_vec WHERE embedding MATCH ? AND k = ? ORDER BY distance",
         (sqlite_vec.serialize_float32(query_vec), limit),
     ).fetchall()
-    # cosine/L2 distance — lower = better; convert to a similarity-ish score
+    # cosine/L2 distance - lower = better; convert to a similarity-ish score
     return [(r["rowid"], 1.0 / (1.0 + r["distance"])) for r in rows]
 
 
 def graph_neighbors(db, chunk_ids: list, limit_per_chunk=6):
+    """1-hop expansion: for each given chunk, find chunks whose symbol
+    matches something this chunk calls (callees), plus chunks that call
+    this chunk's own symbol (callers)."""
     neighbor_ids = set()
     if not chunk_ids:
         return neighbor_ids

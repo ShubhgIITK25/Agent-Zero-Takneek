@@ -9,14 +9,14 @@
  *   1. Subtasks that were `running` / `verifying` when the process died are
  *      rolled back to `pending` (a `resume_rollback` intervention) so they
  *      re-run, instead of being silently stranded.
- *   2. A subtask left `pending` whose dependency is `failed` — with no
+ *   2. A subtask left `pending` whose dependency is `failed` - with no
  *      `blocked` marker, as happens when the crash lands between the two
- *      writes — is detected as a dependency deadlock (`dependency_deadlock`
+ *      writes - is detected as a dependency deadlock (`dependency_deadlock`
  *      intervention + `subtask_finished: skipped`), instead of vanishing from
  *      the task's accounting.
  *
  * The model roster is empty on purpose: the rolled-back subtasks then fail to
- * dispatch, which is fine — the point is that the recovery events fire first.
+ * dispatch, which is fine - the point is that the recovery events fire first.
  */
 const { spawn } = require('child_process');
 const readline = require('readline');
@@ -137,7 +137,7 @@ function checkAssertions() {
       ok,
       ok
         ? 'running/verifying subtasks rolled back to pending; dependency deadlock detected and skipped'
-        : `missing recovery behaviour — rollback s2:${rolledBackS2} s3:${rolledBackS3}, deadlock s4:${deadlockS4}, s4 skipped:${s4Skipped}`
+        : `missing recovery behaviour - rollback s2:${rolledBackS2} s3:${rolledBackS3}, deadlock s4:${deadlockS4}, s4 skipped:${s4Skipped}`
     );
   }, 1500);
 }

@@ -155,7 +155,7 @@ t('an ineligible model is never routed even when the user enabled it', () => {
 });
 t('prefers a zero-cost local model for a simple task', () => {
   const res = r.route(base);
-  assert.strictEqual(res.model.id, 'ollama:qwen2.5-coder-7b', 'got ' + res.model.id + ' — ' + res.reason);
+  assert.strictEqual(res.model.id, 'ollama:qwen2.5-coder-7b', 'got ' + res.model.id + ' - ' + res.reason);
 });
 t('escalates to a more capable model on retry instead of repeating', () => {
   const first = r.route({ ...base, category: 'codegen' });

@@ -3,8 +3,8 @@
  * allowed to go at once.
  *   npm run build:orchestrator && node tests/scheduling.js
  *
- * Same technique as tests/parallel.js — a real TaskRunner with only
- * providers.callModel mocked — because both properties here are about real
+ * Same technique as tests/parallel.js - a real TaskRunner with only
+ * providers.callModel mocked - because both properties here are about real
  * timing and cannot be observed from a pure function.
  *
  * Two things are pinned:
@@ -30,7 +30,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 let planSubtasks = [];
 let implementerDelay = 60;
 /** Subtask TITLE whose verification always fails, or null. Titles are what the
- *  implementer and verifier prompts actually carry — ids never appear in them. */
+ *  implementer and verifier prompts actually carry - ids never appear in them. */
 let failVerificationFor = null;
 /** Map of subtask title -> file it proposes to write. */
 let proposeEditsFor = new Map();
@@ -167,7 +167,7 @@ async function main() {
     assert.ok(first2.includes('s3'), `first batch was ${JSON.stringify(first2)}, expected it to include s3`);
   });
 
-  t('it starts FIRST — it has the most work behind it', () => {
+  t('it starts FIRST - it has the most work behind it', () => {
     assert.strictEqual(startOrder(cp.events)[0], 's3');
   });
 
@@ -199,7 +199,7 @@ async function main() {
 
   t('the non-conflicting subtask still runs in parallel', () => {
     const pairs = overlappingPairs(conflict.events);
-    assert.ok(pairs.length > 0, 'nothing overlapped at all — the file rule serialised everything');
+    assert.ok(pairs.length > 0, 'nothing overlapped at all - the file rule serialised everything');
   });
 
   t('all three still complete', () => {
@@ -274,7 +274,7 @@ async function main() {
     );
     const subjects = new Set(reverted.map((e) => e.subtaskId));
     assert.ok(subjects.has('s1'), 's1 never rolled back');
-    assert.ok(subjects.has('s2'), 's2 never rolled back — its backtrack point was wiped by s1');
+    assert.ok(subjects.has('s2'), 's2 never rolled back - its backtrack point was wiped by s1');
   });
 
   t('neither subtask left its rejected file behind', () => {
