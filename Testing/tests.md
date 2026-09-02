@@ -146,7 +146,7 @@ The IDE created a functional Tetris game in the project. The implementation incl
 
 ### 6. Final Summary for Test Entry 03
 - Final status: Passed
-- Repository: https://github.com/skm183/TestRepoForCodeNawabs/
+- Repository: https://github.com/ShubhgIITK25/Test3RepoForCodeNawabs
 - Notes: The prompt was completed successfully and resulted in a working Tetris game.
 
 ### 7. Total Metrics for Test Entry 03
