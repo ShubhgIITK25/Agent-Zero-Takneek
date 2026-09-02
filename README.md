@@ -1,6 +1,6 @@
 # Nawabs Submission for Agent Zero
 
-Monaco Based Code editor integrated with not that great models. Multi agent orchestration helps achieve great coding capabilities combined with our user friendly features.
+Monaco Based Code editor integrated with a multi agent orchestrator. The harness helps achieve great coding capabilities combined with our user friendly features.
 
 ```
 ├── .github
