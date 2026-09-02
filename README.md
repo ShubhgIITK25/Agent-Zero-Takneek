@@ -100,5 +100,4 @@ Monaco Based Code editor integrated with a multi agent orchestrator. The harness
 
 ## Deliverables
 - `documentation` - Contains everything about our project. All of the architecture and everything.
-- `presentation` - what we show you, and what will impress you.
 - `binary files` - Cross platform build files to install on any operating system easily (check docs for exact process)
