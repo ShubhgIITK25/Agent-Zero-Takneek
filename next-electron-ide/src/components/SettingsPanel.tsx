@@ -465,8 +465,7 @@ export default function SettingsPanel({ onClose }: SettingsPanelProps) {
                     </div>
                   </div>
                   <p className="settings-hint custom-quality-hint">
-                    <strong>How quality works:</strong> 0-20 basic, 21-40 moderate, 41-60 strong,
-                    61-80 very strong, and 81-100 exceptional.
+                    <strong>Determining quality:</strong> The quality can be estimated from benchmarks (officially from Artifical Analysis intelligence benchmarks), or if none are available, from the model's size and context window. A rough rule of thumb is that a model with 30B parameters and a 128k context window is about quality 20/100.
                   </p>
 
                   <div className="custom-model-actions">
