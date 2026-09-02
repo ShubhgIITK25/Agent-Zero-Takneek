@@ -88,7 +88,7 @@ export default function Home() {
     if (e.type === 'approval_resolved') {
       setPendingDiff((prev) => (prev && prev.requestId === e.requestId ? null : prev));
     }
-    if (e.type === 'task_finished' || e.type === 'task_failed' || e.type === 'task_cancelled') {
+    if (e.type === 'task_finished' || e.type === 'task_failed' || e.type === 'task_cancelled' || e.type === 'task_paused') {
       setPendingDiff(null);
     }
   }, []);

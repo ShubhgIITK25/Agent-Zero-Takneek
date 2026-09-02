@@ -108,6 +108,7 @@ export class TaskRunner {
   /** Seeded from the Settings probe, then corrected by what actually happens. */
   private health: HealthRegistry;
   private cancelled = false;
+  private pauseRequested = false;
   private activeAbortController: AbortController | null = null;
   private pendingApprovals = new Map<string, (d: ApprovalDecision) => void>();
   private snapshot: TaskSnapshot;
@@ -250,10 +251,11 @@ export class TaskRunner {
   cancel(): void {
     if (this.cancelled) return;
     this.cancelled = true;
+    this.pauseRequested = true;
     this.activeAbortController?.abort();
-    this.snapshot.status = 'cancelled';
+    this.snapshot.status = 'paused';
     this.checkpoint();
-    this.emit({ type: 'task_cancelled' });
+    this.emit({ type: 'task_paused' });
     // Unblock anything waiting on a human so the process can wind down rather
     // than sitting on a promise that will never resolve.
     for (const [requestId, resolve] of this.pendingApprovals) {
@@ -383,6 +385,7 @@ export class TaskRunner {
     diffs: FileDiff[],
     summary: string
   ): Promise<{ approved: boolean; written: string[]; fullyApplied: boolean; rejectedBlocks: number; stale: string[] }> {
+    if (this.cancelled) return { approved: false, written: [], fullyApplied: false, rejectedBlocks: 0, stale: [] };
     const requestId = `ap_${this.taskId}_${++nodeCounter}`;
     const request: PendingApproval = { requestId, taskId: this.taskId, kind: 'diff', subtaskId, summary, diff: diffs };
 
@@ -410,6 +413,7 @@ export class TaskRunner {
     let rejectedBlocks = 0;
 
     for (const d of diffs) {
+      if (this.cancelled) return { approved: false, written, fullyApplied: false, rejectedBlocks, stale };
       const blockIds = d.blocks.map((b) => b.id);
       if (blockIds.length === 0) continue;
 
@@ -437,6 +441,7 @@ export class TaskRunner {
       } catch {
         // New file: the safe revert state is "does not exist".
       }
+      if (this.cancelled) return { approved: false, written, fullyApplied: false, rejectedBlocks, stale };
       // THE READ-MODIFY-WRITE RACE. The diff was computed against the file as
       // it looked when the agent proposed it. If the bytes on disk have moved
       // since - a parallel subtask's approved edit, or the user typing in the
@@ -471,6 +476,7 @@ export class TaskRunner {
         finalContent,
       );
       await fs.mkdir(path.dirname(full), { recursive: true });
+      if (this.cancelled) return { approved: false, written, fullyApplied: false, rejectedBlocks, stale };
       await fs.writeFile(full, finalContent, 'utf8');
       written.push(d.path);
       this.changedFiles.add(d.path);
@@ -496,6 +502,7 @@ export class TaskRunner {
   }
 
   private async requestCommandApprovalLocked(subtaskId: string, command: string): Promise<boolean> {
+    if (this.cancelled) return false;
     const requestId = `ap_${this.taskId}_${++nodeCounter}`;
     const request: PendingApproval = {
       requestId,
@@ -801,6 +808,8 @@ export class TaskRunner {
   async run(resumed: boolean): Promise<void> {
     this.emit({ type: 'task_started', prompt: this.prompt, resumed });
     if (resumed) {
+      this.snapshot.status = 'running';
+      this.checkpoint();
       const rolledBack = this.reconcileResumedState();
       this.emit({
         type: 'resumed',
@@ -997,6 +1006,9 @@ export class TaskRunner {
       // SUCCESSFUL re-plan report failure.
       const incomplete = this.snapshot.subtasks.filter((s) => s.status !== 'done' && s.status !== 'replaced');
       const summary = await this.aggregate();
+      if (this.cancelled) {
+        return this.cancelledOut();
+      }
       this.snapshot.summary = summary;
 
       if (incomplete.length === 0) {
@@ -1025,12 +1037,17 @@ export class TaskRunner {
   }
 
   private cancelledOut(): void {
+    // cancel() has already checkpointed and announced a resumable pause. The
+    // in-flight call reaches this method after its abort signal is observed;
+    // do not overwrite paused with the old terminal cancellation state.
+    if (this.pauseRequested) return;
     this.snapshot.status = 'cancelled';
     this.checkpoint();
     this.emit({ type: 'task_cancelled' });
   }
 
   private fail(reason: string): void {
+    if (this.pauseRequested) return;
     this.snapshot.status = 'failed';
     this.checkpoint();
     this.emit({ type: 'task_failed', reason });
@@ -1235,6 +1252,7 @@ export class TaskRunner {
       this.emit({ type: 'subtask_started', subtaskId: subtask.id, title: subtask.title, attempt });
 
       const outcome = await this.executeSubtask(subtask, attempt, attemptParent);
+      if (this.cancelled) return;
       if (!outcome) {
         await this.restoreBacktrackPoint(subtask, 'No model was available to finish this subtask.');
         subtask.status = 'failed';
@@ -1260,10 +1278,12 @@ export class TaskRunner {
           continue;
         }
         await this.restoreBacktrackPoint(subtask, 'The agent reported it was blocked and retries are exhausted.');
+        if (this.cancelled) return;
         // Roll back FIRST, then re-plan: the replacements must start from the
         // same tree the original subtask started from, and the re-planner is
         // told that is the case.
         if (await this.tryReplan(subtask, `Agent reported BLOCKED: ${outcome.claim}`)) return;
+        if (this.cancelled) return;
         subtask.status = 'failed';
         this.emit({ type: 'subtask_finished', subtaskId: subtask.id, status: 'failed', note: outcome.claim });
         this.blockDependents(subtask.id);
@@ -1287,6 +1307,7 @@ export class TaskRunner {
       // the implementer call that made it.
       const implementerLast = this.lastNodeBySubtask.get(subtask.id) ?? attemptParent;
       const verdict = await this.verify(subtask, outcome.claim, implementerLast);
+      if (this.cancelled) return;
 
       if (verdict.verdict === 'pass') {
         // Verified work is committed: drop the undo point so no later failure
@@ -1312,6 +1333,7 @@ export class TaskRunner {
         });
         const verifierLast = this.lastNodeBySubtask.get(subtask.id) ?? implementerLast;
         const tie = await this.tiebreak(subtask, outcome.claim, verdict, verifierLast);
+        if (this.cancelled) return;
         if (tie) {
           finalVerdict = tie.verdict;
           this.notes.push(`Tie-break on "${subtask.title}": ${tie.verdict} - ${tie.reason}`);
@@ -1347,6 +1369,7 @@ export class TaskRunner {
           subtask,
           `Verification failed on attempt ${attempt}.`
         );
+        if (this.cancelled) return;
         // Feed the failure into the next attempt so it is a different attempt,
         // not the same one again - and tell it the tree was rolled back, or it
         // will assume its earlier edits are still there and write half a fix.
@@ -1374,6 +1397,7 @@ export class TaskRunner {
         subtask,
         `All ${MAX_RETRIES_PER_SUBTASK} attempts failed verification.`
       );
+      if (this.cancelled) return;
 
       // Last resort before declaring failure: the retry ladder has already
       // re-run this on a stronger model with the verifier's complaint fed in.
@@ -1383,6 +1407,7 @@ export class TaskRunner {
       if (await this.tryReplan(subtask, `Verification failed ${subtask.attempts}x. Last reason: ${verdict.reason}`)) {
         return;
       }
+      if (this.cancelled) return;
 
       subtask.status = 'failed';
       this.emit({
@@ -1667,6 +1692,7 @@ export class TaskRunner {
         if (need.compact) {
           const summariser = this.cheapestModel() ?? probable.model;
           const outcome = await compact(messages, probable.model, summariser, this.snapshot.pinnedFacts, this.config.env);
+          if (this.cancelled) return null;
           this.budget.record(outcome.promptTokens, outcome.completionTokens, outcome.costUsd);
           messages = outcome.messages;
           this.emit({
@@ -1709,6 +1735,11 @@ export class TaskRunner {
       messages = [...messages, { role: 'assistant', content: res.text || null, toolCalls: res.toolCalls }];
 
       for (const call of res.toolCalls) {
+        if (this.cancelled) {
+          this.snapshot.conversations[subtask.id] = messages;
+          this.checkpoint();
+          return null;
+        }
         const signature = `${call.name}:${JSON.stringify(call.arguments)}`;
         repeats = signature === lastSignature ? repeats + 1 : 1;
         lastSignature = signature;
@@ -1747,6 +1778,7 @@ export class TaskRunner {
         if (tool.schema.name === 'run_command') {
           const cmd = String(call.arguments.command ?? '');
           const approved = await this.requestCommandApproval(subtask.id, cmd);
+          if (this.cancelled) return null;
           if (!approved) {
             const content = `The user REJECTED running: ${cmd}. It did not run. Find another way to verify, or proceed without it.`;
             messages.push({ role: 'tool', toolCallId: call.id, name: call.name, content });
@@ -1847,6 +1879,7 @@ export class TaskRunner {
 
       convo = [...convo, { role: 'assistant', content: res.text || null, toolCalls: res.toolCalls }];
       for (const call of res.toolCalls) {
+        if (this.cancelled) return { verdict: 'fail', confidence: 0, reason: 'Verifier interrupted by user pause.', evidence: '' };
         const tool = findTool(call.name);
         this.emit({ type: 'tool_call', nodeId: res.nodeId, callId: call.id, name: call.name, args: call.arguments, sideEffecting: tool?.sideEffecting ?? false });
         if (!tool) {
@@ -1855,6 +1888,7 @@ export class TaskRunner {
         }
         if (tool.schema.name === 'run_command') {
           const approved = await this.requestCommandApproval(subtask.id, String(call.arguments.command ?? ''));
+          if (this.cancelled) return { verdict: 'fail', confidence: 0, reason: 'Verifier interrupted by user pause.', evidence: '' };
           if (!approved) {
             convo.push({ role: 'tool', toolCallId: call.id, name: call.name, content: 'User rejected running this command.' });
             this.emit({ type: 'tool_result', nodeId: res.nodeId, callId: call.id, result: 'rejected', outcome: 'rejected', ms: 0 });

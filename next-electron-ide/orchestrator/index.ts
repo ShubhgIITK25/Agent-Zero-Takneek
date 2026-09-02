@@ -75,7 +75,7 @@ async function handle(cmd: Command): Promise<void> {
 
     case 'start_task': {
       if (current) {
-        reply(cmd.id, false, 'A task is already running. Cancel it first.');
+        reply(cmd.id, false, 'A task is already running. Pause it first.');
         return;
       }
       const store = new TaskStore(DATA_DIR, cmd.config.codebaseId, cmd.taskId);

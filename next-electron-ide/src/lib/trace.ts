@@ -130,7 +130,7 @@ export type ApprovalRecord = {
 export type TraceView = {
   taskId: string | null;
   prompt: string;
-  status: "idle" | "running" | "done" | "failed" | "cancelled";
+  status: "idle" | "running" | "paused" | "done" | "failed" | "cancelled";
   resumed: boolean;
   resumeNote: string | null;
   summary: string | null;
@@ -574,6 +574,10 @@ export function applyEvent(view: TraceView, e: TraceEvent): TraceView {
     case "task_failed":
       v.status = "failed";
       v.failureReason = e.reason;
+      break;
+
+    case "task_paused":
+      v.status = "paused";
       break;
 
     case "task_cancelled":

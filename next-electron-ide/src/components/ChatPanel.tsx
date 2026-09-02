@@ -292,6 +292,9 @@ export default function ChatPanel({
       case 'task_failed':
         pushLocal({ id: nextId(), kind: 'error', text: e.reason });
         break;
+      case 'task_paused':
+        pushLocal({ id: nextId(), kind: 'system', text: 'Task paused. Resume it from the Dashboard → Past tasks.' });
+        break;
       case 'task_cancelled':
         pushLocal({ id: nextId(), kind: 'system', text: 'Task cancelled.' });
         break;
@@ -338,7 +341,7 @@ export default function ChatPanel({
       seenEventKeys.current.add(key);
       setBubbles((prev) => processEventIntoBubbles(e, prev));
 
-      if (['task_finished', 'task_failed', 'task_cancelled'].includes(e.type)) {
+      if (['task_finished', 'task_failed', 'task_cancelled', 'task_paused'].includes(e.type)) {
         setRunning(false);
         setTaskId(null);
         setAutoApprove(false);
@@ -379,7 +382,7 @@ export default function ChatPanel({
         }
 
         const terminal = events.some((e) =>
-          e.type === 'task_finished' || e.type === 'task_failed' || e.type === 'task_cancelled',
+          e.type === 'task_finished' || e.type === 'task_failed' || e.type === 'task_cancelled' || e.type === 'task_paused',
         );
         if (terminal) {
           setRunning(false);
@@ -673,8 +676,13 @@ export default function ChatPanel({
           >
             {autoApprove ? 'Auto-approving' : 'Approve remaining'}
           </button>
-          <button type="button" className="chat-cancel-btn" onClick={() => taskId && window.electronAPI?.orchestratorCancelTask(taskId)}>
-            Stop
+          <button
+            type="button"
+            className="chat-cancel-btn"
+            title="Pause this task and keep it resumable from Dashboard → Past tasks"
+            onClick={() => taskId && window.electronAPI?.orchestratorCancelTask(taskId)}
+          >
+            Pause
           </button>
         </div>
       )}

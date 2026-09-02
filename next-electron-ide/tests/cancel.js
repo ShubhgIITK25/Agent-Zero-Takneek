@@ -1,7 +1,7 @@
 /**
- * Regression test for stop-button cancellation: the active model call must be
- * aborted and the task must emit task_cancelled promptly instead of waiting for
- * the network call to finish naturally.
+ * Regression test for the stop button: the active model call must be aborted
+ * and the task must emit task_paused promptly, preserving its checkpoint for
+ * a later resume.
  */
 const assert = require('assert');
 const fs = require('fs');
@@ -62,12 +62,12 @@ const { TaskStore } = require(path.join(D, 'store'));
 
   await Promise.race([
     runPromise,
-    new Promise((_, reject) => setTimeout(() => reject(new Error('task did not cancel promptly')), 250)),
+    new Promise((_, reject) => setTimeout(() => reject(new Error('task did not pause promptly')), 250)),
   ]);
 
-  assert.ok(events.some((e) => e.type === 'task_cancelled'), 'task_cancelled event was not emitted');
-  assert.strictEqual(store.loadSnapshot().status, 'cancelled', 'snapshot should be marked cancelled');
-  console.log('cancel test passed');
+  assert.ok(events.some((e) => e.type === 'task_paused'), 'task_paused event was not emitted');
+  assert.strictEqual(store.loadSnapshot().status, 'paused', 'snapshot should be marked paused');
+  console.log('pause test passed');
 })().catch((err) => {
   console.error(err);
   process.exit(1);

@@ -200,6 +200,7 @@ export type EventBody =
   | { type: 'task_started'; prompt: string; resumed: boolean }
   | { type: 'task_finished'; summary: string }
   | { type: 'task_failed'; reason: string }
+  | { type: 'task_paused' }
   | { type: 'task_cancelled' }
   | { type: 'plan_created'; subtasks: Subtask[]; shortCircuited: boolean }
   /** A subtask exhausted its retries and was replaced by a different decomposition. */
