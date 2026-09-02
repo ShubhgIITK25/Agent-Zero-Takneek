@@ -506,6 +506,9 @@ function CallTreeBranch({
 export default function Dashboard({ live, onClose, onWorkspaceChanged }: DashboardProps) {
   const [mode, setMode] = useState<'live' | 'history'>('live');
   const [tasks, setTasks] = useState<TaskSummary[]>([]);
+  const [selectedTaskId, setSelectedTaskId] = useState('');
+  const [resumingTaskId, setResumingTaskId] = useState<string | null>(null);
+  const [resumeMessage, setResumeMessage] = useState<string | null>(null);
   const [historyTrace, setHistoryTrace] = useState<TraceView | null>(null);
   const [loadingHistory, setLoadingHistory] = useState(false);
   const [reverting, setReverting] = useState(false);
@@ -537,6 +540,26 @@ export default function Dashboard({ live, onClose, onWorkspaceChanged }: Dashboa
     const events: TraceEvent[] = (await window.electronAPI?.orchestratorReadTaskEvents(taskId)) ?? [];
     setHistoryTrace(buildTrace(events));
     setLoadingHistory(false);
+  };
+
+  const selectedTask = tasks.find((task) => task.taskId === selectedTaskId);
+  const selectedTaskResumable = selectedTask?.status === 'running' || selectedTask?.status === 'paused';
+
+  const resumeSelectedTask = async () => {
+    if (!selectedTask || !selectedTaskResumable || resumingTaskId) return;
+    setResumingTaskId(selectedTask.taskId);
+    setResumeMessage(null);
+    try {
+      await window.electronAPI?.orchestratorResumeTask(selectedTask.taskId);
+      // The parent page owns the live event subscription. Switching to Live
+      // makes the dashboard immediately follow the resumed task's events.
+      setHistoryTrace(null);
+      setMode('live');
+    } catch (err) {
+      setResumeMessage(err instanceof Error ? err.message : 'The task could not be resumed.');
+    } finally {
+      setResumingTaskId(null);
+    }
   };
 
   const view = mode === 'live' ? live : historyTrace;
@@ -609,24 +632,41 @@ export default function Dashboard({ live, onClose, onWorkspaceChanged }: Dashboa
         {mode === 'history' && (
           <div className="dash-history-picker">
             {tasks.length === 0 ? (
-              <p className="dash-muted">No completed tasks recorded for this project yet.</p>
+              <p className="dash-muted">No saved tasks recorded for this project yet.</p>
             ) : (
-              <select
-                onChange={(e) => e.target.value && loadTask(e.target.value)}
-                defaultValue=""
-                aria-label="Select a past task"
-              >
-                <option value="" disabled>
-                  Select a task…
-                </option>
-                {tasks.map((t) => (
-                  <option key={t.taskId} value={t.taskId}>
-                    [{t.status}] {new Date(t.updatedAt).toLocaleString()} - {t.prompt.slice(0, 60)}
+              <>
+                <select
+                  value={selectedTaskId}
+                  onChange={(e) => {
+                    const id = e.target.value;
+                    setSelectedTaskId(id);
+                    setResumeMessage(null);
+                    if (id) void loadTask(id);
+                  }}
+                  aria-label="Select a past task"
+                >
+                  <option value="">
+                    Select a task…
                   </option>
-                ))}
-              </select>
+                  {tasks.map((t) => (
+                    <option key={t.taskId} value={t.taskId}>
+                      [{t.status === 'running' || t.status === 'paused' ? 'interrupted' : t.status}] {new Date(t.updatedAt).toLocaleString()} - {t.prompt.slice(0, 60)}
+                    </option>
+                  ))}
+                </select>
+                <button
+                  type="button"
+                  className="dash-resume-btn"
+                  onClick={() => void resumeSelectedTask()}
+                  disabled={!selectedTaskResumable || resumingTaskId !== null}
+                  title={selectedTaskResumable ? 'Continue this interrupted task' : 'Select an interrupted task to resume'}
+                >
+                  {resumingTaskId ? 'Resuming…' : 'Resume task'}
+                </button>
+              </>
             )}
             {loadingHistory && <span className="dash-muted">Loading…</span>}
+            {resumeMessage && <span className="dash-fail">{resumeMessage}</span>}
           </div>
         )}
 

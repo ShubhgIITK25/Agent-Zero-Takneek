@@ -1646,6 +1646,26 @@ button:hover {
   font-size: 12px;
 }
 
+.dash-resume-btn {
+  flex: 0 0 auto;
+  background: var(--nx-accent);
+  border: 1px solid var(--nx-accent);
+  color: #fff;
+  padding: 5px 10px;
+  border-radius: 3px;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.dash-resume-btn:hover:not(:disabled) {
+  filter: brightness(1.12);
+}
+
+.dash-resume-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
 .dash-empty {
   padding: 40px;
   text-align: center;
